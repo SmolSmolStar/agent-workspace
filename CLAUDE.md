@@ -74,6 +74,8 @@ curl -sS "https://api.trello.com/1/cards/CARD_ID/customFieldItems?key=$KEY&token
 7. Send `\r` to submit
 7. Move Trello card to Doing list
 
+**Default: no tier.** Omit `startTier` unless the user actually asked for one — don't copy the `3` below reflexively, that's an example for Trello batch launches, not a default.
+
 **Add worktree with tier:**
 ```bash
 curl -sS -X POST http://localhost:$PORT/api/workspaces/add-mixed-worktree \
