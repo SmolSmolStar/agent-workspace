@@ -2894,6 +2894,33 @@ app.get('/api/sessions/model-config', (req, res) => {
   }
 });
 
+function collectWorktreeSlotsUsedByRepoAcrossWorkspaces(repoPathNorm, { excludeWorkspaceId } = {}) {
+  // Mirrors the client's getWorkspaceUsageForWorktree: a slot already wired to this
+  // repo in ANY workspace is not free, even if the current workspace has never seen it.
+  const used = new Set();
+  if (!repoPathNorm) return used;
+  let allWorkspaces = [];
+  try {
+    allWorkspaces = workspaceManager.listWorkspaces() || [];
+  } catch (_) {
+    return used;
+  }
+  for (const ws of allWorkspaces) {
+    if (excludeWorkspaceId && ws?.id === excludeWorkspaceId) continue;
+    const terminals = Array.isArray(ws?.terminals) ? ws.terminals : [];
+    for (const terminal of terminals) {
+      const terminalRepoPath = normalizeRepositoryPath(terminal?.repository?.path);
+      if (terminalRepoPath !== repoPathNorm) continue;
+      const id = normalizeThreadWorktreeId(terminal?.worktree || terminal?.worktreeId || '');
+      const match = String(id || '').match(/^work(\d+)$/);
+      if (!match) continue;
+      const n = Number(match[1]);
+      if (Number.isFinite(n)) used.add(`work${n}`);
+    }
+  }
+  return used;
+}
+
 function pickNextWorktreeIdForWorkspace(workspace, { repositoryPath } = {}) {
   const repoPathNorm = normalizeRepositoryPath(repositoryPath);
   const primarySlotLimit = 8;
@@ -2901,7 +2928,7 @@ function pickNextWorktreeIdForWorkspace(workspace, { repositoryPath } = {}) {
   if (workspace?.workspaceType === 'mixed-repo') {
     const terminals = Array.isArray(workspace?.terminals) ? workspace.terminals : [];
     let max = 0;
-    const used = new Set();
+    const used = collectWorktreeSlotsUsedByRepoAcrossWorkspaces(repoPathNorm, { excludeWorkspaceId: workspace?.id });
     for (const terminal of terminals) {
       const terminalRepoPath = normalizeRepositoryPath(terminal?.repository?.path);
       if (repoPathNorm && terminalRepoPath && terminalRepoPath !== repoPathNorm) continue;
