@@ -1367,6 +1367,30 @@ app.get('/api/workspaces', (req, res) => {
   }
 });
 
+// Activate a workspace over plain HTTP — the socket 'switch-workspace' handler is the
+// only other path that sets workspaceManager's in-memory active workspace, so a restart
+// with no browser connected (or one whose reconnect handshake didn't re-request it) left
+// the in-memory pointer null: `isActiveWorkspace` checks elsewhere (e.g. add-mixed-worktree)
+// then silently skip session (re)creation even though the workspace config and the
+// underlying tmux panes are both still fine. This lets any HTTP caller (agents included)
+// re-activate a workspace and repopulate its sessions without needing a live socket.
+app.post('/api/workspaces/activate', async (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || '').trim();
+    if (!workspaceId) return res.status(400).json({ error: 'workspaceId is required' });
+
+    const newWorkspace = await workspaceManager.switchWorkspace(workspaceId);
+    await worktreeHelper.ensureWorktreesExist(newWorkspace);
+    const { sessions } = await sessionManager.switchWorkspacePreservingSessions(newWorkspace);
+
+    io.emit('workspace-changed', { workspace: newWorkspace, sessions });
+    res.json({ success: true, workspaceId: newWorkspace.id, sessionIds: Object.keys(sessions || {}) });
+  } catch (error) {
+    logger.error('Failed to activate workspace over HTTP', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/workspaces/active', (req, res) => {
   try {
     const active = workspaceManager.getActiveWorkspace();
