@@ -235,6 +235,24 @@ class TmuxSessionBackend {
     }
   }
 
+  // Current pane geometry, so a re-attaching client can spawn at the size the
+  // surviving session is already at instead of node-pty's 80x24 default. Without
+  // this, adopting a session after a restart shrinks the tmux window to 80x24
+  // the instant the outer client attaches, then grows it back once the browser's
+  // heal-sweep re-asserts the real size — a resize-down-then-up round trip that
+  // can bake garbled/duplicated frames into the pane if the app inside redraws
+  // mid-transition (issue: garbled terminal after nodemon restart).
+  getPaneSize(sessionId) {
+    try {
+      const out = this.run(['list-panes', '-t', this.target(sessionId), '-F', '#{pane_width}x#{pane_height}']);
+      const [w, h] = String(out || '').trim().split('\n')[0].split('x').map((n) => parseInt(n, 10));
+      if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) return { cols: w, rows: h };
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   // Scrollback (with escape sequences, joined wrapped lines) for buffer
   // backfill when adopting a surviving session after a server restart.
   capturePane(sessionId, lines = 2000) {
