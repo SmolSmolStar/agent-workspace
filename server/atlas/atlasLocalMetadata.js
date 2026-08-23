@@ -53,8 +53,38 @@ function decodeEntities(value) {
     .replace(/&nbsp;/gi, ' ');
 }
 
+function toWellFormed(value) {
+  let result = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF) {
+        result += value[index] + value[index + 1];
+        index += 1;
+      } else {
+        result += '\uFFFD';
+      }
+    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+      result += '\uFFFD';
+    } else {
+      result += value[index];
+    }
+  }
+  return result;
+}
+
+function sliceWithoutSplittingSurrogate(value, boundary) {
+  let safeBoundary = boundary;
+  const cutsSurrogatePair = /[\uD800-\uDBFF]/.test(value[safeBoundary - 1])
+    && /[\uDC00-\uDFFF]/.test(value[safeBoundary]);
+  if (cutsSurrogatePair) safeBoundary -= 1;
+  return value.slice(0, safeBoundary);
+}
+
 function normalizeSummary(value, { maxChars = MAX_SUMMARY_CHARS } = {}) {
-  const cleaned = decodeEntities(String(value || ''))
+  const limit = Number.isFinite(maxChars) ? Math.max(0, Math.floor(maxChars)) : MAX_SUMMARY_CHARS;
+  const cleaned = toWellFormed(decodeEntities(String(value || ''))
     .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/<https?:\/\/[^>]+>/gi, ' ')
@@ -67,16 +97,15 @@ function normalizeSummary(value, { maxChars = MAX_SUMMARY_CHARS } = {}) {
     .replace(/\s+/g, ' ')
     .replace(/\s+[(\[{]+$/g, '')
     .replace(/\s+([.,!?])/g, '$1')
-    .trim();
-  if (!cleaned || cleaned.length <= maxChars) return cleaned;
+    .trim());
+  if (!cleaned || cleaned.length <= limit) return cleaned;
+  if (limit <= 3) return sliceWithoutSplittingSurrogate(cleaned, limit);
 
-  const target = Math.max(1, maxChars - 3);
+  const target = limit - 3;
   const wordBoundary = cleaned.lastIndexOf(' ', target);
-  let boundary = wordBoundary >= Math.floor(target * 0.6) ? wordBoundary : target;
-  const cutsSurrogatePair = /[\uD800-\uDBFF]/.test(cleaned[boundary - 1])
-    && /[\uDC00-\uDFFF]/.test(cleaned[boundary]);
-  if (cutsSurrogatePair) boundary -= 1;
-  return `${cleaned.slice(0, boundary).trimEnd().replace(/[,:;]+$/, '')}...`;
+  const boundary = wordBoundary >= Math.floor(target * 0.6) ? wordBoundary : target;
+  const truncated = sliceWithoutSplittingSurrogate(cleaned, boundary);
+  return `${truncated.trimEnd().replace(/[,:;]+$/, '')}...`;
 }
 
 function comparableLabel(value) {

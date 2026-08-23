@@ -90,6 +90,25 @@ describe('Repo Atlas local metadata', () => {
     expect(Buffer.from(summary, 'utf8').toString('utf8')).toBe(summary);
   });
 
+  test('honors summary caps too small to hold an ellipsis', () => {
+    expect([0, 1, 2, 3].map((maxChars) => normalizeSummary('abcdef', { maxChars })))
+      .toEqual(['', 'a', 'ab', 'abc']);
+    expect(normalizeSummary('😀tail', { maxChars: 1 })).toBe('');
+    expect(normalizeSummary('😀tail', { maxChars: 2 })).toBe('😀');
+  });
+
+  test('repairs lone surrogates escaped inside valid package metadata', () => {
+    fs.writeFileSync(
+      path.join(root, 'package.json'),
+      '{"description":"Coordinates \\ud800 local coding sessions."}'
+    );
+
+    const summary = readLocalSummary(root);
+
+    expect(summary).toBe('Coordinates � local coding sessions.');
+    expect(Buffer.from(summary, 'utf8').toString('utf8')).toBe(summary);
+  });
+
   test('uses a case-insensitive README name and ignores malformed metadata', () => {
     fs.writeFileSync(path.join(root, 'package.json'), '{not-json');
     fs.writeFileSync(
