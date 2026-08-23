@@ -86,7 +86,14 @@ class ProjectsBoardUI {
       this.orchestrator?.showToast?.('Repository evidence is unavailable.', 'error');
       return false;
     }
-    await portfolioUI.show();
+    let opened;
+    try {
+      opened = await portfolioUI.show();
+    } catch {
+      this.orchestrator?.showToast?.('Repository evidence is unavailable.', 'error');
+      return false;
+    }
+    if (opened === false || portfolioUI.visible === false) return false;
     this.hide();
     return true;
   }

@@ -19,6 +19,7 @@ class AtlasPortfolioUI {
     this.includeArchived = false;
     this.report = null;
     this.loading = false;
+    this.needsRefresh = false;
     this.error = '';
     this.requestSequence = 0;
     this.abortController = null;
@@ -104,8 +105,7 @@ class AtlasPortfolioUI {
 
     modal.querySelector('[data-atlas-close]')?.addEventListener('click', () => this.hide());
     modal.querySelector('[data-atlas-back]')?.addEventListener('click', async () => {
-      this.hide();
-      await this.orchestrator?.projectsBoardUI?.show?.();
+      await this.showProjectsBoard();
     });
     modal.querySelector('[data-atlas-form]')?.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -130,10 +130,35 @@ class AtlasPortfolioUI {
     this.includeArchived = modal.querySelector('[data-atlas-archived]')?.checked === true;
   }
 
+  async showProjectsBoard() {
+    const projectsBoardUI = this.orchestrator?.projectsBoardUI;
+    if (typeof projectsBoardUI?.show !== 'function') {
+      this.orchestrator?.showToast?.('Projects Board is unavailable.', 'error');
+      return false;
+    }
+
+    try {
+      const showing = Promise.resolve(projectsBoardUI.show());
+      if (projectsBoardUI.visible !== true) {
+        await showing;
+      } else {
+        void showing.catch(() => {
+          this.orchestrator?.showToast?.('Projects Board refresh failed.', 'error');
+        });
+      }
+      if (projectsBoardUI.visible !== true) throw new Error('Projects Board did not open.');
+      this.hide();
+      return true;
+    } catch {
+      this.orchestrator?.showToast?.('Projects Board is unavailable.', 'error');
+      return false;
+    }
+  }
+
   async show() {
     if (!document.getElementById(this.modalId)) this.createModal();
     const modal = document.getElementById(this.modalId);
-    if (!modal) return;
+    if (!modal) return false;
     modal.classList.remove('hidden');
     this.visible = true;
     modal.querySelector('[data-atlas-query]')?.focus({ preventScroll: true });
@@ -143,15 +168,28 @@ class AtlasPortfolioUI {
       };
       document.addEventListener('keydown', this.escapeHandler);
     }
-    if (this.report) this.render();
-    else await this.refresh();
+    if (this.loading) this.render();
+    else if (this.report && !this.needsRefresh) this.render();
+    else void this.refresh();
+    return true;
+  }
+
+  cancelActiveRefresh() {
+    if (!this.loading && !this.abortController) return;
+    const controller = this.abortController;
+    this.requestSequence += 1;
+    this.abortController = null;
+    if (this.loading) {
+      this.loading = false;
+      this.needsRefresh = true;
+    }
+    controller?.abort();
   }
 
   hide() {
     document.getElementById(this.modalId)?.classList.add('hidden');
     this.visible = false;
-    this.abortController?.abort();
-    this.abortController = null;
+    this.cancelActiveRefresh();
     if (this.escapeHandler) {
       document.removeEventListener('keydown', this.escapeHandler);
       this.escapeHandler = null;
@@ -161,14 +199,16 @@ class AtlasPortfolioUI {
   async refresh() {
     const requestId = ++this.requestSequence;
     this.abortController?.abort();
-    this.abortController = typeof AbortController === 'function' ? new AbortController() : null;
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    this.abortController = controller;
     this.loading = true;
+    this.needsRefresh = true;
     this.error = '';
     this.render();
 
     try {
       const response = await fetch(this.buildRequestPath(), {
-        signal: this.abortController?.signal
+        signal: controller?.signal
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.ok || !data?.report) {
@@ -177,13 +217,23 @@ class AtlasPortfolioUI {
       if (requestId !== this.requestSequence) return;
       this.report = data.report;
       this.loading = false;
+      this.needsRefresh = false;
       this.render();
     } catch (error) {
-      if (error?.name === 'AbortError' || requestId !== this.requestSequence) return;
+      if (requestId !== this.requestSequence) return;
       this.loading = false;
+      if (error?.name === 'AbortError') {
+        this.needsRefresh = true;
+        return;
+      }
+      this.needsRefresh = false;
       this.error = atlasPortfolioText(error?.message) || 'Repository evidence report failed.';
       this.render();
       this.orchestrator?.showToast?.(this.error, 'error');
+    } finally {
+      if (requestId === this.requestSequence && this.abortController === controller) {
+        this.abortController = null;
+      }
     }
   }
 

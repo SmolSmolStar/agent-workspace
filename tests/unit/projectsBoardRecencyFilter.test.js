@@ -103,15 +103,40 @@ describe('ProjectsBoardUI recency filter', () => {
 
   test('opens repository evidence before hiding the board', async () => {
     const calls = [];
-    const ui = new ProjectsBoardUI({
-      atlasPortfolioUI: {
-        show: async () => { calls.push('show'); }
+    const portfolioUI = {
+      visible: false,
+      show: async () => {
+        calls.push('show');
+        portfolioUI.visible = true;
+        return true;
       }
+    };
+    const ui = new ProjectsBoardUI({
+      atlasPortfolioUI: portfolioUI
     });
     ui.hide = () => { calls.push('hide'); };
 
     await expect(ui.openPortfolio()).resolves.toBe(true);
 
     expect(calls).toEqual(['show', 'hide']);
+  });
+
+  test('does not re-hide the board after a delayed portfolio open was cancelled', async () => {
+    let finishOpening;
+    const portfolioUI = {
+      visible: true,
+      show: () => new Promise((resolve) => {
+        finishOpening = resolve;
+      })
+    };
+    const ui = new ProjectsBoardUI({ atlasPortfolioUI: portfolioUI });
+    ui.hide = jest.fn();
+
+    const opening = ui.openPortfolio();
+    portfolioUI.visible = false;
+    finishOpening(true);
+
+    await expect(opening).resolves.toBe(false);
+    expect(ui.hide).not.toHaveBeenCalled();
   });
 });

@@ -111,7 +111,7 @@ class AtlasPortfolioRenderer {
       </div>
       <div class="atlas-portfolio-signals">
         ${signals.map(([label, present]) => `
-          <span class="${present === true ? 'is-present' : 'is-absent'}">${atlasPortfolioRenderEscape(label)}</span>
+          <span class="${present === true ? 'is-present' : 'is-absent'}">${atlasPortfolioRenderEscape(label)}: ${present === true ? 'Present' : 'Absent'}</span>
         `).join('')}
       </div>
       ${languages.length ? `
