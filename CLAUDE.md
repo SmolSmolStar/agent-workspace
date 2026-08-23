@@ -74,6 +74,8 @@ curl -sS "https://api.trello.com/1/cards/CARD_ID/customFieldItems?key=$KEY&token
 7. Send `\r` to submit
 7. Move Trello card to Doing list
 
+**Default: no tier, no explicit worktreeId.** Omit `startTier` unless the user actually asked for one — don't copy the `3` below reflexively, that's an example for Trello batch launches, not a default. Same for `worktreeId`: omit it and the server auto-picks the next free `workN` slot for that repo — checking across every workspace, not just the current one, same logic the "+ Add worktree" UI button uses — so you never collide with a slot already open elsewhere. Only pass an explicit `worktreeId` when the user names a specific number.
+
 **Add worktree with tier:**
 ```bash
 curl -sS -X POST http://localhost:$PORT/api/workspaces/add-mixed-worktree \
