@@ -12,13 +12,17 @@ const {
 const ABI_ERROR = new Error(
   "The module '/repo/node_modules/node-pty/build/Release/pty.node' was compiled against a different Node.js version using NODE_MODULE_VERSION 115. This version of Node.js requires NODE_MODULE_VERSION 141. Please try re-compiling or re-installing the module."
 );
+const SOURCE_ROOT = path.resolve('node-pty-runtime-repair-test-root');
+const RUNTIME_ROOT = path.resolve('node-pty-runtime-repair-test-runtime');
+const NPM_CLI = path.join(RUNTIME_ROOT, 'npm-cli.js');
+const NODE_EXECUTABLE = path.join(RUNTIME_ROOT, 'node');
 
-function createSourceFs(npmCli = '/runtime/npm-cli.js') {
+function createSourceFs(npmCli = NPM_CLI) {
   return {
     existsSync: jest.fn((candidate) => candidate === npmCli || [
-      '/repo/.git',
-      '/repo/package.json',
-      '/repo/node_modules/node-pty/package.json'
+      path.join(SOURCE_ROOT, '.git'),
+      path.join(SOURCE_ROOT, 'package.json'),
+      path.join(SOURCE_ROOT, 'node_modules', 'node-pty', 'package.json')
     ].includes(candidate))
   };
 }
@@ -35,17 +39,17 @@ describe('NodePtyRuntimeRepair', () => {
   test('uses the active Node executable with npm CLI instead of a PATH-selected Node', () => {
     const fsImpl = createSourceFs();
     const spawnSyncImpl = jest.fn(() => ({ status: 0, stdout: 'rebuilt' }));
-    const env = { npm_execpath: '/runtime/npm-cli.js' };
+    const env = { npm_execpath: NPM_CLI };
     const repair = new NodePtyRuntimeRepair({
       spawnSyncImpl,
       fsImpl,
       env,
-      execPath: '/runtime/node',
+      execPath: NODE_EXECUTABLE,
       platform: 'linux',
       timeoutMs: 1234
     });
 
-    expect(repair.tryRepair(ABI_ERROR, { rootDir: '/repo' })).toMatchObject({
+    expect(repair.tryRepair(ABI_ERROR, { rootDir: SOURCE_ROOT })).toMatchObject({
       attempted: true,
       repaired: true,
       reason: 'rebuilt',
@@ -53,10 +57,10 @@ describe('NodePtyRuntimeRepair', () => {
       runtimeAbi: 141
     });
     expect(spawnSyncImpl).toHaveBeenCalledWith(
-      '/runtime/node',
-      ['/runtime/npm-cli.js', 'rebuild', 'node-pty'],
+      NODE_EXECUTABLE,
+      [NPM_CLI, 'rebuild', 'node-pty'],
       expect.objectContaining({
-        cwd: '/repo',
+        cwd: SOURCE_ROOT,
         env,
         timeout: 1234,
         windowsHide: false
@@ -107,17 +111,17 @@ describe('NodePtyRuntimeRepair', () => {
     const repair = new NodePtyRuntimeRepair({
       spawnSyncImpl,
       fsImpl,
-      env: { npm_execpath: '/runtime/npm-cli.js' },
-      execPath: '/runtime/node'
+      env: { npm_execpath: NPM_CLI },
+      execPath: NODE_EXECUTABLE
     });
 
-    expect(repair.tryRepair(ABI_ERROR, { rootDir: '/repo' })).toMatchObject({
+    expect(repair.tryRepair(ABI_ERROR, { rootDir: SOURCE_ROOT })).toMatchObject({
       attempted: true,
       repaired: false,
       reason: 'rebuild-failed',
       error: expect.objectContaining({ message: 'native build failed' })
     });
-    expect(repair.tryRepair(ABI_ERROR, { rootDir: '/repo' })).toMatchObject({
+    expect(repair.tryRepair(ABI_ERROR, { rootDir: SOURCE_ROOT })).toMatchObject({
       attempted: false,
       repaired: false,
       reason: 'already-attempted'
