@@ -1,4 +1,6 @@
 const express = require('express');
+const { analyzeRepositoryEvidence } = require('../atlas/atlasEvidence');
+const { EVIDENCE_QUEUE_FULL_CODE } = require('../atlas/atlasEvidenceCoordinator');
 
 const passthrough = (req, res, next) => next();
 
@@ -12,15 +14,33 @@ const asList = (value) => String(value === undefined || value === null ? '' : va
  * policy-`write`, and compiling a shareable bundle is treated as a write
  * because it produces an artifact that leaves this machine.
  */
-function createAtlasRoutes({ repoAtlasService, logger = console, requireRead = passthrough, requireWrite = passthrough } = {}) {
+function createAtlasRoutes({
+  repoAtlasService,
+  logger = console,
+  requireRead = passthrough,
+  requireWrite = passthrough,
+  evidenceAnalyzer = analyzeRepositoryEvidence
+} = {}) {
   const router = express.Router();
 
-  const handle = (label, handler) => async (req, res) => {
+  const handle = (label, handler, {
+    status = 400,
+    publicMessage = null,
+    mapError = null
+  } = {}) => async (req, res) => {
     try {
       await handler(req, res);
     } catch (error) {
-      logger.error(`Atlas: ${label} failed`, { error: error.message, stack: error.stack });
-      res.status(400).json({ ok: false, error: error.message });
+      logger.error(`Atlas: ${label} failed`, {
+        error: error.message,
+        detail: error.detail || null,
+        stack: error.stack
+      });
+      const mapped = typeof mapError === 'function' ? mapError(error) : null;
+      res.status(mapped?.status || status).json({
+        ok: false,
+        error: mapped?.message || publicMessage || error.message
+      });
     }
   };
 
@@ -41,6 +61,19 @@ function createAtlasRoutes({ repoAtlasService, logger = console, requireRead = p
       includeArchived: req.query.includeArchived !== 'false'
     });
     res.json({ ok: true, count: entries.length, entries });
+  }));
+
+  router.get('/entries/:id/evidence', requireRead, handle('inspect repository evidence', async (req, res) => {
+    const entry = repoAtlasService.getEntry(req.params.id);
+    if (!entry) return res.status(404).json({ ok: false, error: `No atlas entry "${req.params.id}"` });
+    const evidence = await evidenceAnalyzer(entry, { maxExamples: req.query.maxExamples });
+    return res.json({ ok: true, evidence });
+  }, {
+    status: 500,
+    publicMessage: 'Repository evidence inspection failed.',
+    mapError: (error) => (error?.code === EVIDENCE_QUEUE_FULL_CODE
+      ? { status: 503, message: 'Repository evidence queue is busy. Retry later.' }
+      : null)
   }));
 
   router.get('/entries/:id', requireRead, handle('get entry', (req, res) => {
