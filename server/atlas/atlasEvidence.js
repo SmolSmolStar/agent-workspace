@@ -26,11 +26,12 @@ const MAX_EXAMPLE_LIMIT = 12;
 const MAX_CONCURRENT_ANALYSES = 2;
 
 class GitInspectionError extends Error {
-  constructor(detail, args) {
+  constructor(detail, args, exitCode = null) {
     super('Repository evidence inspection failed.');
     this.name = 'GitInspectionError';
     this.detail = String(detail || 'unknown Git error');
     this.gitArgs = [...args];
+    this.exitCode = Number.isInteger(exitCode) ? exitCode : null;
   }
 }
 
@@ -48,7 +49,7 @@ function runGit(checkout, args) {
         return;
       }
       const detail = String(stderr || error.message || '').trim().split('\n')[0];
-      reject(new GitInspectionError(detail, args));
+      reject(new GitInspectionError(detail, args, error.code));
     });
   });
 }

@@ -91,10 +91,11 @@ async function resolveCheckout(entry, { runGit }) {
     if (expectedSlug) {
       let remoteUrl = '';
       try {
-        remoteUrl = (await runGit(candidate.path, ['remote', 'get-url', 'origin'])).trim();
+        remoteUrl = (await runGit(candidate.path, [
+          'config', '--local', '--get', 'remote.origin.url'
+        ])).trim();
       } catch (error) {
-        const detail = String(error?.detail || error?.message || '');
-        if (/No such remote ['"]?origin/i.test(detail)) continue;
+        if (error?.exitCode === 1) continue;
         firstFailure ||= error;
         continue;
       }

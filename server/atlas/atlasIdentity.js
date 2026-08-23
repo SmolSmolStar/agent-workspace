@@ -2,6 +2,8 @@ const path = require('path');
 
 const { kebab } = require('./atlasSchema');
 
+const GITHUB_REMOTE_PROTOCOLS = new Set(['git:', 'git+ssh:', 'http:', 'https:', 'ssh:']);
+
 function parseOwnerRepo(remoteUrl) {
   const value = String(remoteUrl || '').trim();
   const buildIdentity = (owner, rawRepo) => {
@@ -16,6 +18,7 @@ function parseOwnerRepo(remoteUrl) {
   const urlValue = /^github\.com\//i.test(value) ? `https://${value}` : value;
   try {
     const parsed = new URL(urlValue);
+    if (!GITHUB_REMOTE_PROTOCOLS.has(parsed.protocol.toLowerCase())) return null;
     if (parsed.hostname.toLowerCase() !== 'github.com') return null;
     const segments = parsed.pathname.split('/').filter(Boolean);
     if (segments.length !== 2) return null;

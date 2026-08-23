@@ -155,6 +155,23 @@ describe('atlasEvidence', () => {
     }, { runGit })).resolves.toBeNull();
   });
 
+  test('checks the raw origin instead of a locally rewritten fetch URL', async () => {
+    git(checkout, ['remote', 'set-url', 'origin', 'local-alias']);
+    git(checkout, [
+      'config',
+      'url.https://github.com/owner/fixture.git.insteadOf',
+      'local-alias'
+    ]);
+
+    expect(git(checkout, ['remote', 'get-url', 'origin']))
+      .toBe('https://github.com/owner/fixture.git');
+    await expect(resolveCheckout({
+      id: 'fixture',
+      repo: 'owner/fixture',
+      localPath: checkout
+    }, { runGit })).resolves.toBeNull();
+  });
+
   test('accepts a linked worktree whose git marker is a file', async () => {
     const linkedCheckout = path.join(root, 'linked-checkout');
     git(checkout, ['worktree', 'add', '-b', 'linked-evidence', linkedCheckout]);
