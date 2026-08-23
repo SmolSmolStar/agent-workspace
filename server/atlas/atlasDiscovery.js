@@ -83,6 +83,47 @@ function resolveProjectRoot(repoDir) {
   return { projectRoot: repoDir, worktreeLayout: false };
 }
 
+function comparablePath(candidate) {
+  let resolved = path.resolve(candidate);
+  try {
+    resolved = fs.realpathSync.native(resolved);
+  } catch {
+    // Keep the lexical path when a disappearing checkout cannot be resolved.
+  }
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+async function resolveScannedProject(repoDir) {
+  const fallback = { ...resolveProjectRoot(repoDir), primaryCheckout: null };
+  try {
+    if (!fs.lstatSync(path.join(repoDir, '.git')).isFile()) return fallback;
+  } catch {
+    return fallback;
+  }
+  const commonDir = await execFileAsync('git', ['-C', repoDir, 'rev-parse', '--git-common-dir']);
+  if (!commonDir) return fallback;
+
+  const checkout = path.resolve(repoDir);
+  const resolvedCommonDir = path.resolve(repoDir, commonDir);
+  if (path.basename(resolvedCommonDir).toLowerCase() !== '.git') return fallback;
+
+  const reportedPrimaryCheckout = path.dirname(resolvedCommonDir);
+  const isPrimaryCheckout = comparablePath(checkout) === comparablePath(reportedPrimaryCheckout);
+  const isSiblingCheckout = comparablePath(path.dirname(checkout))
+    === comparablePath(path.dirname(reportedPrimaryCheckout));
+  if (!isPrimaryCheckout && !isSiblingCheckout) return fallback;
+
+  const primaryCheckout = isPrimaryCheckout
+    ? checkout
+    : path.join(path.dirname(checkout), path.basename(reportedPrimaryCheckout));
+  const resolved = resolveProjectRoot(primaryCheckout);
+  return {
+    ...resolved,
+    worktreeLayout: resolved.worktreeLayout || !isPrimaryCheckout,
+    primaryCheckout
+  };
+}
+
 function inferFromPath(projectRoot, roots) {
   const root = roots.find((r) => projectRoot.startsWith(r));
   const relative = root ? path.relative(root, projectRoot) : path.basename(projectRoot);
@@ -190,19 +231,23 @@ async function scanLocalRepos({ roots, maxDepth = 6, languageCensus = true } = {
 
   for (const root of searchRoots) {
     for (const repoDir of walkForRepos(root, maxDepth)) {
-      const { projectRoot, worktreeLayout } = resolveProjectRoot(repoDir);
+      const { projectRoot, worktreeLayout, primaryCheckout } = await resolveScannedProject(repoDir);
       const existing = byProject.get(projectRoot);
       if (existing) {
         existing.checkoutPaths.add(repoDir);
-        // Prefer `master`/`main` as the representative checkout.
+        existing.worktreeLayout = existing.worktreeLayout || worktreeLayout;
+        if (!existing.primaryCheckout && primaryCheckout) existing.primaryCheckout = primaryCheckout;
         const base = path.basename(repoDir).toLowerCase();
-        if (base === 'master' || base === 'main') existing.repoDir = repoDir;
+        const isPrimaryCheckout = existing.primaryCheckout
+          && comparablePath(repoDir) === comparablePath(existing.primaryCheckout);
+        if (isPrimaryCheckout || base === 'master' || base === 'main') existing.repoDir = repoDir;
         continue;
       }
       byProject.set(projectRoot, {
         projectRoot,
         repoDir,
         worktreeLayout,
+        primaryCheckout,
         searchRoot: root,
         checkoutPaths: new Set([repoDir])
       });
