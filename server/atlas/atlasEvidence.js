@@ -183,8 +183,7 @@ function analysisKey(entry, options = {}) {
   const paths = [entry?.localPath, ...(Array.isArray(entry?.localPaths) ? entry.localPaths : [])]
     .map((value) => String(value || '').trim())
     .filter(Boolean)
-    .map((value) => path.resolve(value))
-    .sort();
+    .map((value) => path.resolve(value));
   const highlights = (Array.isArray(entry?.highlights) ? entry.highlights : []).map((highlight) => ({
     topic: String(highlight?.topic || ''),
     quality: Number.isFinite(Number(highlight?.quality)) ? Number(highlight.quality) : null,
