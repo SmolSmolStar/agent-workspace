@@ -12,7 +12,7 @@ const REDACTABLE_FIELDS = ['summary', 'notes', 'paths', 'highlights', 'avoid', '
 
 // Never leave this machine in a compiled bundle: absolute paths expose the
 // local user/folder layout and say nothing useful to anyone else.
-const LOCAL_ONLY_FIELDS = ['localPath', 'cloned', 'worktreeLayout', 'lastScannedAt'];
+const LOCAL_ONLY_FIELDS = ['localPath', 'localPaths', 'rootCommits', 'cloned', 'worktreeLayout', 'lastScannedAt'];
 
 const TOPICS_CONFIG_PATH = path.join(__dirname, '..', '..', 'config', 'repo-atlas-topics.json');
 
@@ -93,6 +93,13 @@ function slugList(value) {
     if (slug && !out.includes(slug)) out.push(slug);
   }
   return out;
+}
+
+function commitList(value) {
+  return [...new Set((Array.isArray(value) ? value : [])
+    .map((item) => String(item || '').trim().toLowerCase())
+    .filter((item) => /^[a-f0-9]{40,64}$/.test(item)))]
+    .sort();
 }
 
 function qualityScore(value) {
@@ -201,6 +208,8 @@ function normalizeEntry(raw = {}, { strict = false } = {}) {
   if (strict || has('groupOverrides')) entry.groupOverrides = normalizeGroupOverrides(raw?.groupOverrides);
 
   if (strict || has('localPath')) entry.localPath = String(raw?.localPath || '').trim() || null;
+  if (strict || has('localPaths')) entry.localPaths = stringList(raw?.localPaths);
+  if (strict || has('rootCommits')) entry.rootCommits = commitList(raw?.rootCommits);
   if (strict || has('cloned')) entry.cloned = raw?.cloned === true;
   if (strict || has('remoteUrl')) entry.remoteUrl = String(raw?.remoteUrl || '').trim();
   if (strict || has('isFork')) entry.isFork = raw?.isFork === true;

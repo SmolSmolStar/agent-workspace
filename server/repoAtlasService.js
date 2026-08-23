@@ -4,6 +4,8 @@ const path = require('path');
 const schema = require('./atlas/atlasSchema');
 const store = require('./atlas/atlasStore');
 const discovery = require('./atlas/atlasDiscovery');
+const identity = require('./atlas/atlasIdentity');
+const registryIdentity = require('./atlas/atlasRegistryIdentity');
 const query = require('./atlas/atlasQuery');
 const compiler = require('./atlas/atlasCompiler');
 const sync = require('./atlas/atlasSync');
@@ -96,7 +98,9 @@ class RepoAtlasService {
           foreign: true,
           sharedBy: bundle.name,
           cloned: false,
-          localPath: null
+          localPath: null,
+          localPaths: [],
+          rootCommits: []
         };
         byId.set(entry.id, slot);
       }
@@ -110,18 +114,26 @@ class RepoAtlasService {
     }
 
     for (const entry of discovered) {
-      if (!entry?.id || !entry.localPath) continue;
-      const manifest = store.loadManifest(entry.localPath);
-      if (manifest) byId.get(entry.id).manifest = manifest;
+      if (!entry?.id) continue;
+      for (const localPath of identity.localPathsFor(entry)) {
+        const manifest = store.loadManifest(localPath);
+        if (!manifest) continue;
+        byId.get(entry.id).manifest = manifest;
+        break;
+      }
     }
 
-    for (const [id, entry] of Object.entries(registry.entries || {})) {
-      const slot = byId.get(id) || {};
-      slot.registry = { ...entry, __source: 'registry' };
-      byId.set(id, slot);
-    }
+    const registryResolution = registryIdentity.reconcileRegistryLayers(
+      byId,
+      discovered,
+      registry.entries
+    );
+    const identityWarnings = [
+      ...identity.identityWarnings(discovered),
+      ...registryResolution.identityWarnings
+    ];
 
-    return { byId, registry, discoveryMeta: cached };
+    return { byId, registry, discoveryMeta: cached, ...registryResolution, identityWarnings };
   }
 
   getEntries({ force = false } = {}) {
@@ -189,8 +201,26 @@ class RepoAtlasService {
   }
 
   getEntry(id, options = {}) {
-    const key = schema.kebab(id);
+    const key = this.resolveEntryId(id, options);
     return this.getEntries(options).find((entry) => entry.id === key) || null;
+  }
+
+  resolveEntryId(value, options = {}) {
+    const raw = String(value || '').trim();
+    const key = schema.kebab(raw);
+    if (!key) return '';
+
+    const slug = identity.repositorySlug({ repo: raw, remoteUrl: raw }).toLowerCase();
+    const existing = this.getEntries(options).find((entry) => (
+      entry.id === key
+      || (slug && String(entry.repo || '').toLowerCase() === slug)
+    ));
+    if (existing) return existing.id;
+    return this.loadLayers().registryTargets.get(key) || key;
+  }
+
+  registryIdFor(entryId) {
+    return this.loadLayers().registryAliases.get(entryId) || entryId;
   }
 
   search(filters = {}) {
@@ -223,8 +253,12 @@ class RepoAtlasService {
     if (!normalizedTopic) throw new Error('addHighlight requires a topic');
 
     const registry = store.loadRegistry();
-    const key = schema.kebab(id);
-    const existing = registry.entries[key] || { id: key };
+    const key = this.registryIdFor(this.resolveEntryId(id));
+    const existing = {
+      id: key,
+      ...registryIdentity.portableRegistryIdentity(this.getEntry(id)),
+      ...(registry.entries[key] || {})
+    };
     const highlights = (existing.highlights || []).filter((h) => h.topic !== normalizedTopic);
     highlights.push({
       topic: normalizedTopic,
@@ -243,8 +277,12 @@ class RepoAtlasService {
     if (!normalizedTopic) throw new Error('addAvoid requires a topic');
 
     const registry = store.loadRegistry();
-    const key = schema.kebab(id);
-    const existing = registry.entries[key] || { id: key };
+    const key = this.registryIdFor(this.resolveEntryId(id));
+    const existing = {
+      id: key,
+      ...registryIdentity.portableRegistryIdentity(this.getEntry(id)),
+      ...(registry.entries[key] || {})
+    };
     const avoid = (existing.avoid || []).filter((a) => a.topic !== normalizedTopic);
     avoid.push({ topic: normalizedTopic, reason: String(reason || '') });
 
@@ -254,13 +292,16 @@ class RepoAtlasService {
   }
 
   setEntry(id, patch = {}) {
-    const saved = store.upsertRegistryEntry(id, patch);
+    const resolved = this.resolveEntryId(id);
+    const seed = registryIdentity.portableRegistryIdentity(this.getEntry(resolved));
+    const saved = store.upsertRegistryEntry(this.registryIdFor(resolved), { ...seed, ...patch });
     this.invalidate();
     return saved;
   }
 
   removeEntry(id) {
-    const removed = store.removeRegistryEntry(id);
+    const resolved = this.resolveEntryId(id);
+    const removed = store.removeRegistryEntry(this.registryIdFor(resolved));
     this.invalidate();
     return removed;
   }
@@ -393,18 +434,20 @@ class RepoAtlasService {
   validate() {
     const entries = this.getEntries();
     const reports = entries.map((entry) => schema.validateEntry(entry));
+    const { identityWarnings } = this.loadLayers();
     return {
       entryCount: entries.length,
       curatedCount: entries.filter((e) => (e.sources || []).some((s) => s === 'registry' || s === 'manifest')).length,
       withHighlights: entries.filter((e) => (e.highlights || []).length).length,
       errors: reports.filter((r) => !r.ok),
-      warnings: reports.filter((r) => r.ok && r.warnings.length)
+      warnings: reports.filter((r) => r.ok && r.warnings.length),
+      identityWarnings
     };
   }
 
   initManifest(projectRoot, seed = {}) {
     const resolved = path.resolve(projectRoot);
-    const existing = this.getEntries().find((entry) => entry.localPath === resolved);
+    const existing = this.getEntries().find((entry) => identity.localPathsFor(entry).includes(resolved));
     const draft = schema.normalizeEntry({
       id: seed.id || existing?.id || path.basename(resolved),
       name: seed.name || existing?.name || path.basename(resolved),
@@ -427,6 +470,7 @@ class RepoAtlasService {
   getStatus() {
     const meta = store.loadDiscoveryCache({ maxAgeMs: store.DISCOVERY_CACHE_TTL_MS });
     const entries = this.getEntries();
+    const { identityWarnings } = this.loadLayers();
     return {
       atlasDir: store.atlasDir(),
       registryDir: store.registryDir(),
@@ -435,6 +479,7 @@ class RepoAtlasService {
       clonedCount: entries.filter((e) => e.cloned).length,
       foreignCount: entries.filter((e) => e.foreign).length,
       curatedCount: Object.keys(store.loadEntries()).length,
+      identityWarningCount: identityWarnings.length,
       highlightCount: entries.reduce((sum, e) => sum + (e.highlights || []).length, 0),
       audiences: this.listAudiences().map((a) => a.id),
       subscriptions: this.listSubscriptions(),

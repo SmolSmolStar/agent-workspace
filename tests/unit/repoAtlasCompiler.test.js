@@ -36,8 +36,14 @@ describe('atlasCompiler', () => {
   });
 
   test('local-only fields are always stripped from shared entries', () => {
-    const { entry: shared } = redactForAudience(entry({ visibility: 'public' }), 'core-team');
+    const { entry: shared } = redactForAudience(entry({
+      visibility: 'public',
+      localPaths: ['/home/someone/GitHub/sample', '/home/someone/GitHub/sample/work1'],
+      rootCommits: ['a'.repeat(40)]
+    }), 'core-team');
     expect(shared.localPath).toBeUndefined();
+    expect(shared.localPaths).toBeUndefined();
+    expect(shared.rootCommits).toBeUndefined();
     expect(shared.cloned).toBeUndefined();
     expect(shared.groupOverrides).toBeUndefined();
     expect(shared.redact).toBeUndefined();
