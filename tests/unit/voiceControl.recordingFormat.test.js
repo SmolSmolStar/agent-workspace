@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const loadVoiceControlClass = ({ fetchImpl, BlobImpl, FormDataImpl, MediaRecorderImpl } = {}) => {
+const loadVoiceControlClass = ({ fetchImpl, BlobImpl, FormDataImpl, MediaRecorderImpl, navigatorImpl } = {}) => {
   const source = fs.readFileSync(path.join(__dirname, '..', '..', 'client', 'voice-control.js'), 'utf8');
   const sandbox = {
     window: {},
@@ -11,6 +11,7 @@ const loadVoiceControlClass = ({ fetchImpl, BlobImpl, FormDataImpl, MediaRecorde
     Blob: BlobImpl,
     FormData: FormDataImpl,
     MediaRecorder: MediaRecorderImpl,
+    navigator: navigatorImpl,
     setTimeout: () => 0
   };
   vm.createContext(sandbox);
@@ -30,6 +31,45 @@ describe('VoiceControl Whisper recording format', () => {
     expect(control.getSupportedRecordingMimeType()).toBe('audio/mp4');
   });
 
+  test('uses the recorder default when neither advertised type is supported', async () => {
+    const stream = { getTracks: () => [] };
+    let constructorOptions = 'not-called';
+    let recorder;
+
+    class FakeMediaRecorder {
+      static isTypeSupported() {
+        return false;
+      }
+
+      constructor(receivedStream, options) {
+        expect(receivedStream).toBe(stream);
+        constructorOptions = options;
+        this.mimeType = 'video/mp4';
+        this.start = jest.fn();
+        recorder = this;
+      }
+    }
+
+    const VoiceControl = loadVoiceControlClass({
+      MediaRecorderImpl: FakeMediaRecorder,
+      navigatorImpl: {
+        mediaDevices: {
+          getUserMedia: async () => stream
+        }
+      }
+    });
+    const control = Object.create(VoiceControl.prototype);
+    control.button = { classList: { add: jest.fn() } };
+    control.transcriptEl = { textContent: 'old transcript' };
+    control.setStatus = jest.fn();
+
+    await control.startWhisperRecording();
+
+    expect(constructorOptions).toBeUndefined();
+    expect(control.recordingMimeType).toBe('video/mp4');
+    expect(recorder.start).toHaveBeenCalledTimes(1);
+  });
+
   test('keeps WebM upload behavior unchanged', () => {
     const VoiceControl = loadVoiceControlClass();
     const control = Object.create(VoiceControl.prototype);
@@ -39,6 +79,19 @@ describe('VoiceControl Whisper recording format', () => {
       mimeType: 'audio/webm',
       extension: 'webm'
     });
+  });
+
+  test.each([
+    ['audio/mp4;codecs=mp4a.40.2', 'mp4'],
+    ['video/mp4', 'mp4'],
+    ['video/webm;codecs=opus', 'webm'],
+    ['audio/aac', 'webm']
+  ])('maps recorder MIME %s to its upload extension', (mimeType, extension) => {
+    const VoiceControl = loadVoiceControlClass();
+    const control = Object.create(VoiceControl.prototype);
+    control.mediaRecorder = { mimeType };
+
+    expect(control.getRecordingUploadFormat()).toEqual({ mimeType, extension });
   });
 
   test('uploads MP4 recorder output as MP4', async () => {

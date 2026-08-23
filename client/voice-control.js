@@ -389,6 +389,8 @@ class VoiceControl {
       'audio/mp4': 'mp4',
       'audio/m4a': 'm4a',
       'audio/x-m4a': 'm4a',
+      'video/mp4': 'mp4',
+      'video/webm': 'webm',
       'audio/ogg': 'ogg',
       'audio/wav': 'wav',
       'audio/x-wav': 'wav',
