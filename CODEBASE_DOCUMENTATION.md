@@ -300,6 +300,8 @@ client/greenfield-framework-modal.js - Framework creation modal for the greenfie
 └─ Full-screen wizard UI for project scaffolding + workspace creation
 
 client/projects-board.js           - Projects kanban board modal (Archive/Maybe One Day/Backlog/Active/Ship Next/Done; drag/drop + re-order; collapsible columns; live tag; hide forks; "Edited" recency radio filter All/30d/7d/1d from cached GitHub `pushedAt` — no extra API calls, local-only repos stay visible; card push-age hints; persists via `/api/projects/board`)
+client/atlas-portfolio.js          - Filterable Repo Atlas evidence report modal with local/remote scope, bounded repository counts, code/history metrics, practice signals, and escaped representative paths
+client/atlas-portfolio-renderer.js - Pure escaped HTML renderer for Repo Atlas portfolio summaries, repository metrics, practice signals, and representative paths
 
 client/workspace-tab-manager.js    - Multi-workspace tab management (NEW)
 ├─ Features: Browser-like tabs for multiple workspaces
@@ -314,6 +316,7 @@ client/styles/tabs.css             - Tab bar styling
 └─ Responsive: Mobile and desktop layouts
 
 client/styles/projects-board.css   - Projects Board modal styling
+client/styles/atlas-portfolio.css  - High-contrast responsive layout for the Repo Atlas evidence report
 
 client/usage-limits-widget.js      - Header chip (right of Ports) showing Claude/Codex/Grok plan usage + reset countdowns from `/api/usage/limits`
 ├─ Generic Claude buckets: renders any extra rate-limit bucket Claude Code reports (e.g. `seven_day_fable` → "Fable 7d") via usageLimitsService `extraBuckets`; tooltip shows the live model name

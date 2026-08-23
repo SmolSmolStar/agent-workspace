@@ -110,6 +110,7 @@ class ProjectsBoardUI {
               </label>
             `).join('')}
           </div>
+          <button type="button" class="projects-board-portfolio-button" id="projects-board-portfolio">Repository evidence</button>
           <button type="button" class="button-secondary" id="projects-board-refresh" title="Refresh repos + board">↻ Refresh</button>
         </div>
         <div class="projects-board-meta" id="projects-board-meta"></div>
@@ -136,6 +137,12 @@ class ProjectsBoardUI {
     modal.querySelector('#projects-board-refresh')?.addEventListener('click', async (e) => {
       e.preventDefault();
       await this.refresh({ force: true });
+    });
+
+    modal.querySelector('#projects-board-portfolio')?.addEventListener('click', async (e) => {
+      e.preventDefault();
+      this.hide();
+      await this.orchestrator?.atlasPortfolioUI?.show?.();
     });
 
     const filterEl = modal.querySelector('#projects-board-filter');
