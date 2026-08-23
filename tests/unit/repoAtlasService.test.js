@@ -358,6 +358,44 @@ describe('Repo Atlas discovery identity', () => {
     expect(forward[0].localPaths).toEqual([primaryPath, masterPath, work1Path, featurePath]);
   });
 
+  test('GitHub descriptions outrank summaries derived from a local checkout', () => {
+    const [entry] = discovery.mergeDiscovery([{
+      id: 'agent-workspace',
+      name: 'agent-workspace',
+      repo: 'web3dev1337/agent-workspace',
+      summary: 'Local README summary',
+      localPath: '/repos/agent-workspace',
+      cloned: true
+    }], [{
+      id: 'agent-workspace',
+      name: 'agent-workspace',
+      repo: 'web3dev1337/agent-workspace',
+      summary: 'GitHub repository description',
+      cloned: false
+    }]);
+
+    expect(entry.summary).toBe('GitHub repository description');
+  });
+
+  test('local checkout summaries fill a missing GitHub description', () => {
+    const [entry] = discovery.mergeDiscovery([{
+      id: 'agent-workspace',
+      name: 'agent-workspace',
+      repo: 'web3dev1337/agent-workspace',
+      summary: 'Local README summary',
+      localPath: '/repos/agent-workspace',
+      cloned: true
+    }], [{
+      id: 'agent-workspace',
+      name: 'agent-workspace',
+      repo: 'web3dev1337/agent-workspace',
+      summary: '',
+      cloned: false
+    }]);
+
+    expect(entry.summary).toBe('Local README summary');
+  });
+
   test('same-named repositories under different owners remain distinct', () => {
     const entries = discovery.mergeDiscovery([
       { id: 'shared', name: 'shared', repo: 'alice/shared', localPath: '/repos/alice/shared' },
@@ -502,15 +540,155 @@ describe('Repo Atlas discovery identity', () => {
       .toMatch(/^alice-shared-[a-f0-9]{8}$/);
   });
 
+  test('keeps independent repositories named master and main separate', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-independent-siblings-'));
+    const projectRoot = path.join(tmpDir, 'sample');
+    const masterDir = path.join(projectRoot, 'master');
+    const mainDir = path.join(projectRoot, 'main');
+    const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+    const initialize = (repoPath, remote, sourceName) => {
+      fs.mkdirSync(repoPath, { recursive: true });
+      git(repoPath, ['init', '--initial-branch=main']);
+      git(repoPath, ['remote', 'add', 'origin', remote]);
+      fs.writeFileSync(path.join(repoPath, sourceName), 'return true;\n');
+      git(repoPath, ['add', sourceName]);
+      git(repoPath, [
+        '-c', 'user.name=Atlas Test',
+        '-c', 'user.email=atlas-test@localhost',
+        'commit', '-m', 'initial'
+      ]);
+    };
+
+    try {
+      initialize(masterDir, 'https://github.com/alice/fixture.git', 'index.js');
+      initialize(mainDir, 'https://github.com/bob/fixture.git', 'init.lua');
+
+      const entries = await discovery.scanLocalRepos({
+        roots: [tmpDir],
+        maxDepth: 3,
+        languageCensus: true
+      });
+
+      expect(entries).toHaveLength(2);
+      expect(new Set(entries.map((entry) => entry.repo)))
+        .toEqual(new Set(['alice/fixture', 'bob/fixture']));
+      expect(entries.find((entry) => entry.repo === 'alice/fixture')?.localPaths)
+        .toEqual([projectRoot, masterDir]);
+      expect(entries.find((entry) => entry.repo === 'bob/fixture')?.localPaths)
+        .toEqual([projectRoot, mainDir]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps remote-less independent master and main repositories separate after merging', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-independent-local-siblings-'));
+    const projectRoot = path.join(tmpDir, 'sample');
+    const masterDir = path.join(projectRoot, 'master');
+    const mainDir = path.join(projectRoot, 'main');
+    const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+    const initialize = (repoPath, sourceName) => {
+      fs.mkdirSync(repoPath, { recursive: true });
+      git(repoPath, ['init', '--initial-branch=main']);
+      fs.writeFileSync(path.join(repoPath, sourceName), 'return true;\n');
+      git(repoPath, ['add', sourceName]);
+      git(repoPath, [
+        '-c', 'user.name=Atlas Test',
+        '-c', 'user.email=atlas-test@localhost',
+        'commit', '-m', 'initial'
+      ]);
+    };
+
+    try {
+      initialize(masterDir, 'index.js');
+      initialize(mainDir, 'init.lua');
+
+      const scanned = await discovery.scanLocalRepos({
+        roots: [tmpDir],
+        maxDepth: 3,
+        languageCensus: false
+      });
+      const entries = discovery.mergeDiscovery(scanned, []);
+
+      expect(scanned).toHaveLength(2);
+      expect(entries).toHaveLength(2);
+      expect(new Set(entries.flatMap((entry) => entry.rootCommits))).toHaveProperty('size', 2);
+      expect(new Set(entries.map((entry) => entry.id))).toHaveProperty('size', 2);
+      expect(discovery.identityWarnings(entries)).toEqual([]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('still merges remote-less sibling clones with the same repository root', () => {
+    const projectRoot = path.resolve('/repos/sample');
+    const masterDir = path.join(projectRoot, 'master');
+    const workDir = path.join(projectRoot, 'work1');
+    const rootCommit = 'a'.repeat(40);
+    const entries = discovery.mergeDiscovery([{
+      id: 'sample',
+      name: 'sample',
+      localPath: projectRoot,
+      localPaths: [projectRoot, masterDir],
+      rootCommits: [rootCommit],
+      worktreeLayout: true
+    }, {
+      id: 'sample',
+      name: 'sample',
+      localPath: projectRoot,
+      localPaths: [projectRoot, workDir],
+      rootCommits: [rootCommit],
+      worktreeLayout: true
+    }], []);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0].localPaths).toEqual([projectRoot, masterDir, workDir]);
+    expect(entries[0].rootCommits).toEqual([rootCommit]);
+  });
+
+  test('keeps remote-less sibling repositories without usable history separate', () => {
+    const projectRoot = path.resolve('/repos/sample');
+    const masterDir = path.join(projectRoot, 'master');
+    const mainDir = path.join(projectRoot, 'main');
+    const entries = discovery.mergeDiscovery([{
+      id: 'sample',
+      name: 'sample',
+      localPath: projectRoot,
+      localPaths: [projectRoot, masterDir],
+      rootCommits: []
+    }, {
+      id: 'sample',
+      name: 'sample',
+      localPath: projectRoot,
+      localPaths: [projectRoot, mainDir],
+      rootCommits: []
+    }], []);
+
+    expect(entries).toHaveLength(2);
+    expect(new Set(entries.map((entry) => entry.id))).toHaveProperty('size', 2);
+  });
+
   test('local scanning retains sibling checkout paths under one project root', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-discovery-'));
     const projectRoot = path.join(tmpDir, 'sample');
     const masterDir = path.join(projectRoot, 'master');
     const workDir = path.join(projectRoot, 'work1');
-    fs.mkdirSync(path.join(masterDir, '.git'), { recursive: true });
-    fs.mkdirSync(path.join(workDir, '.git'), { recursive: true });
+    const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
 
     try {
+      fs.mkdirSync(masterDir, { recursive: true });
+      git(masterDir, ['init', '--initial-branch=master']);
+      fs.writeFileSync(path.join(masterDir, 'README.md'), 'sample\n');
+      git(masterDir, ['add', 'README.md']);
+      git(masterDir, [
+        '-c', 'user.name=Atlas Test',
+        '-c', 'user.email=atlas-test@localhost',
+        'commit', '-m', 'initial'
+      ]);
+      git(masterDir, ['worktree', 'add', '-b', 'work1', workDir]);
+
       const entries = await discovery.scanLocalRepos({
         roots: [tmpDir],
         maxDepth: 3,
@@ -520,6 +698,109 @@ describe('Repo Atlas discovery identity', () => {
       expect(entries).toHaveLength(1);
       expect(entries[0].localPath).toBe(projectRoot);
       expect(entries[0].localPaths).toEqual([projectRoot, masterDir, workDir]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('named linked worktrees share their common local-only repository root', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-linked-worktree-'));
+    const projectRoot = path.join(tmpDir, 'sample');
+    const masterDir = path.join(projectRoot, 'master');
+    const featureDir = path.join(projectRoot, 'feature-preview');
+    const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+    try {
+      fs.mkdirSync(masterDir, { recursive: true });
+      git(masterDir, ['init', '--initial-branch=master']);
+      fs.writeFileSync(path.join(masterDir, 'README.md'), 'sample\n');
+      git(masterDir, ['add', 'README.md']);
+      git(masterDir, [
+        '-c', 'user.name=Atlas Test',
+        '-c', 'user.email=atlas-test@localhost',
+        'commit', '-m', 'initial'
+      ]);
+      git(masterDir, ['worktree', 'add', '-b', 'feature-preview', featureDir]);
+
+      const entries = await discovery.scanLocalRepos({
+        roots: [tmpDir],
+        maxDepth: 3,
+        languageCensus: false
+      });
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0].id).toBe('sample');
+      expect(entries[0].localPath).toBe(projectRoot);
+      expect(entries[0].localPaths).toEqual([projectRoot, featureDir, masterDir]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('uses an arbitrarily named primary checkout for repository facts', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-primary-checkout-'));
+    const projectRoot = path.join(tmpDir, 'sample');
+    const primaryDir = path.join(projectRoot, 'trunk');
+    const featureDir = path.join(projectRoot, 'feature-preview');
+    const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+    try {
+      fs.mkdirSync(primaryDir, { recursive: true });
+      git(primaryDir, ['init', '--initial-branch=trunk']);
+      fs.writeFileSync(path.join(primaryDir, 'index.js'), 'module.exports = true;\n');
+      git(primaryDir, ['add', 'index.js']);
+      git(primaryDir, [
+        '-c', 'user.name=Atlas Test',
+        '-c', 'user.email=atlas-test@localhost',
+        'commit', '-m', 'initial'
+      ]);
+      git(primaryDir, ['worktree', 'add', '-b', 'feature-preview', featureDir]);
+      fs.writeFileSync(path.join(featureDir, 'feature-only.lua'), 'return true\n');
+
+      const entries = await discovery.scanLocalRepos({
+        roots: [featureDir, tmpDir],
+        maxDepth: 4,
+        languageCensus: true
+      });
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0].languages).toEqual(['JavaScript']);
+      expect(new Set(entries[0].localPaths)).toEqual(new Set([featureDir, primaryDir]));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('local scanning derives a summary from the representative checkout', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-summary-scan-'));
+    const repoDir = path.join(tmpDir, 'summary-fixture');
+    const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+    try {
+      fs.mkdirSync(repoDir, { recursive: true });
+      git(repoDir, ['init', '--initial-branch=master']);
+      fs.writeFileSync(path.join(repoDir, 'README.md'), [
+        '# Summary Fixture',
+        '',
+        'Describes local repositories from bounded checkout metadata.'
+      ].join('\n'));
+      git(repoDir, ['add', 'README.md']);
+      git(repoDir, [
+        '-c', 'user.name=Atlas Test',
+        '-c', 'user.email=atlas-test@localhost',
+        'commit', '-m', 'initial'
+      ]);
+
+      const entries = await discovery.scanLocalRepos({
+        roots: [tmpDir],
+        maxDepth: 2,
+        languageCensus: false
+      });
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0].summary).toBe(
+        'Describes local repositories from bounded checkout metadata.'
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
