@@ -94,12 +94,26 @@ function comparablePath(candidate) {
 }
 
 async function resolveScannedProject(repoDir) {
-  const fallback = { ...resolveProjectRoot(repoDir), primaryCheckout: null };
+  const fallback = {
+    ...resolveProjectRoot(repoDir),
+    primaryCheckout: null,
+    commonDirectory: null
+  };
+  let gitMarker = null;
   try {
-    if (!fs.lstatSync(path.join(repoDir, '.git')).isFile()) return fallback;
+    gitMarker = fs.lstatSync(path.join(repoDir, '.git'));
   } catch {
     return fallback;
   }
+  if (gitMarker.isDirectory()) {
+    return {
+      ...fallback,
+      primaryCheckout: path.resolve(repoDir),
+      commonDirectory: comparablePath(path.join(repoDir, '.git'))
+    };
+  }
+  if (!gitMarker.isFile()) return fallback;
+
   const commonDir = await execFileAsync('git', ['-C', repoDir, 'rev-parse', '--git-common-dir']);
   if (!commonDir) return fallback;
 
@@ -120,7 +134,8 @@ async function resolveScannedProject(repoDir) {
   return {
     ...resolved,
     worktreeLayout: resolved.worktreeLayout || !isPrimaryCheckout,
-    primaryCheckout
+    primaryCheckout,
+    commonDirectory: comparablePath(resolvedCommonDir)
   };
 }
 
@@ -231,8 +246,14 @@ async function scanLocalRepos({ roots, maxDepth = 6, languageCensus = true } = {
 
   for (const root of searchRoots) {
     for (const repoDir of walkForRepos(root, maxDepth)) {
-      const { projectRoot, worktreeLayout, primaryCheckout } = await resolveScannedProject(repoDir);
-      const existing = byProject.get(projectRoot);
+      const {
+        projectRoot,
+        worktreeLayout,
+        primaryCheckout,
+        commonDirectory
+      } = await resolveScannedProject(repoDir);
+      const projectKey = commonDirectory || comparablePath(projectRoot);
+      const existing = byProject.get(projectKey);
       if (existing) {
         existing.checkoutPaths.add(repoDir);
         existing.worktreeLayout = existing.worktreeLayout || worktreeLayout;
@@ -243,7 +264,7 @@ async function scanLocalRepos({ roots, maxDepth = 6, languageCensus = true } = {
         if (isPrimaryCheckout || base === 'master' || base === 'main') existing.repoDir = repoDir;
         continue;
       }
-      byProject.set(projectRoot, {
+      byProject.set(projectKey, {
         projectRoot,
         repoDir,
         worktreeLayout,

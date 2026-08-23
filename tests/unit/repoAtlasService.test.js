@@ -502,15 +502,67 @@ describe('Repo Atlas discovery identity', () => {
       .toMatch(/^alice-shared-[a-f0-9]{8}$/);
   });
 
+  test('keeps independent repositories named master and main separate', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-independent-siblings-'));
+    const projectRoot = path.join(tmpDir, 'sample');
+    const masterDir = path.join(projectRoot, 'master');
+    const mainDir = path.join(projectRoot, 'main');
+    const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+    const initialize = (repoPath, remote, sourceName) => {
+      fs.mkdirSync(repoPath, { recursive: true });
+      git(repoPath, ['init', '--initial-branch=main']);
+      git(repoPath, ['remote', 'add', 'origin', remote]);
+      fs.writeFileSync(path.join(repoPath, sourceName), 'return true;\n');
+      git(repoPath, ['add', sourceName]);
+      git(repoPath, [
+        '-c', 'user.name=Atlas Test',
+        '-c', 'user.email=atlas-test@localhost',
+        'commit', '-m', 'initial'
+      ]);
+    };
+
+    try {
+      initialize(masterDir, 'https://github.com/alice/fixture.git', 'index.js');
+      initialize(mainDir, 'https://github.com/bob/fixture.git', 'init.lua');
+
+      const entries = await discovery.scanLocalRepos({
+        roots: [tmpDir],
+        maxDepth: 3,
+        languageCensus: true
+      });
+
+      expect(entries).toHaveLength(2);
+      expect(new Set(entries.map((entry) => entry.repo)))
+        .toEqual(new Set(['alice/fixture', 'bob/fixture']));
+      expect(entries.find((entry) => entry.repo === 'alice/fixture')?.localPaths)
+        .toEqual([projectRoot, masterDir]);
+      expect(entries.find((entry) => entry.repo === 'bob/fixture')?.localPaths)
+        .toEqual([projectRoot, mainDir]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('local scanning retains sibling checkout paths under one project root', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-discovery-'));
     const projectRoot = path.join(tmpDir, 'sample');
     const masterDir = path.join(projectRoot, 'master');
     const workDir = path.join(projectRoot, 'work1');
-    fs.mkdirSync(path.join(masterDir, '.git'), { recursive: true });
-    fs.mkdirSync(path.join(workDir, '.git'), { recursive: true });
+    const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
 
     try {
+      fs.mkdirSync(masterDir, { recursive: true });
+      git(masterDir, ['init', '--initial-branch=master']);
+      fs.writeFileSync(path.join(masterDir, 'README.md'), 'sample\n');
+      git(masterDir, ['add', 'README.md']);
+      git(masterDir, [
+        '-c', 'user.name=Atlas Test',
+        '-c', 'user.email=atlas-test@localhost',
+        'commit', '-m', 'initial'
+      ]);
+      git(masterDir, ['worktree', 'add', '-b', 'work1', workDir]);
+
       const entries = await discovery.scanLocalRepos({
         roots: [tmpDir],
         maxDepth: 3,
