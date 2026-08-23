@@ -34,6 +34,7 @@ describe('PagerService', () => {
         'work1-claude': sessionA,
         'work2-claude': sessionB
       }[id] || null)),
+      getNewTurnAdmissionDecision: jest.fn(() => ({ allowed: true })),
       writeToSession: jest.fn((id, data) => {
         writes.push({ id, data });
         return id === 'work1-claude' || id === 'work2-claude';
@@ -144,5 +145,32 @@ describe('PagerService', () => {
     expect(job.sessionIds).toEqual(['work1-claude']);
     expect(job.filteredSessionIds).toContain('work2-claude');
     expect(writes.every((row) => row.id === 'work1-claude')).toBe(true);
+  });
+
+  test('stops assigning pager turns after an existing Codex session enters drain mode', async () => {
+    const { sessionManager, taskRecordService, userSettingsService, writes } = buildSessionManager();
+    const service = new PagerService({ logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() } });
+    service.init({ sessionManager, taskRecordService, userSettingsService });
+
+    const started = await service.startJob({
+      sessionId: 'work1-claude',
+      intervalSeconds: 3600,
+      enterDelayMs: 1,
+      maxPings: 10
+    });
+    expect(writes).toHaveLength(2);
+
+    sessionManager.getNewTurnAdmissionDecision.mockReturnValue({
+      allowed: false,
+      code: 'codex-usage-draining',
+      reason: 'window-rollover'
+    });
+    await service.tickJob(started.id);
+
+    expect(writes).toHaveLength(2);
+    expect(service.jobs.get(started.id)).toMatchObject({
+      status: 'stopped',
+      stopReason: 'codex-usage-admission-blocked'
+    });
   });
 });

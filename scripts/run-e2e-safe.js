@@ -36,6 +36,8 @@ try {
     env: {
       ...process.env,
       ORCHESTRATOR_TEST_PORT: port,
+      ORCHESTRATOR_CODEX_USAGE_GUARD_ENABLED: 'true',
+      CODEX_BIN: path.join(e2eHome, 'missing-codex'),
       HOME: e2eHome,
       USERPROFILE: e2eHome,
       AGENT_WORKSPACE_DIR: dataDir,

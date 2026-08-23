@@ -106,6 +106,7 @@ const { WorktreeHelper } = require('./worktreeHelper');
 const AgentManager = require('./agentManager');
 const { PortRegistry } = require('./portRegistry');
 const { UsageLimitsService } = require('./usageLimitsService');
+const { CodexUsageGuardService } = require('./codexUsageGuardService');
 const { SystemStatsService } = require('./systemStatsService');
 const { GreenfieldService } = require('./greenfieldService');
 const { ProjectTypeService } = require('./projectTypeService');
@@ -353,6 +354,16 @@ const gitHelper = new GitHelper();
 const notificationService = new NotificationService(io);
 const worktreeHelper = new WorktreeHelper();
 const portRegistry = PortRegistry.getInstance();
+const usageLimitsService = UsageLimitsService.getInstance();
+const codexUsageGuardService = CodexUsageGuardService.getInstance({
+  usageLimitsService,
+  logger
+});
+sessionManager.setAgentAdmissionController(codexUsageGuardService);
+codexUsageGuardService.on('state-changed', (status) => {
+  io.emit('codex-usage-guard', status);
+});
+codexUsageGuardService.start();
 const greenfieldService = GreenfieldService.getInstance();
 const projectTypeService = ProjectTypeService.getInstance({ logger });
 greenfieldService.setSessionManager(sessionManager);
@@ -573,6 +584,7 @@ io.on('connection', (socket) => {
     frameworks: workspaceManager.discoveredWorkspaceTypes?.frameworks || {},
     cascadedConfigs: cascadedConfigs  // Pre-computed cascaded configs
   });
+  socket.emit('codex-usage-guard', codexUsageGuardService.getStatus());
 
   // Send initial session states
   socket.emit('sessions', sessionManager.getSessionStates());
@@ -4671,16 +4683,29 @@ app.post('/api/setup-actions/open-url', requirePolicyAction('write'), express.js
 
 // Port registry API endpoints
 // Plan-usage limits for the header widget (Claude 5h/7d from the status-line
-// tap file, Codex windows from the official app-server helper).
+// tap file, Codex windows from the official app-server JSON-RPC endpoint).
 app.get('/api/usage/limits', async (req, res) => {
   try {
-    const usageLimitsService = UsageLimitsService.getInstance();
     const providers = userSettingsService.getAllSettings()?.global?.ui?.usageLimitsProviders || {};
     const result = await usageLimitsService.getLimits({ refresh: req.query.refresh === '1', providers });
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+app.get('/api/usage/codex-guard', (req, res) => {
+  res.json(codexUsageGuardService.getStatus());
+});
+
+app.post('/api/usage/codex-guard/resume', requirePolicyAction('write'), (req, res) => {
+  const acknowledgedBy = String(req.body?.acknowledgedBy || 'api').trim().slice(0, 100);
+  const wasDraining = codexUsageGuardService.getStatus().mode === 'draining';
+  const status = codexUsageGuardService.resumeAdmissions({ acknowledgedBy });
+  if (wasDraining && status.mode === 'monitoring') {
+    activityFeed.track('codex.usage_guard.resumed', { acknowledgedBy });
+  }
+  res.json(status);
 });
 
 // CPU/RAM/VRAM for the header stats button. `processes=1` pulls the
@@ -8896,7 +8921,7 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 let isShuttingDown = false;
 let forcedExitTimer = null;
 
-function shutdown(signal = 'unknown') {
+async function shutdown(signal = 'unknown') {
   if (isShuttingDown) {
     logger.warn('Shutdown already in progress', { signal });
     return;
@@ -8904,6 +8929,18 @@ function shutdown(signal = 'unknown') {
 
   isShuttingDown = true;
   logger.info('Shutting down server...', { signal });
+
+  // Bound every shutdown step, including an active Codex app-server read.
+  forcedExitTimer = setTimeout(() => {
+    logger.error('Forced shutdown after timeout');
+    process.exit(1);
+  }, 10000);
+
+  try {
+    await codexUsageGuardService.stop();
+  } catch (error) {
+    logger.warn('Codex usage guard shutdown failed', { error: error.message });
+  }
   
   // Clean up sessions first
   sessionManager.cleanup();
@@ -8923,11 +8960,6 @@ function shutdown(signal = 'unknown') {
     process.exit(0);
   });
   
-  // Force shutdown after 10 seconds
-  forcedExitTimer = setTimeout(() => {
-    logger.error('Forced shutdown after timeout');
-    process.exit(1);
-  }, 10000);
 }
 
 // Handle uncaught errors

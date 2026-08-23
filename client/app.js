@@ -1551,6 +1551,37 @@ class ClaudeOrchestrator {
         this.scheduleAutoPromptFallback(sessionId, config?.agentId);
       });
 
+      this.socket.on('codex-usage-guard', (status) => {
+        const wasDraining = this.codexUsageGuardStatus?.mode === 'draining';
+        this.codexUsageGuardStatus = status || null;
+        if (status?.mode !== 'draining' || wasDraining) return;
+        const message = status.drainReason === 'exhausted'
+          ? 'Codex weekly usage is exhausted. New Codex launches are paused; active sessions continue.'
+          : 'Codex weekly usage reset. New Codex launches are paused; active sessions continue.';
+        this.showToast(message, 'warning', { force: true, durationMs: 10_000 });
+      });
+
+      this.socket.on('agent-start-blocked', ({ agentId, reason, code }) => {
+        if (String(agentId || '').toLowerCase() !== 'codex') return;
+        let message = 'Codex launch blocked because the weekly window reset and drain mode is active.';
+        if (reason === 'exhausted') {
+          message = 'Codex launch blocked because weekly usage is exhausted.';
+        } else if (code === 'codex-usage-monitor-pending') {
+          message = 'Codex launch is paused until the first usage check completes.';
+        } else if (code === 'codex-usage-monitor-unavailable' || code === 'codex-usage-monitor-error') {
+          message = 'Codex launch is paused because the usage monitor is unavailable.';
+        }
+        this.showToast(message, 'warning', { force: true, durationMs: 8_000 });
+      });
+
+      this.socket.on('agent-turn-blocked', ({ agentId, code }) => {
+        if (String(agentId || '').toLowerCase() !== 'codex') return;
+        const message = code === 'codex-usage-draining'
+          ? 'New work was not sent to Codex because drain mode is active.'
+          : 'New work was not sent to Codex because its usage check is unavailable.';
+        this.showToast(message, 'warning', { force: true, durationMs: 8_000 });
+      });
+
       this.socket.on('claude-update-required', (updateInfo) => {
         this.showClaudeUpdateRequired(updateInfo);
       });

@@ -237,7 +237,9 @@ class CommandRegistry {
         if (!session) {
           throw new Error(`Session not found: ${params.sessionId}`);
         }
-        const ok = sessionManager.writeToSession(params.sessionId, params.input);
+        const writer = sessionManager.writeNewTurnToSession?.bind(sessionManager)
+          || sessionManager.writeToSession.bind(sessionManager);
+        const ok = writer(params.sessionId, params.input, { source: 'command-registry' });
         if (!ok) throw new Error(`Failed to write to session: ${params.sessionId}`);
         return { message: `Sent to ${params.sessionId}` };
       }
@@ -1413,7 +1415,9 @@ class CommandRegistry {
         if (!session) {
           throw new Error(`Session not found: ${params.sessionId}`);
         }
-        const ok = sessionManager.writeToSession(params.sessionId, params.command + '\n');
+        const writer = sessionManager.writeNewTurnToSession?.bind(sessionManager)
+          || sessionManager.writeToSession.bind(sessionManager);
+        const ok = writer(params.sessionId, params.command + '\n', { source: 'command-registry' });
         if (!ok) throw new Error(`Failed to write to session: ${params.sessionId}`);
         return { message: `Running: ${params.command}` };
       }
@@ -1459,7 +1463,9 @@ class CommandRegistry {
         for (const sessionId of params.sessionIds) {
           const session = sessionManager.getSessionById(sessionId);
           if (session) {
-            const ok = sessionManager.writeToSession(sessionId, params.input);
+            const writer = sessionManager.writeNewTurnToSession?.bind(sessionManager)
+              || sessionManager.writeToSession.bind(sessionManager);
+            const ok = writer(sessionId, params.input, { source: 'command-registry-broadcast' });
             if (!ok) {
               results.push({ sessionId, sent: false, error: 'Write failed' });
               continue;

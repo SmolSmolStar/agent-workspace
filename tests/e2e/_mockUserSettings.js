@@ -1,6 +1,16 @@
 const defaultSettings = {
   version: 'test',
   global: {
+    claudeFlags: {
+      skipPermissions: false,
+      provider: 'anthropic'
+    },
+    autoStart: {
+      enabled: false,
+      mode: 'fresh',
+      delay: 500
+    },
+    terminal: {},
     ui: {
       theme: 'dark',
       visibility: {

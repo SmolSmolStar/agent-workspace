@@ -85,6 +85,7 @@ class SessionManager extends EventEmitter {
     super();
     this.io = io;
     this.agentManager = agentManager;
+    this.agentAdmissionController = null;
     this.sessions = new Map();
     // Keep inactive workspaces' sessions alive (PTYs keep running), keyed by workspace id.
     // The active workspace is always `this.workspace`, and its sessions live in `this.sessions`.
@@ -141,6 +142,79 @@ class SessionManager extends EventEmitter {
 
     // Worktrees will be built when workspace is set
     this.worktrees = [];
+  }
+
+  setAgentAdmissionController(controller) {
+    this.agentAdmissionController = controller || null;
+  }
+
+  getAgentAdmissionDecision({ agentId, sessionId = null, config = null } = {}) {
+    if (!this.agentAdmissionController?.getAdmissionDecision) return { allowed: true };
+    try {
+      const decision = this.agentAdmissionController.getAdmissionDecision({
+        agentId,
+        sessionId,
+        config
+      });
+      if (!decision || decision.allowed !== false) return { allowed: true };
+      return decision;
+    } catch (error) {
+      const normalizedAgent = String(agentId || '').trim().toLowerCase();
+      logger.error('Agent admission check failed', {
+        agentId,
+        sessionId,
+        error: error.message
+      });
+      return normalizedAgent === 'codex'
+        ? {
+            allowed: false,
+            code: 'codex-usage-monitor-error',
+            reason: 'admission-check-failed'
+          }
+        : { allowed: true };
+    }
+  }
+
+  getSessionAgentId(sessionId) {
+    const session = this.getSessionById(sessionId);
+    if (!session) return null;
+    if (session.activeAgentId) return String(session.activeAgentId).trim().toLowerCase() || null;
+    const workspaceId = String(session.workspace || this.workspace?.id || '').trim();
+    const recovery = workspaceId ? sessionRecoveryService.getSession(workspaceId, sessionId) : null;
+    if (recovery?.lastAgentActive !== false && recovery?.lastAgent) {
+      return String(recovery.lastAgent).trim().toLowerCase() || null;
+    }
+    const type = String(session.type || '').trim().toLowerCase();
+    return ['claude', 'codex', 'opencode'].includes(type) ? type : null;
+  }
+
+  getNewTurnAdmissionDecision(sessionId, { source = 'automation' } = {}) {
+    const agentId = this.getSessionAgentId(sessionId);
+    const decision = this.getAgentAdmissionDecision({ agentId, sessionId, config: { source } });
+    return { ...decision, agentId };
+  }
+
+  writeNewTurnToSession(sessionId, data, { source = 'automation' } = {}) {
+    const decision = this.getNewTurnAdmissionDecision(sessionId, { source });
+    if (decision.allowed === false) {
+      logger.warn('Automated session input blocked by admission controller', {
+        sessionId,
+        agentId: decision.agentId,
+        source,
+        code: decision.code,
+        reason: decision.reason
+      });
+      this.io?.emit?.('agent-turn-blocked', {
+        sessionId,
+        agentId: decision.agentId,
+        source,
+        code: decision.code || 'agent-admission-blocked',
+        reason: decision.reason || null,
+        triggeredAt: decision.triggeredAt || null
+      });
+      return false;
+    }
+    return this.writeToSession(sessionId, data);
   }
 
   getRecoveryHydrationKey(sessionId, { workspaceId = null, session = null } = {}) {
@@ -1153,6 +1227,7 @@ class SessionManager extends EventEmitter {
       // positional prompt argument) start working immediately, so they count
       // as already-submitted.
       session.agentStartedAt = Date.now();
+      session.activeAgentId = agent;
       session.agentInputSubmitted = this.isAutoRunAgentCommand(commandName, commandArgs);
 
       sessionRecoveryService.updateAgent(workspaceId, sessionId, agent, mode);
@@ -2264,6 +2339,7 @@ class SessionManager extends EventEmitter {
         // Agent exited back to a shell — clear launch/input markers so the
         // next launch starts a fresh no-input-yet window.
         session.agentStartedAt = null;
+        session.activeAgentId = null;
         session.agentInputSubmitted = false;
         try {
           sessionRecoveryService.markAgentInactive(workspaceId, sessionId);
@@ -3315,6 +3391,28 @@ class SessionManager extends EventEmitter {
     const adjustedFlags = this.agentManager.validateAndAdjustFlags(config.agentId, config.flags);
     const finalConfig = { ...config, flags: adjustedFlags };
 
+    const admission = this.getAgentAdmissionDecision({
+      agentId: finalConfig.agentId,
+      sessionId,
+      config: finalConfig
+    });
+    if (!admission.allowed) {
+      logger.warn('Agent start blocked by admission controller', {
+        sessionId,
+        agentId: finalConfig.agentId,
+        code: admission.code,
+        reason: admission.reason
+      });
+      this.io?.emit?.('agent-start-blocked', {
+        sessionId,
+        agentId: finalConfig.agentId,
+        code: admission.code || 'agent-admission-blocked',
+        reason: admission.reason || null,
+        triggeredAt: admission.triggeredAt || null
+      });
+      return false;
+    }
+
     logger.info('Starting agent with configuration', {
       sessionId,
       originalConfig: config,
@@ -3362,6 +3460,8 @@ class SessionManager extends EventEmitter {
       } else {
         this.resetClaudeLaunch(session);
       }
+
+      session.activeAgentId = finalConfig.agentId;
 
       // Send the command to the terminal
       const commandToRun = buildShellCommand({
