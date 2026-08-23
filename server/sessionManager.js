@@ -895,6 +895,18 @@ class SessionManager extends EventEmitter {
         // The outer client terminal must advertise 256-color support or tmux
         // degrades every pane's rendering.
         ptyOptions.name = 'xterm-256color';
+        if (adopted) {
+          // Attach at the surviving pane's actual size instead of the 80x24
+          // default — otherwise tmux shrinks the window the instant we attach,
+          // then grows it back once the browser's heal-sweep re-asserts the
+          // real size, and an app redrawing mid-shrink can bake garbled/
+          // duplicated frames into the pane that no later resize fixes.
+          const paneSize = this.sessionPersistence.getPaneSize(sessionId);
+          if (paneSize) {
+            ptyOptions.cols = paneSize.cols;
+            ptyOptions.rows = paneSize.rows;
+          }
+        }
       }
       const ptyProcess = pty.spawn(spawnCommand, spawnArgs, ptyOptions);
 
