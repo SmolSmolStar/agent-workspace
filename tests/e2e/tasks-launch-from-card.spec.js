@@ -1,18 +1,11 @@
 const { test, expect } = require('@playwright/test');
+const { dismissFocusOverlay } = require('./_workspace');
 const { mockUserSettings } = require('./_mockUserSettings');
 
 const ensureOrchestratorReady = async (page) => {
   await page.waitForFunction(() => window.orchestrator?.socket?.connected === true, {
     timeout: 20000
   });
-};
-
-const dismissFocusOverlay = async (page) => {
-  const overlay = page.locator('#focus-overlay.active');
-  if (await overlay.isVisible().catch(() => false)) {
-    await page.locator('#focus-overlay .focus-close-btn').click();
-    await expect(overlay).toBeHidden();
-  }
 };
 
 const mockTasksApi = async (page) => {

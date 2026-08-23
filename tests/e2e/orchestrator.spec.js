@@ -3,46 +3,8 @@
  */
 
 const { test, expect } = require('@playwright/test');
+const { ensureWorkspaceLoaded } = require('./_workspace');
 const { mockUserSettings } = require('./_mockUserSettings');
-
-const ensureWorkspaceLoaded = async (page) => {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const sidebar = page.locator('.sidebar');
-    if (await sidebar.isVisible().catch(() => false)) {
-      return;
-    }
-
-    await page.waitForFunction(() => window.orchestrator?.socket?.connected === true, {
-      timeout: 20000
-    });
-
-    const openWorkspaceBtn = page.getByRole('button', { name: 'Open Workspace' }).first();
-    try {
-      await openWorkspaceBtn.waitFor({ state: 'visible', timeout: 20000 });
-    } catch {
-      await page.reload();
-      continue;
-    }
-
-    await openWorkspaceBtn.click();
-    try {
-      await page.waitForSelector('#recovery-dialog, .sidebar:not(.hidden)', { timeout: 20000 });
-    } catch {
-      await page.reload();
-      continue;
-    }
-
-    const recoverySkipBtn = page.locator('#recovery-skip');
-    if (await recoverySkipBtn.isVisible().catch(() => false)) {
-      await recoverySkipBtn.click();
-    }
-
-    await page.waitForSelector('.sidebar:not(.hidden)', { timeout: 20000 });
-    return;
-  }
-
-  throw new Error('Failed to load workspace for tests.');
-};
 
 test.describe('Claude Orchestrator', () => {
   test.beforeEach(async ({ page }) => {
@@ -78,15 +40,34 @@ test.describe('Claude Orchestrator', () => {
     await expect(commanderBtn).toBeVisible();
   });
 
-  test('should show connection status', async ({ page }) => {
-    const connectionStatus = page.locator('#connection-status');
-    await expect(connectionStatus).toBeVisible();
+  test('should connect to the server', async ({ page }) => {
+    await expect.poll(
+      async () => page.evaluate(() => window.orchestrator?.socket?.connected === true),
+      { timeout: 10000 }
+    ).toBe(true);
+  });
 
-    // Wait for connection (should say Connected after socket connects)
-    await page.waitForFunction(() => {
-      const status = document.querySelector('#connection-status');
-      return status && status.textContent.includes('Connected');
-    }, { timeout: 10000 });
+  test('keeps the first header action reachable when actions overflow', async ({ page }) => {
+    await page.setViewportSize({ width: 600, height: 800 });
+
+    const geometry = await page.locator('.header-actions').evaluate((actions) => {
+      actions.scrollLeft = 0;
+      const firstAction = actions.firstElementChild;
+      const actionsBox = actions.getBoundingClientRect();
+      const firstActionBox = firstAction?.getBoundingClientRect();
+      return {
+        overflows: actions.scrollWidth > actions.clientWidth,
+        actionsLeft: actionsBox.left,
+        actionsRight: actionsBox.right,
+        firstActionLeft: firstActionBox?.left ?? null,
+        firstActionRight: firstActionBox?.right ?? null
+      };
+    });
+
+    expect(geometry.overflows).toBe(true);
+    expect(geometry.firstActionLeft).not.toBeNull();
+    expect(geometry.firstActionLeft).toBeGreaterThanOrEqual(geometry.actionsLeft - 1);
+    expect(geometry.firstActionLeft).toBeLessThan(geometry.actionsRight);
   });
 
   test('should open settings panel', async ({ page }) => {

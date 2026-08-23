@@ -1,51 +1,5 @@
 const { test, expect } = require('@playwright/test');
-
-const ensureWorkspaceLoaded = async (page) => {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const sidebar = page.locator('.sidebar');
-    if (await sidebar.isVisible().catch(() => false)) {
-      return;
-    }
-
-    await page.waitForFunction(() => window.orchestrator?.socket?.connected === true, {
-      timeout: 20000
-    });
-
-    const openWorkspaceBtn = page.getByRole('button', { name: 'Open Workspace' }).first();
-    try {
-      await openWorkspaceBtn.waitFor({ state: 'visible', timeout: 20000 });
-    } catch {
-      await page.reload();
-      continue;
-    }
-
-    await openWorkspaceBtn.click();
-    try {
-      await page.waitForSelector('#recovery-dialog, .sidebar:not(.hidden)', { timeout: 20000 });
-    } catch {
-      await page.reload();
-      continue;
-    }
-
-    const recoverySkipBtn = page.locator('#recovery-skip');
-    if (await recoverySkipBtn.isVisible().catch(() => false)) {
-      await recoverySkipBtn.click();
-    }
-
-    await page.waitForSelector('.sidebar:not(.hidden)', { timeout: 20000 });
-    return;
-  }
-
-  throw new Error('Failed to load workspace for tests.');
-};
-
-const dismissFocusOverlay = async (page) => {
-  const overlay = page.locator('#focus-overlay.active');
-  if (await overlay.isVisible().catch(() => false)) {
-    await page.locator('#focus-overlay .focus-close-btn').click();
-    await expect(overlay).toBeHidden();
-  }
-};
+const { ensureWorkspaceLoaded, dismissFocusOverlay } = require('./_workspace');
 
 test.describe('Commander advice', () => {
   test('shows advice panel with mocked recommendations', async ({ page }) => {

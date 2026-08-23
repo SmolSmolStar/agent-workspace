@@ -1297,7 +1297,8 @@ header {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  justify-content: flex-end;
+  /* End alignment puts early actions outside the scroll origin when this row overflows. */
+  justify-content: flex-start;
   margin-left: auto;
   padding-right: var(--space-xl);
   flex: 1;
@@ -7314,7 +7315,7 @@ body.dependency-onboarding-active #dependency-setup-modal {
 .toast,
 .ready-toast {
   --toast-accent: 96, 165, 250;
-  pointer-events: auto;
+  pointer-events: none;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -7339,6 +7340,7 @@ body.dependency-onboarding-active #dependency-setup-modal {
 
 .toast.is-leaving,
 .ready-toast.is-leaving {
+  pointer-events: none;
   transform: translateX(16px);
   opacity: 0;
 }
@@ -7391,6 +7393,7 @@ body.dependency-onboarding-active #dependency-setup-modal {
 }
 
 .toast-close {
+  pointer-events: auto;
   width: 22px;
   height: 22px;
   border-radius: 7px;

@@ -439,6 +439,8 @@ scripts/public-release-audit.js    - Public-release safety audit automation
 ├─ Checks: tracked cache/DB artifacts, public-doc path hygiene, loopback/auth defaults
 └─ Optional: full-history gitleaks scan (`--history-secrets`)
 scripts/render-legal-pages.js      - Generates `site/terms.html` and `site/privacy.html` from canonical markdown in `docs/legal/`
+scripts/run-e2e-safe.js             - Runs Playwright on an isolated port, HOME, and one deterministic worker; `scripts/e2eHome.js` seeds test workspace state and test-only legal acceptance
+tests/e2e/_workspace.js             - Shared race-safe workspace readiness and focus-overlay helpers for Playwright specs
 
 scripts/create-project.js          - Taxonomy-driven project scaffold generator (template/project-kit source resolution, optional post-create hooks, git init, optional GitHub remote, worktree bootstrap via WorktreeHelper)
 scripts/preview-site.js            - Tiny local preview server for the standalone `site/` showcase
