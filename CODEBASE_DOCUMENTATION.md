@@ -107,7 +107,7 @@ server/codexUsageGuardService.js   - Durable Codex weekly-limit rollover and exh
 ├─ Rollover proof: enters drain mode only when `resetsAt` advances and `usedPercentage` drops; elapsed wall-clock time alone cannot trigger it
 ├─ Monitor safety: requires a live successful poll after every process boot, blocks again after repeated read failures, and recovers automatically after a valid poll; other providers remain available
 ├─ Admission: blocks new Codex starts and automated Pager, Commander, and command-registry turns while leaving active PTYs running to finish in-flight work; shell command tracking covers direct, environment-prefixed, and package-runner Codex commands
-├─ Persistence: atomically stores observations and drain state in `<data-dir>/codex-usage-guard.json` so restarts cannot reopen admissions
+├─ Persistence: atomically stores observations and drain state in `<data-dir>/codex-usage-guard.json`; write failures block new Codex work and failed resume writes preserve the previous drain
 └─ Operations: `GET /api/usage/codex-guard` reports state; `POST /api/usage/codex-guard/resume` explicitly reopens a healthy drained guard; set `ORCHESTRATOR_CODEX_USAGE_GUARD_ENABLED=false` and restart only when app-server monitoring cannot run, which disables this safety gate
 server/codexRateLimitsClient.js    - Bounded Codex app-server JSON-RPC client with versioned initialize/read envelopes, bounded owned-child cancellation, and capped stderr diagnostics
 tests/unit/codexRateLimitsClient.test.js - Production envelope, notification filtering, raw reset epoch, bounded child cleanup, and stderr coverage

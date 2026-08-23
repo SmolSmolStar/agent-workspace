@@ -195,6 +195,7 @@ class CodexUsageGuardService extends EventEmitter {
   }
 
   commitState(nextState) {
+    const previousState = this.state;
     const normalized = this.normalizeState({
       ...nextState,
       updatedAt: this.nowIso()
@@ -206,6 +207,22 @@ class CodexUsageGuardService extends EventEmitter {
       this.logger.warn?.('Failed to persist Codex usage guard state', {
         error: error.message,
         path: this.storePath
+      });
+      const failedResume = previousState.mode === MODE_DRAINING
+        && normalized.mode !== MODE_DRAINING;
+      const safeState = failedResume ? previousState : normalized;
+      const mode = safeState.mode === MODE_DRAINING
+        ? MODE_DRAINING
+        : MODE_MONITOR_UNAVAILABLE;
+      this.state = this.normalizeState({
+        ...safeState,
+        mode,
+        drainReason: mode === MODE_DRAINING
+          ? safeState.drainReason
+          : 'monitor-unavailable',
+        triggeredAt: safeState.triggeredAt || this.nowIso(),
+        lastError: `usage-guard-state-persist-failed: ${String(error?.message || error)}`,
+        updatedAt: this.nowIso()
       });
     }
     return this.state;

@@ -54,6 +54,7 @@ describe('CodexUsageGuardService', () => {
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -300,6 +301,59 @@ describe('CodexUsageGuardService', () => {
       admittingCodex: true,
       consecutiveFailures: 0,
       lastError: null
+    });
+  });
+
+  test('fails closed until a successful observation can be persisted', async () => {
+    usageLimitsService.getCodexLimits.mockResolvedValue(
+      codexLimits({ usedPercentage: 64, resetsAt: 1_800_000_000 })
+    );
+    const rename = jest.spyOn(fs, 'renameSync')
+      .mockImplementationOnce(() => { throw new Error('disk unavailable'); });
+    const service = createService();
+
+    expect(await service.pollOnce()).toMatchObject({
+      mode: 'monitor-unavailable',
+      admittingCodex: false,
+      drainReason: 'monitor-unavailable',
+      lastError: 'usage-guard-state-persist-failed: disk unavailable'
+    });
+    expect(service.getAdmissionDecision({ agentId: 'codex' })).toMatchObject({
+      allowed: false,
+      code: 'codex-usage-monitor-unavailable'
+    });
+
+    rename.mockRestore();
+    expect(await service.pollOnce()).toMatchObject({
+      mode: 'monitoring',
+      admittingCodex: true,
+      lastError: null
+    });
+    expect(JSON.parse(fs.readFileSync(storePath, 'utf8'))).toMatchObject({
+      mode: 'monitoring',
+      observedWindow: { usedPercentage: 64 }
+    });
+  });
+
+  test('keeps a persisted drain closed when resume cannot be persisted', async () => {
+    usageLimitsService.getCodexLimits.mockResolvedValue(
+      codexLimits({ usedPercentage: 100, resetsAt: 1_800_000_000 })
+    );
+    const service = createService();
+    await service.pollOnce();
+    jest.spyOn(fs, 'renameSync')
+      .mockImplementationOnce(() => { throw new Error('disk unavailable'); });
+
+    expect(service.resumeAdmissions({ acknowledgedBy: 'test' })).toMatchObject({
+      mode: 'draining',
+      admittingCodex: false,
+      drainReason: 'exhausted',
+      resumedBy: null,
+      lastError: 'usage-guard-state-persist-failed: disk unavailable'
+    });
+    expect(JSON.parse(fs.readFileSync(storePath, 'utf8'))).toMatchObject({
+      mode: 'draining',
+      drainReason: 'exhausted'
     });
   });
 
