@@ -1,6 +1,10 @@
 const express = require('express');
 const { analyzeRepositoryEvidence } = require('../atlas/atlasEvidence');
 const { EVIDENCE_QUEUE_FULL_CODE } = require('../atlas/atlasEvidenceCoordinator');
+const {
+  createPortfolioReport,
+  MAX_REPOSITORY_LIMIT
+} = require('../atlas/atlasPortfolio');
 
 const passthrough = (req, res, next) => next();
 
@@ -8,6 +12,30 @@ const asList = (value) => String(value === undefined || value === null ? '' : va
   .split(',')
   .map((item) => item.trim())
   .filter(Boolean);
+
+const entrySearchFilters = (query = {}) => ({
+  kind: query.kind,
+  platform: query.platform,
+  group: query.group,
+  status: query.status,
+  language: query.language,
+  query: query.query || query.q,
+  minQuality: query.minQuality,
+  includeForks: query.includeForks !== 'false',
+  includeArchived: query.includeArchived !== 'false'
+});
+
+function portfolioLimit(value) {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_REPOSITORY_LIMIT) return null;
+  return parsed;
+}
+
+const mapEvidenceQueueError = (error) => (error?.code === EVIDENCE_QUEUE_FULL_CODE
+  ? { status: 503, message: 'Repository evidence queue is busy. Retry later.' }
+  : null);
 
 /**
  * REST surface for the Repo Atlas. Reads are policy-`read`, curation is
@@ -19,7 +47,8 @@ function createAtlasRoutes({
   logger = console,
   requireRead = passthrough,
   requireWrite = passthrough,
-  evidenceAnalyzer = analyzeRepositoryEvidence
+  evidenceAnalyzer = analyzeRepositoryEvidence,
+  portfolioReporter = createPortfolioReport
 } = {}) {
   const router = express.Router();
 
@@ -49,18 +78,29 @@ function createAtlasRoutes({
   }));
 
   router.get('/entries', requireRead, handle('list entries', (req, res) => {
-    const entries = repoAtlasService.search({
-      kind: req.query.kind,
-      platform: req.query.platform,
-      group: req.query.group,
-      status: req.query.status,
-      language: req.query.language,
-      query: req.query.query || req.query.q,
-      minQuality: req.query.minQuality,
-      includeForks: req.query.includeForks !== 'false',
-      includeArchived: req.query.includeArchived !== 'false'
-    });
+    const entries = repoAtlasService.search(entrySearchFilters(req.query));
     res.json({ ok: true, count: entries.length, entries });
+  }));
+
+  router.get('/portfolio', requireRead, handle('create portfolio report', async (req, res) => {
+    const limit = portfolioLimit(req.query.limit);
+    if (limit === null) {
+      return res.status(400).json({
+        ok: false,
+        error: `limit needs an integer from 1 to ${MAX_REPOSITORY_LIMIT}`
+      });
+    }
+    const entries = repoAtlasService.search(entrySearchFilters(req.query));
+    const report = await portfolioReporter(entries, {
+      includeRemote: req.query.includeRemote === 'true',
+      limit,
+      maxExamples: req.query.maxExamples
+    });
+    return res.json({ ok: true, report });
+  }, {
+    status: 500,
+    publicMessage: 'Repository portfolio report failed.',
+    mapError: mapEvidenceQueueError
   }));
 
   router.get('/entries/:id/evidence', requireRead, handle('inspect repository evidence', async (req, res) => {
@@ -71,9 +111,7 @@ function createAtlasRoutes({
   }, {
     status: 500,
     publicMessage: 'Repository evidence inspection failed.',
-    mapError: (error) => (error?.code === EVIDENCE_QUEUE_FULL_CODE
-      ? { status: 503, message: 'Repository evidence queue is busy. Retry later.' }
-      : null)
+    mapError: mapEvidenceQueueError
   }));
 
   router.get('/entries/:id', requireRead, handle('get entry', (req, res) => {
