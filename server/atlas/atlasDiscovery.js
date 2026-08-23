@@ -4,6 +4,7 @@ const os = require('os');
 const { execFile } = require('child_process');
 
 const { kebab } = require('./atlasSchema');
+const { readLocalSummary } = require('./atlasLocalMetadata');
 const {
   parseOwnerRepo,
   repositorySlug,
@@ -282,13 +283,15 @@ async function scanLocalRepos({ roots, maxDepth = 6, languageCensus = true } = {
     const inferred = inferFromPath(projectRoot, searchRoots);
     const checkoutAliases = [...checkoutPaths].map((candidate) => path.resolve(candidate)).sort();
     const localPaths = [...new Set([projectRoot, ...checkoutAliases])];
+    const name = parsed?.repo || path.basename(projectRoot);
 
     entries.push({
       __source: 'discovery',
       id: kebab(parsed?.repo || path.basename(projectRoot)),
-      name: parsed?.repo || path.basename(projectRoot),
+      name,
       repo: parsed?.nameWithOwner || '',
       owner: parsed?.owner || '',
+      summary: readLocalSummary(repoDir, { repositoryName: name }),
       kind: inferred.kind || undefined,
       platforms: inferred.platforms,
       languages: languageCensus ? censusLanguages(repoDir) : [],
@@ -388,7 +391,7 @@ function mergeDiscovery(localEntries = [], githubEntries = []) {
       name: github?.name || repoName || preferred.name,
       repo: slug,
       owner: github?.owner || preferred.owner || slug.split('/')[0] || '',
-      summary: preferred.summary || github?.summary || '',
+      summary: github?.summary || preferred.summary || '',
       visibility: github?.visibility || preferred.visibility,
       isFork: github?.isFork ?? preferred.isFork,
       archived: github?.archived ?? preferred.archived,

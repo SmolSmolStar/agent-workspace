@@ -358,6 +358,44 @@ describe('Repo Atlas discovery identity', () => {
     expect(forward[0].localPaths).toEqual([primaryPath, masterPath, work1Path, featurePath]);
   });
 
+  test('GitHub descriptions outrank summaries derived from a local checkout', () => {
+    const [entry] = discovery.mergeDiscovery([{
+      id: 'agent-workspace',
+      name: 'agent-workspace',
+      repo: 'web3dev1337/agent-workspace',
+      summary: 'Local README summary',
+      localPath: '/repos/agent-workspace',
+      cloned: true
+    }], [{
+      id: 'agent-workspace',
+      name: 'agent-workspace',
+      repo: 'web3dev1337/agent-workspace',
+      summary: 'GitHub repository description',
+      cloned: false
+    }]);
+
+    expect(entry.summary).toBe('GitHub repository description');
+  });
+
+  test('local checkout summaries fill a missing GitHub description', () => {
+    const [entry] = discovery.mergeDiscovery([{
+      id: 'agent-workspace',
+      name: 'agent-workspace',
+      repo: 'web3dev1337/agent-workspace',
+      summary: 'Local README summary',
+      localPath: '/repos/agent-workspace',
+      cloned: true
+    }], [{
+      id: 'agent-workspace',
+      name: 'agent-workspace',
+      repo: 'web3dev1337/agent-workspace',
+      summary: '',
+      cloned: false
+    }]);
+
+    expect(entry.summary).toBe('Local README summary');
+  });
+
   test('same-named repositories under different owners remain distinct', () => {
     const entries = discovery.mergeDiscovery([
       { id: 'shared', name: 'shared', repo: 'alice/shared', localPath: '/repos/alice/shared' },
@@ -640,6 +678,41 @@ describe('Repo Atlas discovery identity', () => {
       expect(entries).toHaveLength(1);
       expect(entries[0].languages).toEqual(['JavaScript']);
       expect(new Set(entries[0].localPaths)).toEqual(new Set([featureDir, primaryDir]));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('local scanning derives a summary from the representative checkout', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-summary-scan-'));
+    const repoDir = path.join(tmpDir, 'summary-fixture');
+    const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+    try {
+      fs.mkdirSync(repoDir, { recursive: true });
+      git(repoDir, ['init', '--initial-branch=master']);
+      fs.writeFileSync(path.join(repoDir, 'README.md'), [
+        '# Summary Fixture',
+        '',
+        'Describes local repositories from bounded checkout metadata.'
+      ].join('\n'));
+      git(repoDir, ['add', 'README.md']);
+      git(repoDir, [
+        '-c', 'user.name=Atlas Test',
+        '-c', 'user.email=atlas-test@localhost',
+        'commit', '-m', 'initial'
+      ]);
+
+      const entries = await discovery.scanLocalRepos({
+        roots: [tmpDir],
+        maxDepth: 2,
+        languageCensus: false
+      });
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0].summary).toBe(
+        'Describes local repositories from bounded checkout metadata.'
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
