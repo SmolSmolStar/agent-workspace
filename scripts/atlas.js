@@ -118,6 +118,7 @@ function searchOptions(flags) {
 
 function reportLimit(value) {
   if (value === undefined) return DEFAULT_REPOSITORY_LIMIT;
+  if (value === true) return null;
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_REPOSITORY_LIMIT) return null;
   return parsed;

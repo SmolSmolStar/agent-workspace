@@ -115,4 +115,12 @@ describe('atlas evidence and report CLI', () => {
     expect(result.stdout).toBe('');
     expect(result.stderr).toContain('atlas: --limit needs an integer from 1 to 50');
   });
+
+  test('rejects a report limit with no value', () => {
+    const result = run(['report', '--limit']);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('atlas: --limit needs an integer from 1 to 50');
+  });
 });
