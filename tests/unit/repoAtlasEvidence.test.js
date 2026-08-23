@@ -314,6 +314,32 @@ describe('atlasEvidence', () => {
     expect(example).toMatchObject({ kind: 'curated', nonBlankLines: null });
   });
 
+  test('does not read beyond the file size validated on the opened descriptor', async () => {
+    writeFile(checkout, 'src/growing.js', 'first\nsecond\nthird\n');
+    commit(checkout, 'test: add growing source fixture', 'Second Author', 'second@example.test');
+    const originalFstat = fs.fstatSync.bind(fs);
+    const fstat = jest.spyOn(fs, 'fstatSync').mockImplementation((fd) => {
+      const stat = originalFstat(fd);
+      Object.defineProperty(stat, 'size', { value: 6 });
+      return stat;
+    });
+
+    try {
+      const report = await analyzeRepositoryEvidence({
+        id: 'fixture',
+        localPath: checkout,
+        highlights: [{ topic: 'bounded-read', quality: 5, paths: ['src/growing.js'] }]
+      }, { maxExamples: 1 });
+
+      expect(report.examples[0]).toMatchObject({
+        path: 'src/growing.js',
+        nonBlankLines: 1
+      });
+    } finally {
+      fstat.mockRestore();
+    }
+  });
+
   test('keeps internal Git failure details out of the public error message', async () => {
     const analyzer = createRepositoryEvidenceAnalyzer({
       runGitFn: async (cwd, args) => {

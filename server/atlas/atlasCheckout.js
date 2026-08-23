@@ -133,6 +133,17 @@ function openedPath(fd, fallback, descriptorStat) {
   return null;
 }
 
+function readUtf8Bytes(fd, byteLength) {
+  const buffer = Buffer.alloc(byteLength);
+  let offset = 0;
+  while (offset < byteLength) {
+    const bytesRead = fs.readSync(fd, buffer, offset, byteLength - offset, offset);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  return buffer.toString('utf8', 0, offset);
+}
+
 function countNonBlankLines(checkout, repoPath, { maxBytes = 512 * 1024 } = {}) {
   let fd = null;
   try {
@@ -153,7 +164,7 @@ function countNonBlankLines(checkout, repoPath, { maxBytes = 512 * 1024 } = {}) 
     const resolvedOpenedPath = openedPath(fd, absolutePath, stat);
     if (!resolvedOpenedPath || !isContained(root, resolvedOpenedPath)) return null;
 
-    return fs.readFileSync(fd, 'utf8')
+    return readUtf8Bytes(fd, stat.size)
       .split(/\r?\n/)
       .filter((line) => line.trim())
       .length;
