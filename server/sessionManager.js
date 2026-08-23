@@ -895,7 +895,7 @@ class SessionManager extends EventEmitter {
         // The outer client terminal must advertise 256-color support or tmux
         // degrades every pane's rendering.
         ptyOptions.name = 'xterm-256color';
-        if (adopted) {
+        if (persistence.adopted) {
           // Attach at the surviving pane's actual size instead of the 80x24
           // default — otherwise tmux shrinks the window the instant we attach,
           // then grows it back once the browser's heal-sweep re-asserts the
