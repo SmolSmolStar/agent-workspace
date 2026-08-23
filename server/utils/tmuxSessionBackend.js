@@ -214,6 +214,25 @@ class TmuxSessionBackend {
     return { command: 'tmux', args: tmuxArgs, name };
   }
 
+  // Shared by sessionManager.js and commanderService.js. Sizes ptyOptions to
+  // the surviving pane on adopt (see getPaneSize). Callers still delete
+  // TMUX/TMUX_PANE from their own env before calling this.
+  resolveSpawn({ sessionId, command, args = [], cwd, ptyOptions, logger = this.logger, logLabel = 'session' } = {}) {
+    this.ensureConfigured();
+    const adopted = this.hasSession(sessionId);
+    const spec = this.buildSpawnCommand({ sessionId, command, args, cwd });
+    const persistence = { backend: 'tmux', sessionId, name: spec.name, adopted };
+    if (adopted) {
+      logger?.info?.(`Adopting surviving ${logLabel}`, { sessionId });
+      const paneSize = this.getPaneSize(sessionId);
+      if (paneSize && ptyOptions) {
+        ptyOptions.cols = paneSize.cols;
+        ptyOptions.rows = paneSize.rows;
+      }
+    }
+    return { command: spec.command, args: spec.args, persistence };
+  }
+
   killSession(sessionId) {
     try {
       this.run(['kill-session', '-t', this.target(sessionId)]);
@@ -235,13 +254,8 @@ class TmuxSessionBackend {
     }
   }
 
-  // Current pane geometry, so a re-attaching client can spawn at the size the
-  // surviving session is already at instead of node-pty's 80x24 default. Without
-  // this, adopting a session after a restart shrinks the tmux window to 80x24
-  // the instant the outer client attaches, then grows it back once the browser's
-  // heal-sweep re-asserts the real size — a resize-down-then-up round trip that
-  // can bake garbled/duplicated frames into the pane if the app inside redraws
-  // mid-transition (issue: garbled terminal after nodemon restart).
+  // Current pane geometry, so a re-attaching client can adopt at the real size
+  // instead of a hardcoded default (avoids a resize-down-then-up on attach).
   getPaneSize(sessionId) {
     try {
       const out = this.run(['list-panes', '-t', this.target(sessionId), '-F', '#{pane_width}x#{pane_height}']);

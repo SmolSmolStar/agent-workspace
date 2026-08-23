@@ -341,32 +341,19 @@ class CommanderService {
       if (persistenceBackend) {
         delete env.TMUX;
         delete env.TMUX_PANE;
-        persistenceBackend.ensureConfigured();
         const persistSessionId = `commander-${this.instanceId}`;
-        const adopted = persistenceBackend.hasSession(persistSessionId);
-        const spec = persistenceBackend.buildSpawnCommand({
+        const resolved = persistenceBackend.resolveSpawn({
           sessionId: persistSessionId,
           command: shell,
           args: shellArgs,
-          cwd: COMMANDER_CWD
+          cwd: COMMANDER_CWD,
+          ptyOptions,
+          logger,
+          logLabel: 'Commander session'
         });
-        spawnCommand = spec.command;
-        spawnArgs = spec.args;
-        persistence = { backend: 'tmux', sessionId: persistSessionId, name: spec.name, adopted };
-        if (adopted) {
-          logger.info('Adopting surviving Commander session', { instanceId: this.instanceId });
-          // Attach at the surviving pane's actual size instead of the 120x40
-          // default — otherwise tmux shrinks the window the instant we attach,
-          // then grows it back once the browser re-asserts the real size, and
-          // Claude's TUI (the "Thinking…" spinner in particular) redrawing
-          // mid-shrink bakes garbled/duplicated rows into the pane that no
-          // later resize fixes. Same root cause as sessionManager.js's fix.
-          const paneSize = persistenceBackend.getPaneSize(persistSessionId);
-          if (paneSize) {
-            ptyOptions.cols = paneSize.cols;
-            ptyOptions.rows = paneSize.rows;
-          }
-        }
+        spawnCommand = resolved.command;
+        spawnArgs = resolved.args;
+        persistence = resolved.persistence;
       }
 
       // Spawn Claude Code terminal

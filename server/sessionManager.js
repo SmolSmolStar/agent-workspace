@@ -870,43 +870,26 @@ class SessionManager extends EventEmitter {
       let spawnCommand = config.command;
       let spawnArgs = config.args;
       let persistence = null;
+      const ptyOptions = this.buildPtyOptions(config, effectiveEnv);
       if (this.sessionPersistenceEnabled) {
         // A leaked TMUX var would make the client refuse to start ("nested").
         delete effectiveEnv.TMUX;
         delete effectiveEnv.TMUX_PANE;
-        this.sessionPersistence.ensureConfigured();
-        const adopted = this.sessionPersistence.hasSession(sessionId);
-        const spec = this.sessionPersistence.buildSpawnCommand({
-          sessionId,
-          command: config.command,
-          args: config.args,
-          cwd: config.cwd
-        });
-        spawnCommand = spec.command;
-        spawnArgs = spec.args;
-        persistence = { backend: 'tmux', name: spec.name, adopted };
-        if (adopted) {
-          logger.info('Adopting surviving persistent session', { sessionId });
-        }
-      }
-
-      const ptyOptions = this.buildPtyOptions(config, effectiveEnv);
-      if (persistence) {
         // The outer client terminal must advertise 256-color support or tmux
         // degrades every pane's rendering.
         ptyOptions.name = 'xterm-256color';
-        if (persistence.adopted) {
-          // Attach at the surviving pane's actual size instead of the 80x24
-          // default — otherwise tmux shrinks the window the instant we attach,
-          // then grows it back once the browser's heal-sweep re-asserts the
-          // real size, and an app redrawing mid-shrink can bake garbled/
-          // duplicated frames into the pane that no later resize fixes.
-          const paneSize = this.sessionPersistence.getPaneSize(sessionId);
-          if (paneSize) {
-            ptyOptions.cols = paneSize.cols;
-            ptyOptions.rows = paneSize.rows;
-          }
-        }
+        const resolved = this.sessionPersistence.resolveSpawn({
+          sessionId,
+          command: config.command,
+          args: config.args,
+          cwd: config.cwd,
+          ptyOptions,
+          logger,
+          logLabel: 'persistent session'
+        });
+        spawnCommand = resolved.command;
+        spawnArgs = resolved.args;
+        persistence = resolved.persistence;
       }
       const ptyProcess = pty.spawn(spawnCommand, spawnArgs, ptyOptions);
 
