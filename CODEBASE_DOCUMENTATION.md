@@ -99,9 +99,19 @@ server/pullRequestService.js       - `gh`-backed PR search/view/merge/review wra
 └─ Invalidation: local merge/review actions clear the cache so the UI reflects them immediately
 server/usageLimitsService.js       - Plan-usage limits for the header widget
 ├─ Claude: reads `~/.local/state/ai-usage-monitor/claude-live.json` (tapped by the user's Claude Code status line)
-├─ Codex: runs `~/.codex/scripts/codex_usage.py` (official app-server helper), 5min cache, text parsed defensively
+├─ Codex: runs `~/.codex/scripts/codex_usage.py` (official app-server helper), 15min widget cache, text parsed defensively
 ├─ Grok: queries the CLI proxy billing endpoints with the grok CLI's own OAuth token (`~/.grok/auth.json`, NEVER refreshed here — expired token = stale until the grok CLI refreshes it)
 └─ Settings: per-provider toggles in user settings `global.ui.usageLimitsProviders.{claude,codex,grok}` (default on); whole-widget via `ui.visibility.header.usageLimits`
+server/codexUsageGuardService.js   - Durable Codex weekly-limit rollover and exhaustion guard
+├─ Polling: reads the main Codex weekly window directly every 2 minutes by default (configurable, clamped to 2 to 5 minutes) and bypasses the widget cache
+├─ Rollover proof: enters drain mode only when `resetsAt` advances and `usedPercentage` drops; elapsed wall-clock time alone cannot trigger it
+├─ Admission: blocks new Codex starts through SessionManager while allowing active terminals and other agent providers to continue
+├─ Persistence: atomically stores observations and drain state in `<data-dir>/codex-usage-guard.json` so restarts cannot reopen admissions
+└─ Operations: `GET /api/usage/codex-guard` reports state; `POST /api/usage/codex-guard/resume` explicitly reopens Codex admissions
+tests/unit/codexUsageGuardService.test.js - Rollover, exhaustion, unchanged limits, wall-clock non-trigger, direct polling, and restart persistence coverage
+tests/unit/sessionManager.codexAdmission.test.js - Central Codex start-boundary admission coverage
+tests/unit/batchLaunchService.admission.test.js - Verifies queued Codex cards are rejected before worktree allocation
+tests/e2e/codex-usage-guard.spec.js - Safe-port API coverage for status and explicit admission resume
 server/tokenCounter.js             - Token usage tracking (if applicable)
 server/userSettingsService.js      - User preferences and settings management
 server/sessionRecoveryService.js   - Session recovery state persistence (CWD, agents, conversations)
@@ -498,6 +508,8 @@ git-change: {branch, status, commits}          - Git repository changes
 notification: {type, message, level}           - System notifications
 workspace-changed: {workspaceId, sessions}     - Workspace switch completed
 workspace-list: {workspaces}                   - Available workspaces update
+codex-usage-guard: {mode, admittingCodex, ...} - Persisted monitor/drain state after each direct poll or resume
+agent-start-blocked: {sessionId, agentId, ...} - A new agent start rejected by the admission controller
 ```
 
 ### Client → Server Events
@@ -549,6 +561,9 @@ LOG_LEVEL=info
 NODE_ENV=development
 ENABLE_FILE_WATCHING=true
 WORKSPACE_SCAN_MAX_DEPTH=6        # optional, clamp 1-12 for /api/workspaces/scan-repos depth
+ORCHESTRATOR_CODEX_USAGE_GUARD_ENABLED=true  # optional, set false to disable polling and gating
+ORCHESTRATOR_CODEX_USAGE_GUARD_POLL_MS=120000 # optional, clamped to 120000-300000
+ORCHESTRATOR_CODEX_USAGE_GUARD_STATE_PATH=... # optional state-file override
 ```
 
 ## Development Workflow
@@ -667,6 +682,8 @@ GET /api/setup-actions            - List Windows dependency-onboarding actions
 GET /api/setup-actions/state      - Read persisted dependency-onboarding state (completed/dismissed/current step)
 PUT /api/setup-actions/state      - Persist dependency-onboarding state into app data for desktop restarts
 GET /api/usage/limits             - Claude 5h/7d + Codex plan-usage percentages and reset times (refresh=1 bypasses Codex cache)
+GET /api/usage/codex-guard        - Durable Codex monitor/drain state and current observed weekly window
+POST /api/usage/codex-guard/resume - Explicitly reopen new Codex admissions after reviewing a drain event
 GET /api/user-settings            - Get user preferences
 PUT /api/user-settings            - Update user preferences
 
