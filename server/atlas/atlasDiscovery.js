@@ -236,15 +236,18 @@ async function scanLocalRepos({ roots, maxDepth = 6, languageCensus = true } = {
       if (existing) {
         existing.checkoutPaths.add(repoDir);
         existing.worktreeLayout = existing.worktreeLayout || worktreeLayout;
-        // Prefer the common checkout when it appears in the scan.
+        if (!existing.primaryCheckout && primaryCheckout) existing.primaryCheckout = primaryCheckout;
         const base = path.basename(repoDir).toLowerCase();
-        if (repoDir === primaryCheckout || base === 'master' || base === 'main') existing.repoDir = repoDir;
+        const isPrimaryCheckout = existing.primaryCheckout
+          && comparablePath(repoDir) === comparablePath(existing.primaryCheckout);
+        if (isPrimaryCheckout || base === 'master' || base === 'main') existing.repoDir = repoDir;
         continue;
       }
       byProject.set(projectRoot, {
         projectRoot,
         repoDir,
         worktreeLayout,
+        primaryCheckout,
         searchRoot: root,
         checkoutPaths: new Set([repoDir])
       });

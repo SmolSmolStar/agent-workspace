@@ -558,4 +558,38 @@ describe('Repo Atlas discovery identity', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  test('uses an arbitrarily named primary checkout for repository facts', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-primary-checkout-'));
+    const projectRoot = path.join(tmpDir, 'sample');
+    const primaryDir = path.join(projectRoot, 'trunk');
+    const featureDir = path.join(projectRoot, 'feature-preview');
+    const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+    try {
+      fs.mkdirSync(primaryDir, { recursive: true });
+      git(primaryDir, ['init', '--initial-branch=trunk']);
+      fs.writeFileSync(path.join(primaryDir, 'index.js'), 'module.exports = true;\n');
+      git(primaryDir, ['add', 'index.js']);
+      git(primaryDir, [
+        '-c', 'user.name=Atlas Test',
+        '-c', 'user.email=atlas-test@localhost',
+        'commit', '-m', 'initial'
+      ]);
+      git(primaryDir, ['worktree', 'add', '-b', 'feature-preview', featureDir]);
+      fs.writeFileSync(path.join(featureDir, 'feature-only.lua'), 'return true\n');
+
+      const entries = await discovery.scanLocalRepos({
+        roots: [featureDir, tmpDir],
+        maxDepth: 4,
+        languageCensus: true
+      });
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0].languages).toEqual(['JavaScript']);
+      expect(new Set(entries[0].localPaths)).toEqual(new Set([featureDir, primaryDir]));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
