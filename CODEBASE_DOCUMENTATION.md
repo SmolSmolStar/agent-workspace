@@ -85,7 +85,12 @@ server/utils/processUtils.js       - Shared spawn/env hardening helpers
 ├─ Windows packaging guardrails: applies `windowsHide`/`CREATE_NO_WINDOW`, augments GUI-app PATH with Git/node/npm/common CLI locations, and builds hidden PowerShell argument lists
 └─ Cross-platform behavior: non-Windows platforms pass through unchanged so Linux/macOS launch behavior stays stable
 server/utils/nodePtyCompat.js      - Runtime compatibility shim for the bundled `node-pty` Windows ConPTY loader
-└─ Windows PTY guard: wraps stale ConPTY calls in memory (`startProcess`, `connect`, `resize`, `clear`, `kill`) via `loadNativeModule` when available or direct `conpty.node` patching when package internals differ, so packaged installs survive read-only app-resource layouts and mixed node-pty variants
+├─ Windows PTY guard: wraps stale ConPTY calls in memory (`startProcess`, `connect`, `resize`, `clear`, `kill`) via `loadNativeModule` when available or direct `conpty.node` patching when package internals differ, so packaged installs survive read-only app-resource layouts and mixed node-pty variants
+└─ Source runtime guard: delegates Node ABI mismatch recovery to `nodePtyRuntimeRepair` before retrying the real module load
+server/utils/nodePtyRuntimeRepair.js - Bounded source-checkout recovery for a `node-pty` native ABI mismatch
+├─ Exact runtime: invokes npm CLI through the active `process.execPath`, preventing a PATH-selected Node version from rebuilding the addon for the wrong ABI
+├─ Scope: only handles Node's explicit `NODE_MODULE_VERSION` mismatch, only once per process, and never writes into packaged `resources/backend`
+└─ Override: `ORCHESTRATOR_NODE_PTY_AUTO_REBUILD=false` disables automatic recovery
 server/utils/tmuxSessionBackend.js - tmux-backed session persistence (terminals survive app-server restarts)
 ├─ Model: the orchestrator's pty is only a tmux CLIENT; the real shell/agent runs in a pane under the tmux server on a dedicated per-instance socket (`agent-workspace-<port>`), so nodemon reloads/updates/crashes detach instead of killing sessions, and `new-session -A` re-adopts them on the next createSession()
 ├─ Env hygiene: scrubs `CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT`/`TMUX` at the tmux-server choke point so nested-session guards never trip; socket options make panes behave like plain terminals (status off, prefix None, mouse off, window-size latest)
