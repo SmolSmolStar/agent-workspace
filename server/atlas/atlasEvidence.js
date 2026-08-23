@@ -76,6 +76,13 @@ function isMissingHeadError(error) {
     && /(?:Needed a single revision|unknown revision|bad revision|ambiguous argument ['"]?HEAD)/i.test(error.detail);
 }
 
+async function settleConcurrentTasks(tasks) {
+  const results = await Promise.allSettled(tasks);
+  const failure = results.find((result) => result.status === 'rejected');
+  if (failure) throw failure.reason;
+  return results.map((result) => result.value);
+}
+
 async function inspectRepositoryEvidence(entry, options = {}, { runGitFn = runGit } = {}) {
   const repoId = String(entry?.id || entry?.repo || entry?.name || 'unknown');
   const candidateCount = checkoutCandidates(entry).length;
@@ -114,7 +121,7 @@ async function inspectRepositoryEvidence(entry, options = {}, { runGitFn = runGi
     tagsOutput,
     trackedOutput,
     touchLog
-  ] = await Promise.all([
+  ] = await settleConcurrentTasks([
     runGitFn(checkout, ['rev-list', '--count', 'HEAD']),
     runGitFn(checkout, ['shortlog', '-sn', 'HEAD']),
     runGitFn(checkout, ['log', '-1', '--format=%cI', 'HEAD']),

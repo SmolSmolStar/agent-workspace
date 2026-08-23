@@ -341,8 +341,14 @@ describe('atlasEvidence', () => {
   });
 
   test('keeps internal Git failure details out of the public error message', async () => {
+    let touchLogFinished = false;
     const analyzer = createRepositoryEvidenceAnalyzer({
       runGitFn: async (cwd, args) => {
+        if (args.includes('--name-only')) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          touchLogFinished = true;
+          return '';
+        }
         if (args[0] === 'ls-files') {
           throw new GitInspectionError(`fatal: failed inside ${cwd}`, args);
         }
@@ -361,6 +367,7 @@ describe('atlasEvidence', () => {
     expect(failure.message).toBe('Repository evidence inspection failed.');
     expect(failure.message).not.toContain(fs.realpathSync(root));
     expect(failure.detail).toContain(fs.realpathSync(checkout));
+    expect(touchLogFinished).toBe(true);
   });
 
   test('does not coalesce requests with different curated evidence', async () => {
