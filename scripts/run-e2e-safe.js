@@ -28,14 +28,56 @@ const orchestratorDir = path.join(e2eHome, '.orchestrator');
 const workspacesDir = path.join(orchestratorDir, 'workspaces');
 fs.mkdirSync(workspacesDir, { recursive: true });
 
+fs.writeFileSync(path.join(orchestratorDir, 'onboarding-state.json'), JSON.stringify({
+  version: 1,
+  updatedAt: new Date().toISOString(),
+  dependencySetup: {
+    legalAccepted: true,
+    completed: true,
+    dismissed: true,
+    currentStep: 0,
+    skippedActionIds: []
+  }
+}, null, 2));
+
+fs.writeFileSync(path.join(orchestratorDir, 'config.json'), JSON.stringify({
+  version: '2.0.0',
+  activeWorkspace: null,
+  workspaceDirectory: workspacesDir,
+  discovery: {
+    scanPaths: [],
+    exclude: ['node_modules', '.git', 'dist', 'build', 'target']
+  },
+  globalShortcuts: [],
+  server: {
+    port: Number.parseInt(port, 10),
+    host: '127.0.0.1'
+  },
+  ui: {
+    theme: 'dark',
+    startupDashboard: true,
+    rememberLastWorkspace: false
+  },
+  orchestratorStartup: {
+    autoUpdate: false,
+    openBrowserOnStart: false,
+    checkForNewRepos: false
+  },
+  user: {
+    username: null,
+    teammates: []
+  }
+}, null, 2));
+
 // Seed a minimal "empty" workspace so the dashboard always has an "Open Workspace" button.
 const seededWorkspace = {
   id: 'test-workspace',
   name: 'Test Workspace',
-  type: 'website',
+  type: 'custom',
   icon: '🧪',
   empty: true,
-  terminals: { pairs: 2, defaultVisible: [1, 2], layout: 'dynamic' },
+  repository: { path: '', masterBranch: 'master', remote: '' },
+  terminals: [],
   worktrees: { enabled: false, count: 0, namingPattern: 'work{n}', autoCreate: false },
   shortcuts: [],
   quickLinks: [],
@@ -50,6 +92,7 @@ const result = spawnSync('npx', ['playwright', 'test', ...passthroughArgs], {
   env: {
     ...process.env,
     ORCHESTRATOR_TEST_PORT: port,
+    ORCHESTRATOR_CODEX_USAGE_GUARD_ENABLED: 'true',
     HOME: e2eHome,
     USERPROFILE: e2eHome,
     // Keep Playwright browsers cache pointing at the user's real install location
