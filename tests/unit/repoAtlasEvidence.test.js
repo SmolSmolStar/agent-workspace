@@ -85,6 +85,27 @@ describe('atlasEvidence', () => {
     });
   });
 
+  test('keeps the preferred project ahead of a stale clone with the same origin', async () => {
+    const staleLayout = path.join(root, 'aaa-stale-clone');
+    const staleCheckout = path.join(staleLayout, 'master');
+    fs.mkdirSync(staleCheckout, { recursive: true });
+    git(staleCheckout, ['init', '-b', 'main']);
+    git(staleCheckout, ['remote', 'add', 'origin', 'https://github.com/owner/fixture.git']);
+    writeFile(staleCheckout, 'src/index.js', 'module.exports = () => "stale";\n');
+    commit(staleCheckout, 'feat: stale fixture', 'First Author', 'first@example.test');
+
+    const report = await analyzeRepositoryEvidence({
+      id: 'fixture',
+      repo: 'owner/fixture',
+      localPath: root,
+      localPaths: [root, checkout, staleLayout, staleCheckout],
+      worktreeLayout: true
+    });
+
+    expect(report.available).toBe(true);
+    expect(report.history.commitCount).toBe(2);
+  });
+
   test('does not mistake a nested repository for a flat checkout', async () => {
     const nested = path.join(checkout, 'fixtures', 'master');
     fs.mkdirSync(nested, { recursive: true });

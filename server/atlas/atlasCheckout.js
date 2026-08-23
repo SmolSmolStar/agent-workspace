@@ -31,6 +31,13 @@ function checkoutPriority(candidate) {
   return 2;
 }
 
+function checkoutClass(candidate) {
+  const name = path.basename(candidate.path).toLowerCase();
+  if (name === 'master' || name === 'main') return 0;
+  if (/^work\d+$/.test(name)) return 2;
+  return 1;
+}
+
 function canonicalPath(candidate) {
   try {
     return fs.realpathSync(candidate);
@@ -46,22 +53,24 @@ function checkoutCandidates(entry) {
   ];
   const candidates = new Map();
 
-  const add = (candidate, resolution) => {
+  const add = (candidate, resolution, sourceIndex) => {
     const value = String(candidate || '').trim();
     if (!value || !isGitCheckout(value)) return;
     const resolved = canonicalPath(value);
     const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
     const existing = candidates.get(key);
-    if (!existing || (existing.resolution === 'inferred' && resolution === 'exact')) {
-      candidates.set(key, { path: resolved, resolution });
-    }
+    candidates.set(key, {
+      path: existing?.path || resolved,
+      resolution: existing?.resolution === 'exact' || resolution === 'exact' ? 'exact' : 'inferred',
+      sourceIndex: Math.min(existing?.sourceIndex ?? sourceIndex, sourceIndex)
+    });
   };
 
-  for (const suppliedPath of supplied) {
+  for (const [sourceIndex, suppliedPath] of supplied.entries()) {
     const value = String(suppliedPath || '').trim();
     if (!value) continue;
     const resolved = path.resolve(value);
-    add(resolved, 'exact');
+    add(resolved, 'exact', sourceIndex);
     if (entry?.worktreeLayout !== true || isGitCheckout(resolved) || !isDirectory(resolved)) continue;
 
     let children = [];
@@ -72,14 +81,19 @@ function checkoutCandidates(entry) {
     } catch {
       children = [];
     }
-    for (const child of children) add(child, 'inferred');
+    for (const child of children) add(child, 'inferred', sourceIndex);
   }
 
   return [...candidates.values()].sort((left, right) => (
-    checkoutPriority(left) - checkoutPriority(right)
+    checkoutClass(left) - checkoutClass(right)
+      || left.sourceIndex - right.sourceIndex
+      || checkoutPriority(left) - checkoutPriority(right)
       || (left.resolution === right.resolution ? 0 : left.resolution === 'exact' ? -1 : 1)
       || left.path.localeCompare(right.path)
-  ));
+  )).map((candidate) => ({
+    path: candidate.path,
+    resolution: candidate.resolution
+  }));
 }
 
 async function resolveCheckout(entry, { runGit }) {
