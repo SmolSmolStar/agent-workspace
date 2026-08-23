@@ -37,6 +37,14 @@ function localPathsFor(entry) {
   return paths;
 }
 
+function rootCommitsFor(entry) {
+  const commits = Array.isArray(entry?.rootCommits) ? entry.rootCommits : [];
+  return [...new Set(commits
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter((value) => /^[a-f0-9]{40,64}$/.test(value)))]
+    .sort();
+}
+
 function discoveryIdentity(entry) {
   const slug = repositorySlug(entry);
   if (slug) return `github:${slug.toLowerCase()}`;
@@ -45,7 +53,40 @@ function discoveryIdentity(entry) {
     const key = process.platform === 'win32' ? localPath.toLowerCase() : localPath;
     return `local:${key}`;
   }
+  const rootCommits = rootCommitsFor(entry);
+  if (rootCommits.length) return `git-roots:${rootCommits.join(',')}`;
   return `id:${kebab(entry?.id || entry?.name)}`;
+}
+
+function collisionIdentity(entry) {
+  const slug = repositorySlug(entry);
+  if (slug) return `github:${slug.toLowerCase()}`;
+  const rootCommits = rootCommitsFor(entry);
+  if (rootCommits.length) return `git-roots:${rootCommits.join(',')}`;
+  return discoveryIdentity(entry);
+}
+
+function identityWarnings(entries) {
+  const byRoots = new Map();
+
+  for (const entry of entries) {
+    if (repositorySlug(entry)) continue;
+    const rootCommits = rootCommitsFor(entry);
+    if (!rootCommits.length) continue;
+    const key = rootCommits.join(',');
+    const bucket = byRoots.get(key) || { rootCommits, entries: [] };
+    bucket.entries.push(entry);
+    byRoots.set(key, bucket);
+  }
+
+  return [...byRoots.values()]
+    .filter((bucket) => bucket.entries.length > 1)
+    .map((bucket) => ({
+      type: 'shared-root-commits',
+      rootCommits: bucket.rootCommits,
+      candidates: bucket.entries.map((entry) => entry.id).filter(Boolean).sort()
+    }))
+    .sort((left, right) => left.candidates.join(',').localeCompare(right.candidates.join(',')));
 }
 
 function comparePreferredLocal(left, right) {
@@ -106,12 +147,22 @@ function disambiguateIds(entries) {
     .sort(([leftId], [rightId]) => leftId.localeCompare(rightId));
 
   for (const [baseId, bucket] of collisions) {
+    const portableCounts = new Map();
+    for (const entry of bucket) {
+      const key = collisionIdentity(entry);
+      portableCounts.set(key, (portableCounts.get(key) || 0) + 1);
+    }
+    const disambiguationKey = (entry) => {
+      const portable = collisionIdentity(entry);
+      if (portableCounts.get(portable) === 1) return portable;
+      return `${portable}|${discoveryIdentity(entry)}`;
+    };
     const ordered = bucket.slice().sort((left, right) => (
-      discoveryIdentity(left).localeCompare(discoveryIdentity(right))
+      disambiguationKey(left).localeCompare(disambiguationKey(right))
     ));
     for (const entry of ordered) {
       const slug = repositorySlug(entry);
-      const identityKey = discoveryIdentity(entry);
+      const identityKey = disambiguationKey(entry);
       const suffix = createHash('sha256').update(identityKey).digest('hex').slice(0, 8);
       const preferred = (slug && kebab(slug)) || (baseId ? `${baseId}-${suffix}` : `repo-${suffix}`);
       let candidate = preferred;
@@ -133,7 +184,10 @@ module.exports = {
   parseOwnerRepo,
   repositorySlug,
   localPathsFor,
+  rootCommitsFor,
   discoveryIdentity,
+  collisionIdentity,
+  identityWarnings,
   comparePreferredLocal,
   uniqueStrings,
   latestActivity,
