@@ -129,12 +129,16 @@ describe('NodePtyRuntimeRepair', () => {
     expect(spawnSyncImpl).toHaveBeenCalledTimes(1);
   });
 
-  test('requires a real npm CLI JavaScript entrypoint', () => {
-    const fsImpl = { existsSync: jest.fn((candidate) => candidate === '/runtime/npm.cmd') };
+  test.each([
+    'npm.cmd',
+    'yarn.js'
+  ])('rejects an unsupported package manager entrypoint named %s', (entrypoint) => {
+    const candidate = path.join(RUNTIME_ROOT, entrypoint);
+    const fsImpl = { existsSync: jest.fn((value) => value === candidate) };
 
     expect(resolveNpmCli({
-      env: { npm_execpath: '/runtime/npm.cmd' },
-      execPath: '/runtime/node',
+      env: { npm_execpath: candidate },
+      execPath: NODE_EXECUTABLE,
       fsImpl
     })).toBeNull();
   });

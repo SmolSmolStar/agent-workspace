@@ -899,6 +899,9 @@ that PR's own restart. Caveats:
   exact running Node executable before retrying the module load. Set
   `ORCHESTRATOR_NODE_PTY_AUTO_REBUILD=false` to disable this recovery. Packaged backends
   remain read-only and fail closed instead of trying to modify installed app resources.
+- Other native load failures remain explicit. For a missing binary, interrupted install, or
+  non-ABI native error in a source checkout, inspect the reported error and run
+  `npm rebuild node-pty` manually.
 - The browser UI does a brief WebSocket reconnect at restart; no action needed, it recovers
   on its own within a few seconds.
 - If persistence is disabled or tmux is unavailable, fall back to the deferred-restart

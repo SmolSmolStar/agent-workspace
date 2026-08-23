@@ -48,7 +48,7 @@ function resolveNpmCli({
   ];
 
   for (const candidate of candidates) {
-    if (!candidate || path.extname(candidate).toLowerCase() !== '.js') continue;
+    if (!candidate || path.basename(candidate).toLowerCase() !== 'npm-cli.js') continue;
     if (fsImpl.existsSync(candidate)) return candidate;
   }
 
