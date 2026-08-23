@@ -70,6 +70,64 @@ describe('VoiceControl Whisper recording format', () => {
     expect(recorder.start).toHaveBeenCalledTimes(1);
   });
 
+  test('releases the microphone when recorder setup fails', async () => {
+    const stop = jest.fn();
+    const stream = { getTracks: () => [{ stop }] };
+
+    class BrokenMediaRecorder {
+      static isTypeSupported() {
+        return true;
+      }
+
+      constructor() {
+        throw new Error('recorder setup failed');
+      }
+    }
+
+    const VoiceControl = loadVoiceControlClass({
+      MediaRecorderImpl: BrokenMediaRecorder,
+      navigatorImpl: {
+        mediaDevices: {
+          getUserMedia: async () => stream
+        }
+      }
+    });
+    const control = Object.create(VoiceControl.prototype);
+    control.setStatus = jest.fn();
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    await control.startWhisperRecording();
+
+    expect(errorLog).toHaveBeenCalledWith('Failed to start Whisper recording:', expect.any(Error));
+    errorLog.mockRestore();
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(control.mediaRecorder).toBeNull();
+    expect(control.setStatus).toHaveBeenCalledWith('Microphone unavailable', 'error');
+  });
+
+  test('releases the microphone when recorder stop fails', () => {
+    const stopTrack = jest.fn();
+    const VoiceControl = loadVoiceControlClass();
+    const control = Object.create(VoiceControl.prototype);
+    control.isListening = true;
+    control.transcriptionBackend = 'whisper';
+    control.mediaStream = { getTracks: () => [{ stop: stopTrack }] };
+    control.mediaRecorder = { stop: () => { throw new Error('recorder stop failed'); } };
+    control.button = { classList: { remove: jest.fn() } };
+    control.setStatus = jest.fn();
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    control.stopListening();
+
+    expect(errorLog).toHaveBeenCalledWith('Failed to stop recording:', expect.any(Error));
+    errorLog.mockRestore();
+    expect(stopTrack).toHaveBeenCalledTimes(1);
+    expect(control.mediaStream).toBeNull();
+    expect(control.isListening).toBe(false);
+    expect(control.button.classList.remove).toHaveBeenCalledWith('listening');
+    expect(control.setStatus).toHaveBeenCalledWith('Microphone unavailable', 'error');
+  });
+
   test('keeps WebM upload behavior unchanged', () => {
     const VoiceControl = loadVoiceControlClass();
     const control = Object.create(VoiceControl.prototype);
@@ -85,13 +143,33 @@ describe('VoiceControl Whisper recording format', () => {
     ['audio/mp4;codecs=mp4a.40.2', 'mp4'],
     ['video/mp4', 'mp4'],
     ['video/webm;codecs=opus', 'webm'],
-    ['audio/aac', 'webm']
+    ['audio/aac', 'aac']
   ])('maps recorder MIME %s to its upload extension', (mimeType, extension) => {
     const VoiceControl = loadVoiceControlClass();
     const control = Object.create(VoiceControl.prototype);
     control.mediaRecorder = { mimeType };
 
     expect(control.getRecordingUploadFormat()).toEqual({ mimeType, extension });
+  });
+
+  test('uses a chunk MIME when the recorder does not report one', () => {
+    const VoiceControl = loadVoiceControlClass();
+    const control = Object.create(VoiceControl.prototype);
+    control.mediaRecorder = { mimeType: '' };
+    control.audioChunks = [{ type: 'video/mp4' }];
+
+    expect(control.getRecordingUploadFormat()).toEqual({
+      mimeType: 'video/mp4',
+      extension: 'mp4'
+    });
+  });
+
+  test('rejects an unknown recorder format instead of relabeling it as WebM', () => {
+    const VoiceControl = loadVoiceControlClass();
+    const control = Object.create(VoiceControl.prototype);
+    control.mediaRecorder = { mimeType: 'audio/flac' };
+
+    expect(() => control.getRecordingUploadFormat()).toThrow('Unsupported recording format: audio/flac');
   });
 
   test('uploads MP4 recorder output as MP4', async () => {

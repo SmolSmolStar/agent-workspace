@@ -139,7 +139,7 @@ server/encryptedStore.js           - Reusable AES-256-GCM encrypted JSON store h
 server/serviceStackRuntimeService.js - Workspace service-stack runtime supervisor (start/stop/restart, desired state, auto-restart, health checks)
 server/auditExportService.js       - Redacted audit export across activity + scheduler logs (JSON/CSV)
 server/networkSecurityPolicy.js    - Bind-host/auth safety policy helpers (loopback defaults + LAN auth guardrails)
-server/audioUploadPolicy.js        - Whisper upload allowlist shared by multipart routes, including WebM and browser MP4/M4A recordings
+server/audioUploadPolicy.js        - Whisper multipart allowlist; explicit MIME types must match their audio extension, generic binary uploads use the extension allowlist, and rejections return JSON
 server/processTelemetryBenchmarkService.js - Release benchmark metrics (onboarding/runtime/review), snapshot comparisons, release-note markdown generation
 server/projectTypeService.js       - Project taxonomy loader/validator for category→framework→template metadata (`config/project-types.json`)
 server/githubCloneWorktreeService.js - GitHub import flow for Quick Work (`owner/repo` parse, category/subfolder placement, clone into `master/`, and mixed-worktree bootstrap)
@@ -279,7 +279,7 @@ client/assets/agent-workspace-logo.png - Shared circular brand mark used by the 
 
 client/terminal.js                 - Terminal component implementation
 client/terminal-manager.js         - Terminal lifecycle management
-client/voice-control.js            - Push-to-talk Google/Whisper client that preserves the MediaRecorder MIME type and matching upload extension
+client/voice-control.js            - Push-to-talk Google/Whisper client that preserves supported MediaRecorder formats, derives the matching extension, and releases microphone tracks after setup failure
 client/file-watcher-adapter.js     - File watching integration
 client/notifications.js            - Browser notification handling
 

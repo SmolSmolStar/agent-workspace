@@ -26,3 +26,19 @@ test('accepts an MP4 browser recording at the Whisper multipart boundary', async
     expect([200, 500]).toContain(response.status());
   }
 });
+
+test('rejects an explicit non-audio MIME even when the filename looks supported', async ({ request }) => {
+  const response = await request.post('/api/whisper/command', {
+    multipart: {
+      audio: {
+        name: 'recording.mp4',
+        mimeType: 'image/png',
+        buffer: Buffer.from('not-audio')
+      }
+    }
+  });
+
+  expect(response.status()).toBe(400);
+  expect(response.headers()['content-type']).toContain('application/json');
+  await expect(response.json()).resolves.toEqual({ error: 'Invalid audio format' });
+});

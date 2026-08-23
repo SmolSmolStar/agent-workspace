@@ -5,6 +5,8 @@ describe('audioUploadPolicy', () => {
     expect(isSupportedAudioUpload({ mimetype: 'audio/mp4', originalname: 'recording.mp4' })).toBe(true);
     expect(isSupportedAudioUpload({ mimetype: 'audio/mp4; codecs=mp4a.40.2', originalname: 'recording.mp4' })).toBe(true);
     expect(isSupportedAudioUpload({ mimetype: 'audio/x-m4a', originalname: 'recording.m4a' })).toBe(true);
+    expect(isSupportedAudioUpload({ mimetype: 'video/mp4', originalname: 'recording.mp4' })).toBe(true);
+    expect(isSupportedAudioUpload({ mimetype: 'audio/aac', originalname: 'recording.aac' })).toBe(true);
   });
 
   test('keeps existing audio formats and extension fallback', () => {
@@ -15,6 +17,8 @@ describe('audioUploadPolicy', () => {
   test('rejects unsupported uploads', () => {
     expect(isSupportedAudioUpload({ mimetype: 'image/png', originalname: 'recording.png' })).toBe(false);
     expect(isSupportedAudioUpload({ mimetype: 'application/octet-stream', originalname: 'recording.bin' })).toBe(false);
+    expect(isSupportedAudioUpload({ mimetype: 'image/png', originalname: 'recording.mp4' })).toBe(false);
+    expect(isSupportedAudioUpload({ mimetype: 'audio/mp4', originalname: 'recording.webm' })).toBe(false);
   });
 
   test('normalizes codec-qualified MIME types', () => {
