@@ -233,6 +233,43 @@ describe('Repo Atlas discovery identity', () => {
     expect(entries.map((entry) => entry.repo)).toEqual(['alice/shared', 'bob/shared']);
   });
 
+  test('same-named local-only repositories receive stable distinct ids', () => {
+    const first = {
+      id: 'prototype',
+      name: 'prototype',
+      localPath: '/repos/alpha/prototype'
+    };
+    const second = {
+      id: 'prototype',
+      name: 'prototype',
+      localPath: '/repos/beta/prototype'
+    };
+
+    const forward = discovery.mergeDiscovery([first, second], []);
+    const reverse = discovery.mergeDiscovery([second, first], []);
+
+    expect(forward).toEqual(reverse);
+    expect(new Set(forward.map((entry) => entry.id))).toHaveProperty('size', 2);
+    expect(forward.every((entry) => /^prototype-[a-f0-9]{8}$/.test(entry.id))).toBe(true);
+  });
+
+  test('disambiguated slugs do not replace an existing short id', () => {
+    const entries = [
+      { id: 'shared', name: 'shared', repo: 'alice/shared' },
+      { id: 'shared', name: 'shared', repo: 'bob/shared' },
+      { id: 'alice-shared', name: 'alice-shared', repo: 'charlie/alice-shared' }
+    ];
+
+    const forward = discovery.mergeDiscovery(entries, []);
+    const reverse = discovery.mergeDiscovery(entries.slice().reverse(), []);
+
+    expect(forward).toEqual(reverse);
+    expect(new Set(forward.map((entry) => entry.id))).toHaveProperty('size', 3);
+    expect(forward.find((entry) => entry.repo === 'charlie/alice-shared')?.id).toBe('alice-shared');
+    expect(forward.find((entry) => entry.repo === 'alice/shared')?.id)
+      .toMatch(/^alice-shared-[a-f0-9]{8}$/);
+  });
+
   test('local scanning retains sibling checkout paths under one project root', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-discovery-'));
     const projectRoot = path.join(tmpDir, 'sample');

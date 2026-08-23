@@ -1,3 +1,4 @@
+const { createHash } = require('crypto');
 const path = require('path');
 
 const { kebab } = require('./atlasSchema');
@@ -113,11 +114,35 @@ function disambiguateIds(entries) {
     byId.set(id, bucket);
   }
 
-  for (const bucket of byId.values()) {
-    if (bucket.length < 2) continue;
-    for (const entry of bucket) {
+  const used = new Set();
+  for (const [id, bucket] of byId) {
+    if (bucket.length !== 1) continue;
+    bucket[0].id = id;
+    used.add(id);
+  }
+
+  const collisions = [...byId.entries()]
+    .filter(([, bucket]) => bucket.length > 1)
+    .sort(([leftId], [rightId]) => leftId.localeCompare(rightId));
+
+  for (const [baseId, bucket] of collisions) {
+    const ordered = bucket.slice().sort((left, right) => (
+      discoveryIdentity(left).localeCompare(discoveryIdentity(right))
+    ));
+    for (const entry of ordered) {
       const slug = repositorySlug(entry);
-      if (slug) entry.id = kebab(slug);
+      const identityKey = discoveryIdentity(entry);
+      const suffix = createHash('sha256').update(identityKey).digest('hex').slice(0, 8);
+      const preferred = (slug && kebab(slug)) || (baseId ? `${baseId}-${suffix}` : `repo-${suffix}`);
+      let candidate = preferred;
+      if (used.has(candidate)) candidate = `${preferred}-${suffix}`;
+      let counter = 2;
+      while (used.has(candidate)) {
+        candidate = `${preferred}-${suffix}-${counter}`;
+        counter += 1;
+      }
+      entry.id = candidate;
+      used.add(candidate);
     }
   }
 
