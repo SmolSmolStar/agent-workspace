@@ -35,9 +35,12 @@ Results are ranked by quality (1–5, recorded **per topic**), and repos the use
 atlas digest                        # compact whole-map overview — cheap, paste-able
 atlas topics                        # every topic anyone has recorded, and who has it
 atlas show <id>                     # everything known about one repo
+atlas evidence <id>                 # live history, code/test counts, and representative paths
 atlas list --platform roblox --no-forks
 atlas find testing --min-quality 4
 ```
+
+Use `atlas evidence <id> --json` before describing why a local repo matters. When the entry has a GitHub identity, the command verifies the checkout's `origin` before inspection. It reports measured facts and keeps source contents and absolute machine paths out of the result. A `frequently-changed-source` path is a place to inspect, not a quality rating. Curated highlights remain the only quality judgement.
 
 `atlas digest` is the right first call when you want orientation rather than an answer. It is deliberately terse:
 
@@ -110,4 +113,4 @@ Never change a repo's `visibility` or `groups` on the user's behalf. Bundles are
 
 If `atlas` is not on PATH, run it directly: `node <agent-workspace>/scripts/atlas.js <command>`.
 If it reports no repos, the map has never been built: `atlas scan`.
-The orchestrator exposes the same data at `GET /api/atlas/find?topic=...`, `/api/atlas/digest`, `/api/atlas/entries`.
+The orchestrator exposes the same data at `GET /api/atlas/find?topic=...`, `/api/atlas/digest`, `/api/atlas/entries`, and `/api/atlas/entries/:id/evidence`.
