@@ -1,6 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const RepoAtlasService = require('../../server/repoAtlasService');
 const store = require('../../server/atlas/atlasStore');
@@ -87,6 +88,7 @@ describe('RepoAtlasService', () => {
     atlas.addHighlight('owner/acme-tycoon', { topic: 'testing', quality: 5 });
 
     expect(Object.keys(store.loadEntries())).toEqual(['acme-tycoon']);
+    expect(store.loadEntries()['acme-tycoon'].repo).toBe('owner/acme-tycoon');
     expect(atlas.getEntry('acme-tycoon').highlights[0].topic).toBe('testing');
   });
 
@@ -179,6 +181,90 @@ describe('RepoAtlasService', () => {
     expect(status.registryDir).toContain('registry');
     expect(status.curatedCount).toBe(1);
   });
+
+  test('a uniquely matched legacy registry id follows the discovered repository', () => {
+    const currentId = 'acme-tycoon-7b4f913a';
+    store.saveDiscoveryCache([{
+      id: currentId,
+      name: 'acme-tycoon',
+      localPath: repoDir,
+      rootCommits: ['a'.repeat(40)],
+      cloned: true
+    }]);
+    store.upsertRegistryEntry('acme-tycoon', {
+      rootCommits: ['a'.repeat(40)],
+      highlights: [{ topic: 'testing', quality: 5 }]
+    });
+    atlas.invalidate();
+
+    expect(atlas.getEntries()).toEqual([
+      expect.objectContaining({
+        id: currentId,
+        highlights: [expect.objectContaining({ topic: 'testing', quality: 5 })],
+        sources: ['discovery', 'registry']
+      })
+    ]);
+    expect(atlas.getEntry('acme-tycoon')?.id).toBe(currentId);
+    expect(atlas.validate().identityWarnings).toEqual([]);
+
+    atlas.addAvoid(currentId, { topic: 'ui', reason: 'legacy alias write' });
+    expect(Object.keys(store.loadEntries())).toEqual(['acme-tycoon']);
+    expect(store.loadEntries()['acme-tycoon'].rootCommits).toEqual(['a'.repeat(40)]);
+    expect(atlas.getEntry(currentId)?.avoid).toEqual([{ topic: 'ui', reason: 'legacy alias write' }]);
+  });
+
+  test('ambiguous legacy registry ids are reported instead of silently reassigned', () => {
+    store.saveDiscoveryCache([
+      { id: 'prototype-11111111', name: 'prototype', localPath: '/repos/alpha/prototype', cloned: true },
+      { id: 'prototype-22222222', name: 'prototype', localPath: '/repos/beta/prototype', cloned: true }
+    ]);
+    store.upsertRegistryEntry('prototype', {
+      highlights: [{ topic: 'testing', quality: 4 }]
+    });
+    atlas.invalidate();
+
+    expect(atlas.validate().identityWarnings).toEqual([{
+      type: 'ambiguous-registry-id',
+      registryId: 'prototype',
+      candidates: ['prototype-11111111', 'prototype-22222222']
+    }]);
+    expect(atlas.getStatus().identityWarningCount).toBe(1);
+  });
+
+  test('a name-only legacy registry match is reported as unverified', () => {
+    store.saveDiscoveryCache([
+      { id: 'prototype-11111111', name: 'prototype', localPath: '/repos/alpha/prototype', cloned: true }
+    ]);
+    store.upsertRegistryEntry('prototype', {
+      highlights: [{ topic: 'testing', quality: 4 }]
+    });
+    atlas.invalidate();
+
+    expect(atlas.validate().identityWarnings).toEqual([{
+      type: 'unverified-registry-id',
+      registryId: 'prototype',
+      candidates: ['prototype-11111111']
+    }]);
+  });
+
+  test('subscription entries cannot retain another machine local path aliases', () => {
+    store.saveSubscription('teammate', {
+      audience: 'team',
+      entries: [{
+        id: 'shared-tool',
+        name: 'shared-tool',
+        localPath: '/home/teammate/shared-tool',
+        localPaths: ['/home/teammate/shared-tool', '/home/teammate/shared-tool/work1'],
+        rootCommits: ['a'.repeat(40)]
+      }]
+    });
+    atlas.invalidate();
+
+    const shared = atlas.getEntry('shared-tool');
+    expect(shared.localPath).toBeNull();
+    expect(shared.localPaths).toEqual([]);
+    expect(shared.rootCommits).toEqual([]);
+  });
 });
 
 describe('Repo Atlas discovery identity', () => {
@@ -251,6 +337,52 @@ describe('Repo Atlas discovery identity', () => {
     expect(forward).toEqual(reverse);
     expect(new Set(forward.map((entry) => entry.id))).toHaveProperty('size', 2);
     expect(forward.every((entry) => /^prototype-[a-f0-9]{8}$/.test(entry.id))).toBe(true);
+  });
+
+  test('local-only collision ids stay stable when checkout paths change machines', () => {
+    const machineA = discovery.mergeDiscovery([
+      { id: 'prototype', name: 'prototype', localPath: '/machine-a/alpha/prototype', rootCommits: ['a'.repeat(40)] },
+      { id: 'prototype', name: 'prototype', localPath: '/machine-a/beta/prototype', rootCommits: ['b'.repeat(40)] }
+    ], []);
+    const machineB = discovery.mergeDiscovery([
+      { id: 'prototype', name: 'prototype', localPath: '/machine-b/alpha/prototype', rootCommits: ['a'.repeat(40)] },
+      { id: 'prototype', name: 'prototype', localPath: '/machine-b/beta/prototype', rootCommits: ['b'.repeat(40)] }
+    ], []);
+
+    expect(machineA.map((entry) => entry.id)).toEqual(machineB.map((entry) => entry.id));
+  });
+
+  test('local scanning derives portable collision ids from repository history', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-portable-identity-'));
+    const machineA = path.join(tmpDir, 'machine-a');
+    const machineB = path.join(tmpDir, 'machine-b');
+    const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+    const seed = (parent, label) => {
+      const repo = path.join(parent, label, 'prototype');
+      fs.mkdirSync(repo, { recursive: true });
+      git(repo, ['init', '--initial-branch=master']);
+      fs.writeFileSync(path.join(repo, 'README.md'), `${label}\n`);
+      git(repo, ['add', 'README.md']);
+      git(repo, ['-c', 'user.name=Atlas Test', '-c', 'user.email=atlas-test@localhost', 'commit', '-m', label]);
+      return repo;
+    };
+
+    try {
+      const alpha = seed(machineA, 'alpha');
+      const beta = seed(machineA, 'beta');
+      fs.mkdirSync(path.join(machineB, 'alpha'), { recursive: true });
+      fs.mkdirSync(path.join(machineB, 'beta'), { recursive: true });
+      git(path.join(machineB, 'alpha'), ['clone', '--quiet', alpha, 'prototype']);
+      git(path.join(machineB, 'beta'), ['clone', '--quiet', beta, 'prototype']);
+
+      const first = await discovery.scanLocalRepos({ roots: [machineA], maxDepth: 3, languageCensus: false });
+      const second = await discovery.scanLocalRepos({ roots: [machineB], maxDepth: 3, languageCensus: false });
+
+      expect(first.map((entry) => entry.id)).toEqual(second.map((entry) => entry.id));
+      expect(first.every((entry) => entry.rootCommits.length === 1)).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   test('disambiguated slugs do not replace an existing short id', () => {

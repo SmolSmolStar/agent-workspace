@@ -108,6 +108,7 @@ const commands = {
     out(`scan roots    ${status.scanRoots.join(', ')}`);
     out(`repos         ${status.entryCount} (${status.clonedCount} cloned locally, ${status.curatedCount} curated)`);
     out(`highlights    ${status.highlightCount}`);
+    if (status.identityWarningCount) out(`identity      ${status.identityWarningCount} warning(s), run \`atlas doctor\``);
     out(`audiences     ${status.audiences.join(', ') || 'none configured'}`);
     out(`remote        ${status.remote || 'not configured — run `atlas remote set <git-url>`'}`);
     if (status.subscriptions.length) {
@@ -443,7 +444,14 @@ const commands = {
       for (const row of report.warnings.slice(0, 20)) out(`  ${row.id}: ${row.warnings.join('; ')}`);
       if (report.warnings.length > 20) out(`  … and ${report.warnings.length - 20} more`);
     }
-    if (!report.errors.length && !report.warnings.length) out('Everything checks out.');
+    if (report.identityWarnings.length) {
+      out('');
+      out(`Identity warnings (${report.identityWarnings.length}):`);
+      for (const row of report.identityWarnings) {
+        out(`  ${row.registryId}: matches ${row.candidates.join(', ') || 'no discovered repository'}`);
+      }
+    }
+    if (!report.errors.length && !report.warnings.length && !report.identityWarnings.length) out('Everything checks out.');
   },
 
   init(positionals, flags) {

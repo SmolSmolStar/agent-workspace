@@ -37,9 +37,19 @@ function localPathsFor(entry) {
   return paths;
 }
 
+function rootCommitsFor(entry) {
+  const commits = Array.isArray(entry?.rootCommits) ? entry.rootCommits : [];
+  return [...new Set(commits
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter((value) => /^[a-f0-9]{40,64}$/.test(value)))]
+    .sort();
+}
+
 function discoveryIdentity(entry) {
   const slug = repositorySlug(entry);
   if (slug) return `github:${slug.toLowerCase()}`;
+  const rootCommits = rootCommitsFor(entry);
+  if (rootCommits.length) return `git-roots:${rootCommits.join(',')}`;
   const [localPath] = localPathsFor(entry);
   if (localPath) {
     const key = process.platform === 'win32' ? localPath.toLowerCase() : localPath;
@@ -133,6 +143,7 @@ module.exports = {
   parseOwnerRepo,
   repositorySlug,
   localPathsFor,
+  rootCommitsFor,
   discoveryIdentity,
   comparePreferredLocal,
   uniqueStrings,
