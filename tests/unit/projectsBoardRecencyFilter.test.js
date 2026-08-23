@@ -139,4 +139,16 @@ describe('ProjectsBoardUI recency filter', () => {
     await expect(opening).resolves.toBe(false);
     expect(ui.hide).not.toHaveBeenCalled();
   });
+
+  test('stacks the board toolbar and keeps both actions flexible on phones', () => {
+    const stylesheet = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'client', 'styles', 'projects-board.css'),
+      'utf8'
+    );
+    const mobile = stylesheet.match(/@media \(max-width: 700px\) \{([\s\S]*)\}\s*$/)?.[1] || '';
+
+    expect(mobile).toMatch(/\.projects-board-toolbar\s*\{[^}]*flex-wrap:\s*wrap/s);
+    expect(mobile).toMatch(/\.projects-board-toolbar \.search-input,[^{]*\.projects-board-recency\s*\{[^}]*flex:\s*1 1 100%/s);
+    expect(mobile).toMatch(/\.projects-board-portfolio-button,[^{]*#projects-board-refresh\s*\{[^}]*flex:\s*1 1 calc\(50% - 5px\)/s);
+  });
 });

@@ -317,6 +317,7 @@ client/styles/tabs.css             - Tab bar styling
 
 client/styles/projects-board.css   - Projects Board modal styling
 client/styles/atlas-portfolio.css  - High-contrast responsive layout for the Repo Atlas evidence report
+tests/e2e/atlas-portfolio-mobile.spec.js - 390x667 browser regression for Projects Board entry visibility, portfolio action bounds, and Back navigation
 
 client/usage-limits-widget.js      - Header chip (right of Ports) showing Claude/Codex/Grok plan usage + reset countdowns from `/api/usage/limits`
 ├─ Generic Claude buckets: renders any extra rate-limit bucket Claude Code reports (e.g. `seven_day_fable` → "Fable 7d") via usageLimitsService `extraBuckets`; tooltip shows the live model name
