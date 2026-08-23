@@ -110,7 +110,7 @@ server/codexUsageGuardService.js   - Durable Codex weekly-limit rollover and exh
 ├─ Persistence: synchronizes every live app instance through `<data-dir>/codex-usage-guard.json`; a persisted drain wins over stale polls, while an explicit durable resume reaches processes that have completed a live poll
 ├─ Failure handling: state read or write failures block new Codex work, and failed resume writes preserve the previous drain
 └─ Operations: `GET /api/usage/codex-guard` reports state; `POST /api/usage/codex-guard/resume` explicitly reopens a healthy drained guard; set `ORCHESTRATOR_CODEX_USAGE_GUARD_ENABLED=false` and restart only when app-server monitoring cannot run, which disables this safety gate
-server/codexUsageGuardStateStore.js - Exclusive lock, stale-lock recovery, and atomic JSON replacement for shared guard state
+server/codexUsageGuardStateStore.js - Exclusive writer lock and atomic JSON replacement for shared guard state; abandoned locks fail closed instead of risking a concurrent takeover
 server/codexRateLimitsClient.js    - Bounded Codex app-server JSON-RPC client with versioned initialize/read envelopes, bounded owned-child cancellation, and capped stderr diagnostics
 tests/unit/codexRateLimitsClient.test.js - Production envelope, notification filtering, raw reset epoch, bounded child cleanup, and stderr coverage
 tests/unit/codexUsageGuardService.test.js - Pending, startup failure, recovery, rollover, exhaustion, restart persistence, cross-process races, lock cleanup, and shutdown coverage

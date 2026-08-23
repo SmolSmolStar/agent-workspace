@@ -359,20 +359,23 @@ describe('CodexUsageGuardService', () => {
     expect(fs.existsSync(`${storePath}.lock`)).toBe(false);
   });
 
-  test('recovers a stale state writer lock', async () => {
+  test('fails closed instead of stealing an abandoned state writer lock', async () => {
     usageLimitsService.getCodexLimits.mockResolvedValue(
       codexLimits({ usedPercentage: 64, resetsAt: 1_800_000_000 })
     );
     const lockPath = `${storePath}.lock`;
     fs.writeFileSync(lockPath, '', 'utf8');
-    const staleTime = new Date(Date.now() - 31_000);
-    fs.utimesSync(lockPath, staleTime, staleTime);
+    const clock = jest.spyOn(Date, 'now')
+      .mockReturnValueOnce(1_000)
+      .mockReturnValue(2_001);
 
     expect(await createService().pollOnce()).toMatchObject({
-      mode: 'monitoring',
-      admittingCodex: true
+      mode: 'monitor-unavailable',
+      admittingCodex: false,
+      lastError: 'usage-guard-state-persist-failed: usage-guard-state-lock-timeout'
     });
-    expect(fs.existsSync(lockPath)).toBe(false);
+    expect(fs.existsSync(lockPath)).toBe(true);
+    clock.mockRestore();
   });
 
   test('shares drains and durable resumes across live service instances', async () => {

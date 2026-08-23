@@ -2,7 +2,6 @@ const fs = require('fs');
 const path = require('path');
 
 const LOCK_TIMEOUT_MS = 1_000;
-const LOCK_STALE_MS = 30_000;
 const LOCK_RETRY_MS = 10;
 const LOCK_WAIT = new Int32Array(new SharedArrayBuffer(4));
 
@@ -52,16 +51,6 @@ class CodexUsageGuardStateStore {
         return lockPath;
       } catch (error) {
         if (error?.code !== 'EEXIST') throw error;
-        try {
-          const ageMs = Date.now() - fs.statSync(lockPath).mtimeMs;
-          if (ageMs >= LOCK_STALE_MS) {
-            fs.unlinkSync(lockPath);
-            continue;
-          }
-        } catch (statError) {
-          if (statError?.code === 'ENOENT') continue;
-          throw statError;
-        }
         if (Date.now() >= deadline) throw new Error('usage-guard-state-lock-timeout');
         Atomics.wait(LOCK_WAIT, 0, 0, LOCK_RETRY_MS);
       }
