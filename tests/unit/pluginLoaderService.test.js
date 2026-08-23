@@ -35,6 +35,7 @@ describe('PluginLoaderService', () => {
           registerCommand('ping', {
             category: 'plugin',
             description: 'Ping demo plugin',
+            aliases: ['pong', 'demo-health-check'],
             params: [],
             examples: [],
             handler: async () => ({ message: 'pong' })
@@ -53,6 +54,10 @@ describe('PluginLoaderService', () => {
     expect(status.loaded[0].id).toBe('demo');
     expect(commandRegistry.register).toHaveBeenCalled();
     expect(commandRegistry.register.mock.calls[0][0]).toBe('demo-ping');
+    expect(commandRegistry.register.mock.calls[0][1].aliases).toEqual([
+      'demo-pong',
+      'demo-health-check'
+    ]);
   });
 
   test('fails plugin load when manifestVersion is unsupported', async () => {

@@ -16,6 +16,61 @@ describe('VoiceCommandService (rule parsing)', () => {
     expect(parsed.params).toEqual({});
   });
 
+  test('auto-parses advertised aliases and reports them in dynamic command help', () => {
+    commandRegistry.register('test-dynamic-alias-command', {
+      category: 'test',
+      description: 'test',
+      aliases: ['test-dynamic-shortcut'],
+      params: [],
+      examples: [],
+      handler: () => ({})
+    });
+
+    const commands = voiceCommandService.getVoiceCommands();
+    const help = commands.find((entry) => entry.command === 'test-dynamic-alias-command');
+    const parsed = voiceCommandService.parseWithRules('test dynamic shortcut');
+
+    expect(help?.examples).toContain('test-dynamic-shortcut');
+    expect(parsed.command).toBe('test-dynamic-alias-command');
+    expect(parsed.params).toEqual({});
+  });
+
+  test('rebuilds exact rules when re-registration changes required parameters', () => {
+    const command = {
+      category: 'test',
+      description: 'test',
+      aliases: ['test-mutable-voice-shortcut'],
+      examples: [],
+      handler: () => ({})
+    };
+    commandRegistry.register('test-mutable-voice-command', {
+      ...command,
+      params: []
+    });
+    expect(voiceCommandService.parseWithRules('test mutable voice shortcut')?.command)
+      .toBe('test-mutable-voice-command');
+
+    commandRegistry.register('test-mutable-voice-command', {
+      ...command,
+      params: [{ name: 'target', required: true }]
+    });
+    expect(voiceCommandService.parseWithRules('test mutable voice shortcut')).toBeNull();
+
+    commandRegistry.register('test-mutable-voice-command', {
+      ...command,
+      params: []
+    });
+    expect(voiceCommandService.parseWithRules('test mutable voice shortcut')?.command)
+      .toBe('test-mutable-voice-command');
+  });
+
+  test('includes advertised aliases in the LLM command catalog', () => {
+    const prompt = voiceCommandService.buildLLMPrompt('please open my projects');
+
+    expect(prompt).toContain('test-dynamic-alias-command');
+    expect(prompt).toContain('aliases: test-dynamic-shortcut');
+  });
+
   test('parses workflow mode commands', () => {
     const focus = voiceCommandService.parseWithRules('enter focus mode');
     expect(focus.command).toBe('set-workflow-mode');
