@@ -117,10 +117,10 @@ server/threadService.js            - Workspace/project thread persistence (`~/.o
 └─ Lifecycle: create/list/close/archive + session association updates
 server/projectBoardService.js      - Local projects kanban board persistence (`~/.orchestrator/project-board.json`) + APIs (`GET /api/projects/board`, `POST /api/projects/board/move`, `POST /api/projects/board/patch`)
 server/repoAtlasService.js         - Repo Atlas singleton — registry bootstrap, scan orchestration, alias-aware manifest loading, query/propose/audience/sync facade (data: `~/.agent-workspace/atlas/`, registry synced to a PRIVATE git repo)
-server/atlas/                      - Atlas internals: atlasSchema (validation), atlasStore (one-file-per-repo registry IO under `entries/`), atlasIdentity (robust GitHub remote grouping, root-history-aware local grouping, root-commit collision ids, shared-history warnings, deterministic preferred checkouts, local aliases), atlasRegistryIdentity (legacy curation rebinding, exact-file precedence, duplicate and ambiguity warnings), atlasDiscovery (Git common-dir-aware linked-worktree grouping that keeps unrelated conventional-name siblings separate, plus GitHub scan; shallow clones omit unreliable root commits), atlasQuery (find/digest/list), atlasEvidence plus atlasCheckout, atlasCodeEvidence, and atlasEvidenceCoordinator (origin-verified live Git facts, code/test signals, safe file counts, request coalescing), atlasProposals (agent write-back queue, user approves), atlasCompiler (per-audience bundle redaction that keeps private entries on the machine), atlasSync (git pull/rebase/push of the registry)
+server/atlas/                      - Atlas internals: atlasSchema (validation), atlasStore (one-file-per-repo registry IO under `entries/`), atlasIdentity (robust GitHub remote grouping, root-history-aware local grouping, root-commit collision ids, shared-history warnings, deterministic preferred checkouts, local aliases), atlasRegistryIdentity (legacy curation rebinding, exact-file precedence, duplicate and ambiguity warnings), atlasDiscovery (Git common-dir-aware linked-worktree grouping that keeps unrelated conventional-name siblings separate, plus GitHub scan; shallow clones omit unreliable root commits), atlasQuery (find/digest/list), atlasEvidence plus atlasCheckout, atlasCodeEvidence, and atlasEvidenceCoordinator (origin-verified live Git facts, code/test signals, safe file counts, request coalescing), atlasPortfolio (bounded multi-repository reports with path-safe metadata), atlasProposals (agent write-back queue, user approves), atlasCompiler (per-audience bundle redaction that keeps private entries on the machine), atlasSync (git pull/rebase/push of the registry)
 server/atlas/atlasLocalMetadata.js - Bounded package and README summary extraction for local repositories; rejects binary files, symlinks, markup blocks, setup boilerplate, and placeholder descriptions
-server/routes/atlasRoutes.js       - `/api/atlas/*` REST surface (status/entries/evidence/find/digest/topics/refresh/proposals/audiences/subscriptions) with read/write policy gating
-scripts/atlas.js                   - `atlas` CLI (scan/status/list/show/evidence/find/digest/note/avoid/set/audience/compile/propose/proposals/remote/sync/publish/subscribe/doctor/init)
+server/routes/atlasRoutes.js       - `/api/atlas/*` REST surface (status/entries/evidence/portfolio/find/digest/topics/refresh/proposals/audiences/subscriptions) with read/write policy gating
+scripts/atlas.js                   - `atlas` CLI (scan/status/list/show/evidence/report/find/digest/note/avoid/set/audience/compile/propose/proposals/remote/sync/publish/subscribe/doctor/init)
 config/repo-atlas-topics.json      - Canonical topic vocabulary for atlas highlights
 config/repo-atlas.example.json     - Annotated `.repo-atlas.json` per-repo manifest example
 skills/public/repo-atlas/SKILL.md  - Agent-facing skill doc for querying/proposing to the atlas
@@ -301,6 +301,8 @@ client/greenfield-framework-modal.js - Framework creation modal for the greenfie
 └─ Full-screen wizard UI for project scaffolding + workspace creation
 
 client/projects-board.js           - Projects kanban board modal (Archive/Maybe One Day/Backlog/Active/Ship Next/Done; drag/drop + re-order; collapsible columns; live tag; hide forks; "Edited" recency radio filter All/30d/7d/1d from cached GitHub `pushedAt` — no extra API calls, local-only repos stay visible; card push-age hints; persists via `/api/projects/board`)
+client/atlas-portfolio.js          - Filterable Repo Atlas evidence report modal with local/remote scope, bounded repository counts, code/history metrics, practice signals, and escaped representative paths
+client/atlas-portfolio-renderer.js - Pure escaped HTML renderer for Repo Atlas portfolio summaries, repository metrics, practice signals, and representative paths
 
 client/workspace-tab-manager.js    - Multi-workspace tab management (NEW)
 ├─ Features: Browser-like tabs for multiple workspaces
@@ -315,6 +317,8 @@ client/styles/tabs.css             - Tab bar styling
 └─ Responsive: Mobile and desktop layouts
 
 client/styles/projects-board.css   - Projects Board modal styling
+client/styles/atlas-portfolio.css  - High-contrast responsive layout for the Repo Atlas evidence report
+tests/e2e/atlas-portfolio-mobile.spec.js - 390x667 browser regression for Projects Board entry visibility, portfolio action bounds, and Back navigation
 
 client/usage-limits-widget.js      - Header chip (right of Ports) showing Claude/Codex/Grok plan usage + reset countdowns from `/api/usage/limits`
 ├─ Generic Claude buckets: renders any extra rate-limit bucket Claude Code reports (e.g. `seven_day_fable` → "Fable 7d") via usageLimitsService `extraBuckets`; tooltip shows the live model name

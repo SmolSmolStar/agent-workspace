@@ -36829,6 +36829,12 @@ document.addEventListener('DOMContentLoaded', () => {
   orchestrator = new ClaudeOrchestrator();
   window.orchestrator = orchestrator; // Make globally available
   try {
+    if (window.AtlasPortfolioUI && !window.atlasPortfolioUI) {
+      window.atlasPortfolioUI = new window.AtlasPortfolioUI(orchestrator);
+      orchestrator.atlasPortfolioUI = window.atlasPortfolioUI;
+    }
+  } catch {}
+  try {
     if (window.ProjectsBoardUI && !window.projectsBoardUI) {
       window.projectsBoardUI = new window.ProjectsBoardUI(orchestrator);
       orchestrator.projectsBoardUI = window.projectsBoardUI;

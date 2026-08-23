@@ -89,4 +89,66 @@ describe('ProjectsBoardUI recency filter', () => {
     expect(ui.formatPushAge(Date.now() - 3 * 24 * 60 * 60 * 1000)).toBe('3d ago');
     expect(ui.formatPushAge(null)).toBe('');
   });
+
+  test('keeps the board open when repository evidence is unavailable', async () => {
+    const showToast = jest.fn();
+    const ui = new ProjectsBoardUI({ showToast });
+    ui.hide = jest.fn();
+
+    await expect(ui.openPortfolio()).resolves.toBe(false);
+
+    expect(ui.hide).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith('Repository evidence is unavailable.', 'error');
+  });
+
+  test('opens repository evidence before hiding the board', async () => {
+    const calls = [];
+    const portfolioUI = {
+      visible: false,
+      show: async () => {
+        calls.push('show');
+        portfolioUI.visible = true;
+        return true;
+      }
+    };
+    const ui = new ProjectsBoardUI({
+      atlasPortfolioUI: portfolioUI
+    });
+    ui.hide = () => { calls.push('hide'); };
+
+    await expect(ui.openPortfolio()).resolves.toBe(true);
+
+    expect(calls).toEqual(['show', 'hide']);
+  });
+
+  test('does not re-hide the board after a delayed portfolio open was cancelled', async () => {
+    let finishOpening;
+    const portfolioUI = {
+      visible: true,
+      show: () => new Promise((resolve) => {
+        finishOpening = resolve;
+      })
+    };
+    const ui = new ProjectsBoardUI({ atlasPortfolioUI: portfolioUI });
+    ui.hide = jest.fn();
+
+    const opening = ui.openPortfolio();
+    portfolioUI.visible = false;
+    finishOpening(true);
+
+    await expect(opening).resolves.toBe(false);
+    expect(ui.hide).not.toHaveBeenCalled();
+  });
+
+  test('stacks the board toolbar and keeps both actions flexible on phones', () => {
+    const stylesheet = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'client', 'styles', 'projects-board.css'),
+      'utf8'
+    );
+    const mobile = stylesheet.match(/@media \(max-width: 700px\) \{([\s\S]*)\}\s*$/)?.[1] || '';
+
+    expect(mobile).toMatch(/\.projects-board-toolbar\s*\{[^}]*flex-wrap:\s*wrap/s);
+    expect(mobile).toMatch(/\.projects-board-toolbar \.search-input,[^{]*\.projects-board-recency\s*\{[^}]*flex:\s*1 1 100%/s);
+    expect(mobile).toMatch(/\.projects-board-portfolio-button,[^{]*#projects-board-refresh\s*\{[^}]*flex:\s*1 1 calc\(50% - 5px\)/s);
+  });
 });

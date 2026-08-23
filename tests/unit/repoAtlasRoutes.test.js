@@ -96,3 +96,130 @@ describe('atlasRoutes evidence endpoint', () => {
     });
   });
 });
+
+describe('atlasRoutes portfolio endpoint', () => {
+  let server;
+  let portfolioReporter;
+  let search;
+  let logger;
+
+  beforeEach((done) => {
+    const app = express();
+    search = jest.fn().mockReturnValue([{ id: 'fixture', cloned: true }]);
+    portfolioReporter = jest.fn().mockResolvedValue({
+      includeRemote: true,
+      eligibleCount: 1,
+      repositoryCount: 1,
+      omittedCount: 0,
+      repositories: []
+    });
+    logger = { error: jest.fn() };
+    app.use('/api/atlas', createAtlasRoutes({
+      repoAtlasService: { search },
+      portfolioReporter,
+      logger
+    }));
+    server = app.listen(0, '127.0.0.1', done);
+  });
+
+  afterEach((done) => {
+    server.close(done);
+  });
+
+  test('returns a filtered portfolio report', async () => {
+    const response = await getJson(
+      server,
+      '/api/atlas/portfolio?kind=game&platform=roblox&group=core&status=active&language=Luau&q=merge&minQuality=4&includeForks=false&includeArchived=false&includeRemote=true&limit=7&maxExamples=3'
+    );
+
+    expect(response).toEqual({
+      status: 200,
+      body: {
+        ok: true,
+        report: {
+          includeRemote: true,
+          eligibleCount: 1,
+          repositoryCount: 1,
+          omittedCount: 0,
+          repositories: []
+        }
+      }
+    });
+    expect(search).toHaveBeenCalledWith({
+      kind: 'game',
+      platform: 'roblox',
+      group: 'core',
+      status: 'active',
+      language: 'Luau',
+      query: 'merge',
+      minQuality: '4',
+      includeForks: false,
+      includeArchived: false
+    });
+    expect(portfolioReporter).toHaveBeenCalledWith(
+      [{ id: 'fixture', cloned: true }],
+      { includeRemote: true, limit: 7, maxExamples: '3' }
+    );
+  });
+
+  test('defaults to local repositories and the report module limits', async () => {
+    const response = await getJson(server, '/api/atlas/portfolio');
+
+    expect(response.status).toBe(200);
+    expect(search).toHaveBeenCalledWith({
+      kind: undefined,
+      platform: undefined,
+      group: undefined,
+      status: undefined,
+      language: undefined,
+      query: undefined,
+      minQuality: undefined,
+      includeForks: true,
+      includeArchived: true
+    });
+    expect(portfolioReporter).toHaveBeenCalledWith(
+      [{ id: 'fixture', cloned: true }],
+      { includeRemote: false, limit: undefined, maxExamples: undefined }
+    );
+  });
+
+  test.each(['', '0', '51', '1.5', 'many'])('rejects invalid report limit %p', async (limit) => {
+    const response = await getJson(server, `/api/atlas/portfolio?limit=${encodeURIComponent(limit)}`);
+
+    expect(response).toEqual({
+      status: 400,
+      body: { ok: false, error: 'limit needs an integer from 1 to 50' }
+    });
+    expect(search).not.toHaveBeenCalled();
+    expect(portfolioReporter).not.toHaveBeenCalled();
+  });
+
+  test('keeps internal report failures out of the response', async () => {
+    portfolioReporter.mockRejectedValueOnce(new Error('failed under /home/private/repository'));
+
+    const response = await getJson(server, '/api/atlas/portfolio');
+
+    expect(response).toEqual({
+      status: 500,
+      body: { ok: false, error: 'Repository portfolio report failed.' }
+    });
+    expect(JSON.stringify(response.body)).not.toContain('/home/private/repository');
+    expect(logger.error).toHaveBeenCalledWith(
+      'Atlas: create portfolio report failed',
+      expect.objectContaining({ error: 'failed under /home/private/repository' })
+    );
+  });
+
+  test('returns a retryable status when portfolio evidence is saturated', async () => {
+    const error = new Error('Repository evidence queue is full.');
+    error.code = EVIDENCE_QUEUE_FULL_CODE;
+    portfolioReporter.mockRejectedValueOnce(error);
+
+    const response = await getJson(server, '/api/atlas/portfolio');
+
+    expect(response).toEqual({
+      status: 503,
+      body: { ok: false, error: 'Repository evidence queue is busy. Retry later.' }
+    });
+  });
+});

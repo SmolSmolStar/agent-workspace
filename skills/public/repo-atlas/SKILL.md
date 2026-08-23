@@ -114,3 +114,4 @@ Never change a repo's `visibility` or `groups` on the user's behalf. Bundles are
 If `atlas` is not on PATH, run it directly: `node <agent-workspace>/scripts/atlas.js <command>`.
 If it reports no repos, the map has never been built: `atlas scan`.
 The orchestrator exposes the same data at `GET /api/atlas/find?topic=...`, `/api/atlas/digest`, `/api/atlas/entries`, and `/api/atlas/entries/:id/evidence`.
+Use `GET /api/atlas/portfolio?kind=game&platform=roblox&limit=10` for a read-only JSON report across matching repositories. It defaults to local checkouts. Add `includeRemote=true` only when unavailable evidence rows are useful.

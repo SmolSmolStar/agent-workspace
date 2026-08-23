@@ -9,7 +9,7 @@ function git(cwd, args) {
   return execFileSync('git', args, { cwd, stdio: 'pipe' }).toString().trim();
 }
 
-describe('atlas evidence CLI', () => {
+describe('atlas evidence and report CLI', () => {
   let root;
   let checkout;
   let atlasDir;
@@ -29,7 +29,22 @@ describe('atlas evidence CLI', () => {
 
     fs.writeFileSync(
       path.join(atlasDir, 'registry', 'entries', 'fixture.json'),
-      `${JSON.stringify({ id: 'fixture', repo: 'owner/fixture', localPath: checkout }, null, 2)}\n`
+      `${JSON.stringify({
+        id: 'fixture',
+        repo: 'owner/fixture',
+        summary: 'Small fixture repository',
+        localPath: checkout,
+        cloned: true
+      }, null, 2)}\n`
+    );
+    fs.writeFileSync(
+      path.join(atlasDir, 'registry', 'entries', 'remote.json'),
+      `${JSON.stringify({
+        id: 'remote',
+        repo: 'owner/remote',
+        summary: 'Remote-only fixture',
+        cloned: false
+      }, null, 2)}\n`
     );
   });
 
@@ -64,5 +79,48 @@ describe('atlas evidence CLI', () => {
     expect(report.available).toBe(true);
     expect(report.checkout).toEqual({ resolution: 'exact' });
     expect(JSON.stringify(report)).not.toContain(root);
+  });
+
+  test('reports filtered repositories with descriptions and no machine paths', () => {
+    const result = run(['report', '--limit', '1', '--max-examples', '2', '--json']);
+    const report = JSON.parse(result.stdout);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(report).toMatchObject({ eligibleCount: 1, repositoryCount: 1, omittedCount: 0 });
+    expect(report.repositories[0].repository).toMatchObject({
+      id: 'fixture',
+      summary: 'Small fixture repository'
+    });
+    expect(report.repositories[0].evidence.available).toBe(true);
+    expect(JSON.stringify(report)).not.toContain(root);
+    expect(JSON.stringify(report)).not.toContain('localPath');
+  });
+
+  test('prints a path-safe text report', () => {
+    const result = run(['report', '--limit', '1', '--max-examples', '2']);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toContain('Repository evidence report');
+    expect(result.stdout).toContain('Small fixture repository');
+    expect(result.stdout).toContain('1 commits | 1 author identities');
+    expect(result.stdout).not.toContain(root);
+  });
+
+  test('rejects an invalid report limit before running evidence', () => {
+    const result = run(['report', '--limit', 'many']);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('atlas: --limit needs an integer from 1 to 50');
+  });
+
+  test('rejects a report limit with no value', () => {
+    const result = run(['report', '--limit']);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('atlas: --limit needs an integer from 1 to 50');
   });
 });

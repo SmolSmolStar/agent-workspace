@@ -80,6 +80,24 @@ class ProjectsBoardUI {
     }
   }
 
+  async openPortfolio() {
+    const portfolioUI = this.orchestrator?.atlasPortfolioUI;
+    if (typeof portfolioUI?.show !== 'function') {
+      this.orchestrator?.showToast?.('Repository evidence is unavailable.', 'error');
+      return false;
+    }
+    let opened;
+    try {
+      opened = await portfolioUI.show();
+    } catch {
+      this.orchestrator?.showToast?.('Repository evidence is unavailable.', 'error');
+      return false;
+    }
+    if (opened === false || portfolioUI.visible === false) return false;
+    this.hide();
+    return true;
+  }
+
   createModal() {
     const modal = document.createElement('div');
     modal.id = this.modalId;
@@ -110,6 +128,7 @@ class ProjectsBoardUI {
               </label>
             `).join('')}
           </div>
+          <button type="button" class="projects-board-portfolio-button" id="projects-board-portfolio">Repository evidence</button>
           <button type="button" class="button-secondary" id="projects-board-refresh" title="Refresh repos + board">↻ Refresh</button>
         </div>
         <div class="projects-board-meta" id="projects-board-meta"></div>
@@ -136,6 +155,11 @@ class ProjectsBoardUI {
     modal.querySelector('#projects-board-refresh')?.addEventListener('click', async (e) => {
       e.preventDefault();
       await this.refresh({ force: true });
+    });
+
+    modal.querySelector('#projects-board-portfolio')?.addEventListener('click', async (e) => {
+      e.preventDefault();
+      await this.openPortfolio();
     });
 
     const filterEl = modal.querySelector('#projects-board-filter');
