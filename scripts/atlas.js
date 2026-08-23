@@ -13,6 +13,12 @@ const RepoAtlasService = require('../server/repoAtlasService');
 const { KINDS, STATUSES, MATURITIES, VISIBILITIES, listCanonicalTopics } = require('../server/atlas/atlasSchema');
 const { formatDecisions } = require('../server/atlas/atlasCompiler');
 const { analyzeRepositoryEvidence, formatRepositoryEvidence } = require('../server/atlas/atlasEvidence');
+const {
+  createPortfolioReport,
+  formatPortfolioReport,
+  DEFAULT_REPOSITORY_LIMIT,
+  MAX_REPOSITORY_LIMIT
+} = require('../server/atlas/atlasPortfolio');
 
 const atlas = RepoAtlasService.getInstance();
 
@@ -96,6 +102,27 @@ function formatIdentityWarning(row) {
   return `${row.registryId}: matches ${(row.candidates || []).join(', ') || 'no discovered repository'}`;
 }
 
+function searchOptions(flags) {
+  return {
+    kind: flags.kind === true ? '' : flags.kind,
+    platform: flags.platform === true ? '' : flags.platform,
+    group: flags.group === true ? '' : flags.group,
+    status: flags.status === true ? '' : flags.status,
+    language: flags.language === true ? '' : flags.language,
+    query: flags.query === true ? '' : flags.query,
+    minQuality: flags.minQuality,
+    includeForks: flags.noForks !== true,
+    includeArchived: flags.noArchived !== true
+  };
+}
+
+function reportLimit(value) {
+  if (value === undefined) return DEFAULT_REPOSITORY_LIMIT;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_REPOSITORY_LIMIT) return null;
+  return parsed;
+}
+
 const commands = {
   async scan(_positionals, flags) {
     out('Scanning… (local git repos + gh repo list)');
@@ -142,17 +169,7 @@ const commands = {
   },
 
   list(_positionals, flags) {
-    const entries = atlas.search({
-      kind: flags.kind === true ? '' : flags.kind,
-      platform: flags.platform === true ? '' : flags.platform,
-      group: flags.group === true ? '' : flags.group,
-      status: flags.status === true ? '' : flags.status,
-      language: flags.language === true ? '' : flags.language,
-      query: flags.query === true ? '' : flags.query,
-      minQuality: flags.minQuality,
-      includeForks: flags.noForks !== true,
-      includeArchived: flags.noArchived !== true
-    });
+    const entries = atlas.search(searchOptions(flags));
 
     if (flags.json) return printJson(entries);
     if (!entries.length) return out('No repos matched.');
@@ -186,6 +203,18 @@ const commands = {
     if (!entry) return fail(`no repo "${id}" on the map (try \`atlas list --query ${id}\`)`);
     const report = await analyzeRepositoryEvidence(entry, { maxExamples: flags.max });
     return flags.json ? printJson(report) : out(formatRepositoryEvidence(report));
+  },
+
+  async report(_positionals, flags) {
+    const limit = reportLimit(flags.limit);
+    if (limit === null) return fail(`--limit needs an integer from 1 to ${MAX_REPOSITORY_LIMIT}`);
+    const entries = atlas.search(searchOptions(flags));
+    const report = await createPortfolioReport(entries, {
+      limit,
+      maxExamples: flags.maxExamples,
+      includeRemote: flags.includeRemote === true
+    });
+    return flags.json ? printJson(report) : out(formatPortfolioReport(report));
   },
 
   find(positionals, flags) {
@@ -492,6 +521,8 @@ const commands = {
   atlas list [filters] [--json]            list repos
   atlas show <id> [--json]                 everything known about one repo
   atlas evidence <id> [--max N] [--json]   measured history, code, tests, and paths
+  atlas report [filters] [--limit N] [--max-examples N] [--include-remote] [--json]
+                                           bounded evidence report across matching repos
   atlas find <topic> [--min-quality N]     who did this well? (the main query)
   atlas topics [--vocabulary]              topics in use / canonical vocabulary
   atlas digest [--group-by kind] [--max N] compact map to paste into a prompt
