@@ -183,6 +183,10 @@ describe('RepoAtlasService', () => {
 
 describe('Repo Atlas discovery identity', () => {
   test('duplicate clones collapse by remote slug and retain every local path', () => {
+    const primaryPath = path.resolve('/repos/agent-workspace');
+    const masterPath = path.join(primaryPath, 'master');
+    const work1Path = path.join(primaryPath, 'work1');
+    const featurePath = path.join(primaryPath, 'work-pr1029-jarvis');
     const github = [{
       id: 'agent-workspace',
       name: 'agent-workspace',
@@ -194,8 +198,8 @@ describe('Repo Atlas discovery identity', () => {
       id: 'agent-workspace',
       name: 'claude-orchestrator',
       repo: 'web3dev1337/agent-workspace',
-      localPath: '/repos/agent-workspace',
-      localPaths: ['/repos/agent-workspace', '/repos/agent-workspace/master', '/repos/agent-workspace/work1'],
+      localPath: primaryPath,
+      localPaths: [primaryPath, masterPath, work1Path],
       worktreeLayout: true,
       cloned: true
     };
@@ -203,7 +207,7 @@ describe('Repo Atlas discovery identity', () => {
       id: 'agent-workspace',
       name: 'work-pr1029-jarvis',
       repo: 'Web3Dev1337/Agent-Workspace',
-      localPath: '/repos/agent-workspace/work-pr1029-jarvis',
+      localPath: featurePath,
       worktreeLayout: false,
       cloned: true
     };
@@ -215,13 +219,8 @@ describe('Repo Atlas discovery identity', () => {
     expect(forward).toHaveLength(1);
     expect(forward[0].name).toBe('agent-workspace');
     expect(forward[0].repo).toBe('web3dev1337/agent-workspace');
-    expect(forward[0].localPath).toBe('/repos/agent-workspace');
-    expect(forward[0].localPaths).toEqual([
-      '/repos/agent-workspace',
-      '/repos/agent-workspace/master',
-      '/repos/agent-workspace/work1',
-      '/repos/agent-workspace/work-pr1029-jarvis'
-    ]);
+    expect(forward[0].localPath).toBe(primaryPath);
+    expect(forward[0].localPaths).toEqual([primaryPath, masterPath, work1Path, featurePath]);
   });
 
   test('same-named repositories under different owners remain distinct', () => {

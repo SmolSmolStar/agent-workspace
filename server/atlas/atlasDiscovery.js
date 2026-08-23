@@ -306,6 +306,7 @@ function mergeDiscovery(localEntries = [], githubEntries = []) {
     const slug = repositorySlug(github) || repositorySlug(preferred);
     const repoName = slug.split('/').filter(Boolean).slice(-1)[0] || '';
     const localPaths = uniqueStrings(rankedLocals.map(localPathsFor));
+    const [preferredPath] = localPathsFor(preferred);
     const entry = {
       ...(github || {}),
       ...preferred,
@@ -322,7 +323,7 @@ function mergeDiscovery(localEntries = [], githubEntries = []) {
         ...rankedLocals.map((candidate) => candidate.languages || []),
         github?.languages || []
       ]),
-      localPath: preferred.localPath || localPaths[0] || null,
+      localPath: preferredPath || localPaths[0] || null,
       localPaths,
       remoteUrl: preferred.remoteUrl || github?.remoteUrl || '',
       lastActivity: latestActivity([github, ...rankedLocals]),
