@@ -213,6 +213,55 @@ describe('RepoAtlasService', () => {
     expect(atlas.getEntry(currentId)?.avoid).toEqual([{ topic: 'ui', reason: 'legacy alias write' }]);
   });
 
+  test('the current registry file wins when a stale alias identifies the same repository', () => {
+    const currentId = 'acme-tycoon-7b4f913a';
+    const rootCommit = 'a'.repeat(40);
+    store.saveDiscoveryCache([{
+      id: currentId,
+      name: 'acme-tycoon',
+      localPath: repoDir,
+      rootCommits: [rootCommit],
+      cloned: true
+    }]);
+    store.upsertRegistryEntry('aa-old', {
+      rootCommits: [rootCommit],
+      highlights: [{ topic: 'old-note', quality: 4 }]
+    });
+    store.upsertRegistryEntry(currentId, {
+      rootCommits: [rootCommit],
+      highlights: [{ topic: 'current-note', quality: 5 }]
+    });
+    atlas.invalidate();
+
+    expect(atlas.getEntry(currentId)?.highlights.map((item) => item.topic)).toEqual(['current-note']);
+    expect(atlas.getEntry('aa-old')?.id).toBe(currentId);
+    expect(atlas.validate().identityWarnings).toEqual([{
+      type: 'duplicate-registry-identity',
+      targetId: currentId,
+      registryIds: ['aa-old', currentId]
+    }]);
+
+    atlas.addHighlight(currentId, { topic: 'written-later', quality: 3 });
+
+    const registry = store.loadEntries();
+    expect(registry['aa-old'].highlights.map((item) => item.topic)).toEqual(['old-note']);
+    expect(registry[currentId].highlights.map((item) => item.topic))
+      .toEqual(['current-note', 'written-later']);
+    expect(atlas.getEntry(currentId)?.highlights.map((item) => item.topic))
+      .toEqual(['current-note', 'written-later']);
+
+    const doctorOutput = execFileSync(process.execPath, [
+      path.resolve(__dirname, '../../scripts/atlas.js'),
+      'doctor'
+    ], {
+      env: { ...process.env, AGENT_WORKSPACE_ATLAS_DIR: process.env.AGENT_WORKSPACE_ATLAS_DIR },
+      encoding: 'utf8'
+    });
+    expect(doctorOutput).toContain(
+      `${currentId}: registry files aa-old, ${currentId} identify the same repository`
+    );
+  });
+
   test('ambiguous legacy registry ids are reported instead of silently reassigned', () => {
     store.saveDiscoveryCache([
       { id: 'prototype-11111111', name: 'prototype', localPath: '/repos/alpha/prototype', cloned: true },
@@ -352,6 +401,25 @@ describe('Repo Atlas discovery identity', () => {
     expect(machineA.map((entry) => entry.id)).toEqual(machineB.map((entry) => entry.id));
   });
 
+  test('remote-less repositories copied from one template remain separate', () => {
+    const rootCommit = 'c'.repeat(40);
+    const entries = discovery.mergeDiscovery([
+      { id: 'game-a', name: 'game-a', localPath: '/repos/game-a', rootCommits: [rootCommit] },
+      { id: 'game-b', name: 'game-b', localPath: '/repos/game-b', rootCommits: [rootCommit] }
+    ], []);
+
+    expect(entries.map((entry) => entry.id)).toEqual(['game-a', 'game-b']);
+    expect(entries.map((entry) => entry.localPaths)).toEqual([
+      [path.resolve('/repos/game-a')],
+      [path.resolve('/repos/game-b')]
+    ]);
+    expect(discovery.identityWarnings(entries)).toEqual([{
+      type: 'shared-root-commits',
+      rootCommits: [rootCommit],
+      candidates: ['game-a', 'game-b']
+    }]);
+  });
+
   test('local scanning derives portable collision ids from repository history', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-portable-identity-'));
     const machineA = path.join(tmpDir, 'machine-a');
@@ -380,6 +448,38 @@ describe('Repo Atlas discovery identity', () => {
 
       expect(first.map((entry) => entry.id)).toEqual(second.map((entry) => entry.id));
       expect(first.every((entry) => entry.rootCommits.length === 1)).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('local scanning does not treat a shallow boundary as a repository root', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-shallow-identity-'));
+    const sourceDir = path.join(tmpDir, 'source');
+    const cloneRoot = path.join(tmpDir, 'clones');
+    const cloneDir = path.join(cloneRoot, 'shallow-copy');
+    const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+    try {
+      fs.mkdirSync(sourceDir, { recursive: true });
+      fs.mkdirSync(cloneRoot, { recursive: true });
+      git(sourceDir, ['init', '--initial-branch=master']);
+      fs.writeFileSync(path.join(sourceDir, 'README.md'), 'first\n');
+      git(sourceDir, ['add', 'README.md']);
+      git(sourceDir, ['-c', 'user.name=Atlas Test', '-c', 'user.email=atlas-test@localhost', 'commit', '-m', 'first']);
+      fs.appendFileSync(path.join(sourceDir, 'README.md'), 'second\n');
+      git(sourceDir, ['add', 'README.md']);
+      git(sourceDir, ['-c', 'user.name=Atlas Test', '-c', 'user.email=atlas-test@localhost', 'commit', '-m', 'second']);
+      git(cloneRoot, ['clone', '--quiet', '--depth', '1', `file://${sourceDir}`, cloneDir]);
+
+      const entries = await discovery.scanLocalRepos({
+        roots: [cloneRoot],
+        maxDepth: 2,
+        languageCensus: false
+      });
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0].rootCommits).toEqual([]);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

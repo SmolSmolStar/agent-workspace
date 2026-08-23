@@ -86,31 +86,45 @@ function reconcileRegistryLayers(byId, discoveredEntries, registryEntries) {
   const identityWarnings = [];
   const registryTargets = new Map();
   const registryAliases = new Map();
+  const byTarget = new Map();
 
   for (const [registryId, entry] of Object.entries(registryEntries || {})) {
     const resolution = resolveRegistryTarget(registryId, entry, discoveredEntries);
-    let targetId = resolution.targetId;
-    let slot = byId.get(targetId) || {};
-
-    if (slot.registry) {
-      identityWarnings.push({
-        type: 'ambiguous-registry-id',
-        registryId,
-        candidates: [targetId]
-      });
-      targetId = registryId;
-      slot = byId.get(targetId) || {};
-    } else if (resolution.warning) {
-      identityWarnings.push(resolution.warning);
-    }
-
-    slot.registry = { ...entry, __source: 'registry' };
-    byId.set(targetId, slot);
+    const targetId = resolution.targetId;
+    const bucket = byTarget.get(targetId) || [];
+    bucket.push({ registryId, entry });
+    byTarget.set(targetId, bucket);
     registryTargets.set(registryId, targetId);
-    if (!registryAliases.has(targetId)) registryAliases.set(targetId, registryId);
+    if (resolution.warning) identityWarnings.push(resolution.warning);
   }
 
-  identityWarnings.sort((left, right) => left.registryId.localeCompare(right.registryId));
+  for (const [targetId, records] of byTarget) {
+    const ordered = records.slice().sort((left, right) => {
+      const leftExact = left.registryId === targetId;
+      const rightExact = right.registryId === targetId;
+      if (leftExact !== rightExact) return leftExact ? -1 : 1;
+      return left.registryId.localeCompare(right.registryId);
+    });
+    const primary = ordered[0];
+    const slot = byId.get(targetId) || {};
+    slot.registry = { ...primary.entry, __source: 'registry' };
+    byId.set(targetId, slot);
+    registryAliases.set(targetId, primary.registryId);
+
+    if (ordered.length > 1) {
+      identityWarnings.push({
+        type: 'duplicate-registry-identity',
+        targetId,
+        registryIds: ordered.map((record) => record.registryId).sort()
+      });
+    }
+  }
+
+  identityWarnings.sort((left, right) => {
+    const leftKey = left.registryId || left.targetId || '';
+    const rightKey = right.registryId || right.targetId || '';
+    return leftKey.localeCompare(rightKey) || left.type.localeCompare(right.type);
+  });
   return { identityWarnings, registryTargets, registryAliases };
 }
 

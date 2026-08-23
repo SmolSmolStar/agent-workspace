@@ -85,6 +85,16 @@ function printJson(value) {
   out(JSON.stringify(value, null, 2));
 }
 
+function formatIdentityWarning(row) {
+  if (row.type === 'duplicate-registry-identity') {
+    return `${row.targetId}: registry files ${row.registryIds.join(', ')} identify the same repository`;
+  }
+  if (row.type === 'shared-root-commits') {
+    return `${row.candidates.join(', ')}: share Git root commits without a GitHub remote; Atlas kept them separate`;
+  }
+  return `${row.registryId}: matches ${(row.candidates || []).join(', ') || 'no discovered repository'}`;
+}
+
 const commands = {
   async scan(_positionals, flags) {
     out('Scanning… (local git repos + gh repo list)');
@@ -448,7 +458,7 @@ const commands = {
       out('');
       out(`Identity warnings (${report.identityWarnings.length}):`);
       for (const row of report.identityWarnings) {
-        out(`  ${row.registryId}: matches ${row.candidates.join(', ') || 'no discovered repository'}`);
+        out(`  ${formatIdentityWarning(row)}`);
       }
     }
     if (!report.errors.length && !report.warnings.length && !report.identityWarnings.length) out('Everything checks out.');

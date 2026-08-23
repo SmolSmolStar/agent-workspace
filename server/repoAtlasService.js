@@ -128,8 +128,12 @@ class RepoAtlasService {
       discovered,
       registry.entries
     );
+    const identityWarnings = [
+      ...identity.identityWarnings(discovered),
+      ...registryResolution.identityWarnings
+    ];
 
-    return { byId, registry, discoveryMeta: cached, ...registryResolution };
+    return { byId, registry, discoveryMeta: cached, ...registryResolution, identityWarnings };
   }
 
   getEntries({ force = false } = {}) {
