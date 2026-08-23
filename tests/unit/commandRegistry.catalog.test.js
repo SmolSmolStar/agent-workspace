@@ -80,4 +80,29 @@ describe('CommandRegistry catalog metadata', () => {
       handler: () => ({})
     })).toThrow('Alias already registered: shared-test-shortcut');
   });
+
+  test('re-registration replaces stale aliases without rejecting unchanged aliases', () => {
+    const command = {
+      category: 'test',
+      description: 'Reloadable alias target',
+      params: [],
+      handler: () => ({})
+    };
+    commandRegistry.register('test-reloadable-alias-target', {
+      ...command,
+      aliases: ['test-old-shortcut', 'test-kept-shortcut']
+    });
+    commandRegistry.register('test-reloadable-alias-target', {
+      ...command,
+      aliases: ['test-kept-shortcut', 'test-new-shortcut']
+    });
+
+    expect(commandRegistry.getCommand('test-old-shortcut')).toBeNull();
+    expect(commandRegistry.getCommand('test-kept-shortcut')?.name).toBe('test-reloadable-alias-target');
+    expect(commandRegistry.getCommand('test-new-shortcut')?.name).toBe('test-reloadable-alias-target');
+    expect(() => commandRegistry.register('test-reloadable-alias-target', {
+      ...command,
+      aliases: ['test-kept-shortcut', 'test-new-shortcut']
+    })).not.toThrow();
+  });
 });

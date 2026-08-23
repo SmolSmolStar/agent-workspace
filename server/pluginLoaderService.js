@@ -145,6 +145,13 @@ class PluginLoaderService {
         throw new Error(`Invalid capabilities.maxCommands (${capabilities.maxCommands})`);
       }
       const registeredCommands = new Set();
+      const normalizePluginCommandName = (value, kind) => {
+        const raw = String(value || '').trim().toLowerCase();
+        if (!raw) throw new Error(`Plugin command ${kind} is required`);
+        const safe = raw.replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+        if (!safe) throw new Error(`Invalid plugin command ${kind}: ${value}`);
+        return safe.startsWith(commandPrefix) ? safe : `${commandPrefix}${safe}`;
+      };
       const registerCommand = (name, config) => {
         if (!allowCommands) {
           throw new Error('Plugin manifest disables command registration (capabilities.commands=false)');
@@ -152,11 +159,7 @@ class PluginLoaderService {
         if (!commandRegistry || typeof commandRegistry.register !== 'function') {
           return null;
         }
-        const raw = String(name || '').trim().toLowerCase();
-        if (!raw) throw new Error('Plugin command name is required');
-        const safe = raw.replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-        if (!safe) throw new Error(`Invalid plugin command name: ${name}`);
-        const commandName = safe.startsWith(commandPrefix) ? safe : `${commandPrefix}${safe}`;
+        const commandName = normalizePluginCommandName(name, 'name');
         if (registeredCommands.has(commandName)) {
           throw new Error(`Plugin attempted to register duplicate command: ${commandName}`);
         }
@@ -168,6 +171,9 @@ class PluginLoaderService {
         }
 
         const cfg = { ...(config || {}) };
+        if (Array.isArray(cfg.aliases)) {
+          cfg.aliases = cfg.aliases.map((alias) => normalizePluginCommandName(alias, 'alias'));
+        }
         if (Array.isArray(cfg.surfaces)) {
           const requested = this.normalizeSurfaceList(cfg.surfaces);
           if (allowedSurfaces.length) {

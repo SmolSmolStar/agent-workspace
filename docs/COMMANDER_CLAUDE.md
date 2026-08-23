@@ -21,7 +21,7 @@ BASE_URL="http://${ORCHESTRATOR_HOST:-127.0.0.1}:${ORCHESTRATOR_PORT:-9460}"
 
 The Command Registry provides semantic, self-documenting commands. **This is the preferred way to control the Orchestrator.**
 
-Every alias returned by the command catalog is executable. The server resolves aliases to the canonical command before authorization and execution, so an alias has the same parameters, policy, and behavior as its canonical name. Voice and free-text parsing also use zero-parameter aliases as exact rules.
+Every alias returned by the command catalog is executable. The server resolves aliases to the canonical command before authorization and execution, so an alias has the same parameters, policy, and behavior as its canonical name. Voice and free-text parsing also use zero-parameter aliases as exact rules. Plugin commands and aliases stay under the plugin ID prefix.
 
 ### Discover Available Commands
 ```bash

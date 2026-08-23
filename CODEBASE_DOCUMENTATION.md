@@ -99,6 +99,7 @@ server/pullRequestService.js       - `gh`-backed PR search/view/merge/review wra
 └─ Invalidation: local merge/review actions clear the cache so the UI reflects them immediately
 server/commandRegistry.js          - Canonical Commander/voice/UI command catalog and execution dispatcher
 ├─ Aliases: advertised aliases resolve to one canonical command for metadata, policy checks, and execution; registration rejects ambiguous alias/name collisions
+├─ Plugin isolation: plugin command names and aliases share the plugin ID prefix, so plugins cannot reserve global command names
 └─ Discovery: grouped capabilities and the flat catalog expose the same canonical metadata
 server/voiceCommandService.js      - Rules-first natural-language command parser with optional Ollama/Claude fallback
 └─ Dynamic aliases: zero-parameter command names and aliases become exact voice rules, appear in voice help, and are included in LLM grounding prompts
