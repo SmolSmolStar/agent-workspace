@@ -544,6 +544,94 @@ describe('Repo Atlas discovery identity', () => {
     }
   });
 
+  test('keeps remote-less independent master and main repositories separate after merging', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-independent-local-siblings-'));
+    const projectRoot = path.join(tmpDir, 'sample');
+    const masterDir = path.join(projectRoot, 'master');
+    const mainDir = path.join(projectRoot, 'main');
+    const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+    const initialize = (repoPath, sourceName) => {
+      fs.mkdirSync(repoPath, { recursive: true });
+      git(repoPath, ['init', '--initial-branch=main']);
+      fs.writeFileSync(path.join(repoPath, sourceName), 'return true;\n');
+      git(repoPath, ['add', sourceName]);
+      git(repoPath, [
+        '-c', 'user.name=Atlas Test',
+        '-c', 'user.email=atlas-test@localhost',
+        'commit', '-m', 'initial'
+      ]);
+    };
+
+    try {
+      initialize(masterDir, 'index.js');
+      initialize(mainDir, 'init.lua');
+
+      const scanned = await discovery.scanLocalRepos({
+        roots: [tmpDir],
+        maxDepth: 3,
+        languageCensus: false
+      });
+      const entries = discovery.mergeDiscovery(scanned, []);
+
+      expect(scanned).toHaveLength(2);
+      expect(entries).toHaveLength(2);
+      expect(new Set(entries.flatMap((entry) => entry.rootCommits))).toHaveProperty('size', 2);
+      expect(new Set(entries.map((entry) => entry.id))).toHaveProperty('size', 2);
+      expect(discovery.identityWarnings(entries)).toEqual([]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('still merges remote-less sibling clones with the same repository root', () => {
+    const projectRoot = path.resolve('/repos/sample');
+    const masterDir = path.join(projectRoot, 'master');
+    const workDir = path.join(projectRoot, 'work1');
+    const rootCommit = 'a'.repeat(40);
+    const entries = discovery.mergeDiscovery([{
+      id: 'sample',
+      name: 'sample',
+      localPath: projectRoot,
+      localPaths: [projectRoot, masterDir],
+      rootCommits: [rootCommit],
+      worktreeLayout: true
+    }, {
+      id: 'sample',
+      name: 'sample',
+      localPath: projectRoot,
+      localPaths: [projectRoot, workDir],
+      rootCommits: [rootCommit],
+      worktreeLayout: true
+    }], []);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0].localPaths).toEqual([projectRoot, masterDir, workDir]);
+    expect(entries[0].rootCommits).toEqual([rootCommit]);
+  });
+
+  test('keeps remote-less sibling repositories without usable history separate', () => {
+    const projectRoot = path.resolve('/repos/sample');
+    const masterDir = path.join(projectRoot, 'master');
+    const mainDir = path.join(projectRoot, 'main');
+    const entries = discovery.mergeDiscovery([{
+      id: 'sample',
+      name: 'sample',
+      localPath: projectRoot,
+      localPaths: [projectRoot, masterDir],
+      rootCommits: []
+    }, {
+      id: 'sample',
+      name: 'sample',
+      localPath: projectRoot,
+      localPaths: [projectRoot, mainDir],
+      rootCommits: []
+    }], []);
+
+    expect(entries).toHaveLength(2);
+    expect(new Set(entries.map((entry) => entry.id))).toHaveProperty('size', 2);
+  });
+
   test('local scanning retains sibling checkout paths under one project root', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-discovery-'));
     const projectRoot = path.join(tmpDir, 'sample');

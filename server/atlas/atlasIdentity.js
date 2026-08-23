@@ -45,15 +45,23 @@ function rootCommitsFor(entry) {
     .sort();
 }
 
+function comparableLocalPath(candidate) {
+  const resolved = path.resolve(candidate);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
 function discoveryIdentity(entry) {
   const slug = repositorySlug(entry);
   if (slug) return `github:${slug.toLowerCase()}`;
-  const [localPath] = localPathsFor(entry);
-  if (localPath) {
-    const key = process.platform === 'win32' ? localPath.toLowerCase() : localPath;
-    return `local:${key}`;
-  }
+  const localPaths = localPathsFor(entry);
+  const [localPath, checkoutPath] = localPaths;
   const rootCommits = rootCommitsFor(entry);
+  if (localPath) {
+    const localIdentity = `local:${comparableLocalPath(localPath)}`;
+    if (rootCommits.length) return `${localIdentity}|git-roots:${rootCommits.join(',')}`;
+    if (checkoutPath) return `${localIdentity}|checkout:${comparableLocalPath(checkoutPath)}`;
+    return localIdentity;
+  }
   if (rootCommits.length) return `git-roots:${rootCommits.join(',')}`;
   return `id:${kebab(entry?.id || entry?.name)}`;
 }
