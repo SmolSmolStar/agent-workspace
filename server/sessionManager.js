@@ -159,13 +159,62 @@ class SessionManager extends EventEmitter {
       if (!decision || decision.allowed !== false) return { allowed: true };
       return decision;
     } catch (error) {
-      logger.error('Agent admission check failed open', {
+      const normalizedAgent = String(agentId || '').trim().toLowerCase();
+      logger.error('Agent admission check failed', {
         agentId,
         sessionId,
         error: error.message
       });
-      return { allowed: true };
+      return normalizedAgent === 'codex'
+        ? {
+            allowed: false,
+            code: 'codex-usage-monitor-error',
+            reason: 'admission-check-failed'
+          }
+        : { allowed: true };
     }
+  }
+
+  getSessionAgentId(sessionId) {
+    const session = this.getSessionById(sessionId);
+    if (!session) return null;
+    if (session.activeAgentId) return String(session.activeAgentId).trim().toLowerCase() || null;
+    const workspaceId = String(session.workspace || this.workspace?.id || '').trim();
+    const recovery = workspaceId ? sessionRecoveryService.getSession(workspaceId, sessionId) : null;
+    if (recovery?.lastAgentActive !== false && recovery?.lastAgent) {
+      return String(recovery.lastAgent).trim().toLowerCase() || null;
+    }
+    const type = String(session.type || '').trim().toLowerCase();
+    return ['claude', 'codex', 'opencode'].includes(type) ? type : null;
+  }
+
+  getNewTurnAdmissionDecision(sessionId, { source = 'automation' } = {}) {
+    const agentId = this.getSessionAgentId(sessionId);
+    const decision = this.getAgentAdmissionDecision({ agentId, sessionId, config: { source } });
+    return { ...decision, agentId };
+  }
+
+  writeNewTurnToSession(sessionId, data, { source = 'automation' } = {}) {
+    const decision = this.getNewTurnAdmissionDecision(sessionId, { source });
+    if (decision.allowed === false) {
+      logger.warn('Automated session input blocked by admission controller', {
+        sessionId,
+        agentId: decision.agentId,
+        source,
+        code: decision.code,
+        reason: decision.reason
+      });
+      this.io?.emit?.('agent-turn-blocked', {
+        sessionId,
+        agentId: decision.agentId,
+        source,
+        code: decision.code || 'agent-admission-blocked',
+        reason: decision.reason || null,
+        triggeredAt: decision.triggeredAt || null
+      });
+      return false;
+    }
+    return this.writeToSession(sessionId, data);
   }
 
   getRecoveryHydrationKey(sessionId, { workspaceId = null, session = null } = {}) {
@@ -1178,6 +1227,7 @@ class SessionManager extends EventEmitter {
       // positional prompt argument) start working immediately, so they count
       // as already-submitted.
       session.agentStartedAt = Date.now();
+      session.activeAgentId = agent;
       session.agentInputSubmitted = this.isAutoRunAgentCommand(commandName, commandArgs);
 
       sessionRecoveryService.updateAgent(workspaceId, sessionId, agent, mode);
@@ -2289,6 +2339,7 @@ class SessionManager extends EventEmitter {
         // Agent exited back to a shell — clear launch/input markers so the
         // next launch starts a fresh no-input-yet window.
         session.agentStartedAt = null;
+        session.activeAgentId = null;
         session.agentInputSubmitted = false;
         try {
           sessionRecoveryService.markAgentInactive(workspaceId, sessionId);
@@ -3409,6 +3460,8 @@ class SessionManager extends EventEmitter {
       } else {
         this.resetClaudeLaunch(session);
       }
+
+      session.activeAgentId = finalConfig.agentId;
 
       // Send the command to the terminal
       const commandToRun = buildShellCommand({

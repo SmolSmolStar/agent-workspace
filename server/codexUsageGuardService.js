@@ -3,13 +3,17 @@ const path = require('path');
 const EventEmitter = require('events');
 const { getAgentWorkspaceDir } = require('./utils/pathUtils');
 
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;
+const MODE_INITIALIZING = 'initializing';
 const MODE_MONITORING = 'monitoring';
+const MODE_MONITOR_UNAVAILABLE = 'monitor-unavailable';
 const MODE_DRAINING = 'draining';
 const DEFAULT_POLL_INTERVAL_MS = 2 * 60 * 1000;
 const MIN_POLL_INTERVAL_MS = 2 * 60 * 1000;
 const MAX_POLL_INTERVAL_MS = 5 * 60 * 1000;
 const EXHAUSTED_PERCENTAGE = 100;
+const DEFAULT_FAILURE_THRESHOLD = 2;
+const WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;
 
 function resolveEnabled(value) {
   const normalized = String(value ?? '').trim().toLowerCase();
@@ -35,12 +39,19 @@ function normalizeResetTime(value) {
   return Math.round(parsed);
 }
 
+function resolveFailureThreshold(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_FAILURE_THRESHOLD;
+  return Math.min(10, Math.max(1, Math.round(parsed)));
+}
+
 class CodexUsageGuardService extends EventEmitter {
   constructor({
     usageLimitsService,
     logger = console,
     storePath = null,
     pollIntervalMs = process.env.ORCHESTRATOR_CODEX_USAGE_GUARD_POLL_MS,
+    failureThreshold = process.env.ORCHESTRATOR_CODEX_USAGE_GUARD_FAILURE_THRESHOLD,
     enabled = resolveEnabled(process.env.ORCHESTRATOR_CODEX_USAGE_GUARD_ENABLED),
     now = () => Date.now()
   } = {}) {
@@ -49,11 +60,16 @@ class CodexUsageGuardService extends EventEmitter {
     this.logger = logger;
     this.enabled = resolveEnabled(enabled);
     this.pollIntervalMs = resolvePollInterval(pollIntervalMs);
+    this.failureThreshold = resolveFailureThreshold(failureThreshold);
     this.now = now;
     this.storePath = this.resolveStorePath(storePath);
     this.pollTimer = null;
     this.pollInFlight = null;
     this.state = this.loadState();
+    this.hasSuccessfulPollThisRun = false;
+    if (this.enabled && this.state.mode === MODE_MONITORING) {
+      this.state = this.normalizeState({ ...this.state, mode: MODE_INITIALIZING });
+    }
   }
 
   static getInstance(options = {}) {
@@ -75,7 +91,7 @@ class CodexUsageGuardService extends EventEmitter {
   getDefaultState() {
     return {
       version: STATE_VERSION,
-      mode: MODE_MONITORING,
+      mode: MODE_INITIALIZING,
       drainReason: null,
       triggeredAt: null,
       resumedAt: null,
@@ -83,6 +99,7 @@ class CodexUsageGuardService extends EventEmitter {
       lastPollAt: null,
       lastSuccessAt: null,
       lastError: null,
+      consecutiveFailures: 0,
       observedWindow: null,
       rollover: null,
       updatedAt: null
@@ -94,14 +111,19 @@ class CodexUsageGuardService extends EventEmitter {
     const bucket = String(value.bucket || '').trim();
     const name = String(value.name || '').trim();
     const window = String(value.window || '').trim();
+    const inferredDuration = /^1\s+week$/i.test(window) ? WEEKLY_WINDOW_MINUTES : null;
+    const windowDurationMins = Number.isFinite(Number(value.windowDurationMins))
+      ? Math.round(Number(value.windowDurationMins))
+      : inferredDuration;
     const usedPercentage = normalizePercentage(value.usedPercentage);
     const resetsAt = normalizeResetTime(value.resetsAt);
-    if (!bucket || !name || !window || usedPercentage === null || resetsAt === null) return null;
+    if (!bucket || !name || !window || !windowDurationMins || usedPercentage === null || resetsAt === null) return null;
     return {
-      key: `${bucket.toLowerCase()}:${name.toLowerCase()}:${window.toLowerCase()}`,
+      key: `${bucket.toLowerCase()}:${name.toLowerCase()}:${windowDurationMins}`,
       bucket,
       name,
       window,
+      windowDurationMins,
       usedPercentage,
       resetsAt,
       observedAt: typeof value.observedAt === 'string' ? value.observedAt : null
@@ -111,8 +133,11 @@ class CodexUsageGuardService extends EventEmitter {
   normalizeState(value) {
     const defaults = this.getDefaultState();
     const source = value && typeof value === 'object' ? value : {};
-    const mode = source.mode === MODE_DRAINING ? MODE_DRAINING : MODE_MONITORING;
-    const drainReason = ['window-rollover', 'exhausted'].includes(source.drainReason)
+    const knownModes = [MODE_INITIALIZING, MODE_MONITORING, MODE_MONITOR_UNAVAILABLE, MODE_DRAINING];
+    let mode = knownModes.includes(source.mode) ? source.mode : MODE_INITIALIZING;
+    const lastSuccessAt = typeof source.lastSuccessAt === 'string' ? source.lastSuccessAt : null;
+    if (mode === MODE_MONITORING && !lastSuccessAt) mode = MODE_INITIALIZING;
+    const drainReason = ['window-rollover', 'exhausted', 'monitor-unavailable'].includes(source.drainReason)
       ? source.drainReason
       : null;
     const rollover = source.rollover && typeof source.rollover === 'object'
@@ -127,13 +152,16 @@ class CodexUsageGuardService extends EventEmitter {
     return {
       version: STATE_VERSION,
       mode,
-      drainReason: mode === MODE_DRAINING ? drainReason : null,
-      triggeredAt: mode === MODE_DRAINING ? timestamp('triggeredAt') : null,
+      drainReason: mode === MODE_DRAINING || mode === MODE_MONITOR_UNAVAILABLE ? drainReason : null,
+      triggeredAt: mode === MODE_DRAINING || mode === MODE_MONITOR_UNAVAILABLE
+        ? timestamp('triggeredAt')
+        : null,
       resumedAt: timestamp('resumedAt'),
       resumedBy: typeof source.resumedBy === 'string' ? source.resumedBy : null,
       lastPollAt: timestamp('lastPollAt'),
-      lastSuccessAt: timestamp('lastSuccessAt'),
+      lastSuccessAt,
       lastError: typeof source.lastError === 'string' ? source.lastError : null,
+      consecutiveFailures: Math.max(0, Math.round(Number(source.consecutiveFailures) || 0)),
       observedWindow: this.normalizeWindow(source.observedWindow),
       rollover: mode === MODE_DRAINING ? rollover : null,
       updatedAt: timestamp('updatedAt')
@@ -166,6 +194,23 @@ class CodexUsageGuardService extends EventEmitter {
     return normalized;
   }
 
+  commitState(nextState) {
+    const normalized = this.normalizeState({
+      ...nextState,
+      updatedAt: this.nowIso()
+    });
+    this.state = normalized;
+    try {
+      this.persistState(normalized);
+    } catch (error) {
+      this.logger.warn?.('Failed to persist Codex usage guard state', {
+        error: error.message,
+        path: this.storePath
+      });
+    }
+    return this.state;
+  }
+
   nowIso() {
     return new Date(this.now()).toISOString();
   }
@@ -175,7 +220,7 @@ class CodexUsageGuardService extends EventEmitter {
       .map((window) => this.normalizeWindow(window))
       .filter(Boolean)
       .filter((window) => window.bucket.toLowerCase() === 'codex')
-      .filter((window) => /\bweek\b/i.test(window.window));
+      .filter((window) => window.windowDurationMins === WEEKLY_WINDOW_MINUTES);
     if (!candidates.length) return null;
     candidates.sort((a, b) => {
       const aPrimary = a.name.toLowerCase() === 'primary' ? 1 : 0;
@@ -205,10 +250,13 @@ class CodexUsageGuardService extends EventEmitter {
     this.logger.info?.('Codex usage guard started', { pollIntervalMs: this.pollIntervalMs });
   }
 
-  stop() {
-    if (!this.pollTimer) return;
-    clearInterval(this.pollTimer);
-    this.pollTimer = null;
+  async stop() {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+    await this.usageLimitsService?.cancelCodexFetch?.();
+    await this.pollInFlight?.catch(() => {});
   }
 
   pollOnce() {
@@ -243,6 +291,7 @@ class CodexUsageGuardService extends EventEmitter {
         lastPollAt: pollAt,
         lastSuccessAt: pollAt,
         lastError: null,
+        consecutiveFailures: 0,
         observedWindow: current
       };
 
@@ -261,9 +310,15 @@ class CodexUsageGuardService extends EventEmitter {
         next.drainReason = 'exhausted';
         next.triggeredAt = pollAt;
         next.rollover = null;
+      } else if (!wasDraining) {
+        next.mode = MODE_MONITORING;
+        next.drainReason = null;
+        next.triggeredAt = null;
+        next.rollover = null;
       }
 
-      this.persistState(next);
+      this.hasSuccessfulPollThisRun = true;
+      this.commitState(next);
       const status = this.getStatus();
       if (!wasDraining && this.state.mode === MODE_DRAINING) {
         this.logger.warn?.('Codex usage guard entered drain mode', {
@@ -276,10 +331,20 @@ class CodexUsageGuardService extends EventEmitter {
       this.emit('state-changed', status);
       return status;
     } catch (error) {
-      this.persistState({
+      const consecutiveFailures = this.state.consecutiveFailures + 1;
+      const mode = this.state.mode === MODE_DRAINING
+        ? MODE_DRAINING
+        : (!this.hasSuccessfulPollThisRun || this.state.mode === MODE_INITIALIZING
+            ? MODE_INITIALIZING
+            : (consecutiveFailures >= this.failureThreshold ? MODE_MONITOR_UNAVAILABLE : MODE_MONITORING));
+      this.commitState({
         ...this.state,
+        mode,
+        drainReason: mode === MODE_MONITOR_UNAVAILABLE ? 'monitor-unavailable' : this.state.drainReason,
+        triggeredAt: mode === MODE_MONITOR_UNAVAILABLE ? (this.state.triggeredAt || pollAt) : this.state.triggeredAt,
         lastPollAt: pollAt,
-        lastError: String(error?.message || error)
+        lastError: String(error?.message || error),
+        consecutiveFailures
       });
       const status = this.getStatus();
       this.emit('state-changed', status);
@@ -289,25 +354,32 @@ class CodexUsageGuardService extends EventEmitter {
 
   getAdmissionDecision({ agentId } = {}) {
     const normalizedAgent = String(agentId || '').trim().toLowerCase();
-    if (!this.enabled || normalizedAgent !== 'codex' || this.state.mode !== MODE_DRAINING) {
+    if (!this.enabled || normalizedAgent !== 'codex' || this.state.mode === MODE_MONITORING) {
       return { allowed: true };
     }
+    const code = this.state.mode === MODE_DRAINING
+      ? 'codex-usage-draining'
+      : (this.state.mode === MODE_MONITOR_UNAVAILABLE
+          ? 'codex-usage-monitor-unavailable'
+          : 'codex-usage-monitor-pending');
     return {
       allowed: false,
-      code: 'codex-usage-draining',
+      code,
       reason: this.state.drainReason,
       triggeredAt: this.state.triggeredAt
     };
   }
 
   resumeAdmissions({ acknowledgedBy = null } = {}) {
+    if (this.state.mode !== MODE_DRAINING || !this.hasSuccessfulPollThisRun) return this.getStatus();
     const now = this.nowIso();
-    this.persistState({
+    this.commitState({
       ...this.state,
       mode: MODE_MONITORING,
       drainReason: null,
       triggeredAt: null,
       rollover: null,
+      consecutiveFailures: 0,
       resumedAt: now,
       resumedBy: String(acknowledgedBy || '').trim().slice(0, 100) || null
     });
@@ -321,7 +393,7 @@ class CodexUsageGuardService extends EventEmitter {
     return {
       enabled: this.enabled,
       mode,
-      admittingCodex: !this.enabled || this.state.mode !== MODE_DRAINING,
+      admittingCodex: !this.enabled || this.state.mode === MODE_MONITORING,
       drainReason: this.state.drainReason,
       triggeredAt: this.state.triggeredAt,
       resumedAt: this.state.resumedAt,
@@ -329,9 +401,12 @@ class CodexUsageGuardService extends EventEmitter {
       lastPollAt: this.state.lastPollAt,
       lastSuccessAt: this.state.lastSuccessAt,
       lastError: this.state.lastError,
+      consecutiveFailures: this.state.consecutiveFailures,
       observedWindow: this.state.observedWindow,
       rollover: this.state.rollover,
-      pollIntervalMs: this.pollIntervalMs
+      pollIntervalMs: this.pollIntervalMs,
+      failureThreshold: this.failureThreshold,
+      monitorReady: !this.enabled || this.hasSuccessfulPollThisRun
     };
   }
 }
@@ -340,5 +415,6 @@ module.exports = {
   CodexUsageGuardService,
   DEFAULT_POLL_INTERVAL_MS,
   MIN_POLL_INTERVAL_MS,
-  MAX_POLL_INTERVAL_MS
+  MAX_POLL_INTERVAL_MS,
+  DEFAULT_FAILURE_THRESHOLD
 };

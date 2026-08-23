@@ -99,19 +99,22 @@ server/pullRequestService.js       - `gh`-backed PR search/view/merge/review wra
 └─ Invalidation: local merge/review actions clear the cache so the UI reflects them immediately
 server/usageLimitsService.js       - Plan-usage limits for the header widget
 ├─ Claude: reads `~/.local/state/ai-usage-monitor/claude-live.json` (tapped by the user's Claude Code status line)
-├─ Codex: runs `~/.codex/scripts/codex_usage.py` (official app-server helper), 15min widget cache, text parsed defensively
+├─ Codex: reads official app-server JSON-RPC envelopes through `codexRateLimitsClient`, preserves raw `resetsAt` epochs, and uses a 15min widget cache
 ├─ Grok: queries the CLI proxy billing endpoints with the grok CLI's own OAuth token (`~/.grok/auth.json`, NEVER refreshed here — expired token = stale until the grok CLI refreshes it)
 └─ Settings: per-provider toggles in user settings `global.ui.usageLimitsProviders.{claude,codex,grok}` (default on); whole-widget via `ui.visibility.header.usageLimits`
 server/codexUsageGuardService.js   - Durable Codex weekly-limit rollover and exhaustion guard
 ├─ Polling: reads the main Codex weekly window directly every 2 minutes by default (configurable, clamped to 2 to 5 minutes) and bypasses the widget cache
 ├─ Rollover proof: enters drain mode only when `resetsAt` advances and `usedPercentage` drops; elapsed wall-clock time alone cannot trigger it
-├─ Admission: blocks new Codex starts through SessionManager while allowing active terminals and other agent providers to continue
+├─ Monitor safety: requires a live successful poll after every process boot, blocks again after repeated read failures, and recovers automatically after a valid poll; other providers remain available
+├─ Admission: blocks new Codex starts and automated Pager, Commander, and command-registry turns while leaving active PTYs running to finish in-flight work; shell command tracking covers direct, environment-prefixed, and package-runner Codex commands
 ├─ Persistence: atomically stores observations and drain state in `<data-dir>/codex-usage-guard.json` so restarts cannot reopen admissions
-└─ Operations: `GET /api/usage/codex-guard` reports state; `POST /api/usage/codex-guard/resume` explicitly reopens Codex admissions
-tests/unit/codexUsageGuardService.test.js - Rollover, exhaustion, unchanged limits, wall-clock non-trigger, direct polling, and restart persistence coverage
-tests/unit/sessionManager.codexAdmission.test.js - Central Codex start-boundary admission coverage
+└─ Operations: `GET /api/usage/codex-guard` reports state; `POST /api/usage/codex-guard/resume` explicitly reopens a healthy drained guard; set `ORCHESTRATOR_CODEX_USAGE_GUARD_ENABLED=false` and restart only when app-server monitoring cannot run, which disables this safety gate
+server/codexRateLimitsClient.js    - Bounded Codex app-server JSON-RPC client with versioned initialize/read envelopes, bounded owned-child cancellation, and capped stderr diagnostics
+tests/unit/codexRateLimitsClient.test.js - Production envelope, notification filtering, raw reset epoch, bounded child cleanup, and stderr coverage
+tests/unit/codexUsageGuardService.test.js - Pending, permanent startup failure, failure threshold/recovery, rollover, exhaustion, restart persistence, and shutdown coverage
+tests/unit/sessionManager.codexAdmission.test.js - Central Codex start and automated-turn admission coverage
 tests/unit/batchLaunchService.admission.test.js - Verifies queued Codex cards are rejected before worktree allocation
-tests/e2e/codex-usage-guard.spec.js - Safe-port API coverage for status and explicit admission resume
+tests/e2e/codex-usage-guard.spec.js - Safe-port API coverage for unavailable-monitor fail-closed status
 server/tokenCounter.js             - Token usage tracking (if applicable)
 server/userSettingsService.js      - User preferences and settings management
 server/sessionRecoveryService.js   - Session recovery state persistence (CWD, agents, conversations)

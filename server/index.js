@@ -4683,7 +4683,7 @@ app.post('/api/setup-actions/open-url', requirePolicyAction('write'), express.js
 
 // Port registry API endpoints
 // Plan-usage limits for the header widget (Claude 5h/7d from the status-line
-// tap file, Codex windows from the official app-server helper).
+// tap file, Codex windows from the official app-server JSON-RPC endpoint).
 app.get('/api/usage/limits', async (req, res) => {
   try {
     const providers = userSettingsService.getAllSettings()?.global?.ui?.usageLimitsProviders || {};
@@ -4700,8 +4700,11 @@ app.get('/api/usage/codex-guard', (req, res) => {
 
 app.post('/api/usage/codex-guard/resume', requirePolicyAction('write'), (req, res) => {
   const acknowledgedBy = String(req.body?.acknowledgedBy || 'api').trim().slice(0, 100);
+  const wasDraining = codexUsageGuardService.getStatus().mode === 'draining';
   const status = codexUsageGuardService.resumeAdmissions({ acknowledgedBy });
-  activityFeed.track('codex.usage_guard.resumed', { acknowledgedBy });
+  if (wasDraining && status.mode === 'monitoring') {
+    activityFeed.track('codex.usage_guard.resumed', { acknowledgedBy });
+  }
   res.json(status);
 });
 
@@ -8918,7 +8921,7 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 let isShuttingDown = false;
 let forcedExitTimer = null;
 
-function shutdown(signal = 'unknown') {
+async function shutdown(signal = 'unknown') {
   if (isShuttingDown) {
     logger.warn('Shutdown already in progress', { signal });
     return;
@@ -8926,7 +8929,18 @@ function shutdown(signal = 'unknown') {
 
   isShuttingDown = true;
   logger.info('Shutting down server...', { signal });
-  codexUsageGuardService.stop();
+
+  // Bound every shutdown step, including an active Codex app-server read.
+  forcedExitTimer = setTimeout(() => {
+    logger.error('Forced shutdown after timeout');
+    process.exit(1);
+  }, 10000);
+
+  try {
+    await codexUsageGuardService.stop();
+  } catch (error) {
+    logger.warn('Codex usage guard shutdown failed', { error: error.message });
+  }
   
   // Clean up sessions first
   sessionManager.cleanup();
@@ -8946,11 +8960,6 @@ function shutdown(signal = 'unknown') {
     process.exit(0);
   });
   
-  // Force shutdown after 10 seconds
-  forcedExitTimer = setTimeout(() => {
-    logger.error('Forced shutdown after timeout');
-    process.exit(1);
-  }, 10000);
 }
 
 // Handle uncaught errors

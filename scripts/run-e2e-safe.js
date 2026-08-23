@@ -93,6 +93,7 @@ const result = spawnSync('npx', ['playwright', 'test', ...passthroughArgs], {
     ...process.env,
     ORCHESTRATOR_TEST_PORT: port,
     ORCHESTRATOR_CODEX_USAGE_GUARD_ENABLED: 'true',
+    CODEX_BIN: path.join(e2eHome, 'missing-codex'),
     HOME: e2eHome,
     USERPROFILE: e2eHome,
     // Keep Playwright browsers cache pointing at the user's real install location
