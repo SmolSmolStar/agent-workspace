@@ -4,6 +4,7 @@ const os = require('os');
 const { execFile } = require('child_process');
 
 const { kebab } = require('./atlasSchema');
+const { readLocalSummary } = require('./atlasLocalMetadata');
 const {
   parseOwnerRepo,
   repositorySlug,
@@ -94,12 +95,26 @@ function comparablePath(candidate) {
 }
 
 async function resolveScannedProject(repoDir) {
-  const fallback = { ...resolveProjectRoot(repoDir), primaryCheckout: null };
+  const fallback = {
+    ...resolveProjectRoot(repoDir),
+    primaryCheckout: null,
+    commonDirectory: null
+  };
+  let gitMarker = null;
   try {
-    if (!fs.lstatSync(path.join(repoDir, '.git')).isFile()) return fallback;
+    gitMarker = fs.lstatSync(path.join(repoDir, '.git'));
   } catch {
     return fallback;
   }
+  if (gitMarker.isDirectory()) {
+    return {
+      ...fallback,
+      primaryCheckout: path.resolve(repoDir),
+      commonDirectory: comparablePath(path.join(repoDir, '.git'))
+    };
+  }
+  if (!gitMarker.isFile()) return fallback;
+
   const commonDir = await execFileAsync('git', ['-C', repoDir, 'rev-parse', '--git-common-dir']);
   if (!commonDir) return fallback;
 
@@ -120,7 +135,8 @@ async function resolveScannedProject(repoDir) {
   return {
     ...resolved,
     worktreeLayout: resolved.worktreeLayout || !isPrimaryCheckout,
-    primaryCheckout
+    primaryCheckout,
+    commonDirectory: comparablePath(resolvedCommonDir)
   };
 }
 
@@ -231,8 +247,14 @@ async function scanLocalRepos({ roots, maxDepth = 6, languageCensus = true } = {
 
   for (const root of searchRoots) {
     for (const repoDir of walkForRepos(root, maxDepth)) {
-      const { projectRoot, worktreeLayout, primaryCheckout } = await resolveScannedProject(repoDir);
-      const existing = byProject.get(projectRoot);
+      const {
+        projectRoot,
+        worktreeLayout,
+        primaryCheckout,
+        commonDirectory
+      } = await resolveScannedProject(repoDir);
+      const projectKey = commonDirectory || comparablePath(projectRoot);
+      const existing = byProject.get(projectKey);
       if (existing) {
         existing.checkoutPaths.add(repoDir);
         existing.worktreeLayout = existing.worktreeLayout || worktreeLayout;
@@ -243,7 +265,7 @@ async function scanLocalRepos({ roots, maxDepth = 6, languageCensus = true } = {
         if (isPrimaryCheckout || base === 'master' || base === 'main') existing.repoDir = repoDir;
         continue;
       }
-      byProject.set(projectRoot, {
+      byProject.set(projectKey, {
         projectRoot,
         repoDir,
         worktreeLayout,
@@ -261,13 +283,15 @@ async function scanLocalRepos({ roots, maxDepth = 6, languageCensus = true } = {
     const inferred = inferFromPath(projectRoot, searchRoots);
     const checkoutAliases = [...checkoutPaths].map((candidate) => path.resolve(candidate)).sort();
     const localPaths = [...new Set([projectRoot, ...checkoutAliases])];
+    const name = parsed?.repo || path.basename(projectRoot);
 
     entries.push({
       __source: 'discovery',
       id: kebab(parsed?.repo || path.basename(projectRoot)),
-      name: parsed?.repo || path.basename(projectRoot),
+      name,
       repo: parsed?.nameWithOwner || '',
       owner: parsed?.owner || '',
+      summary: readLocalSummary(repoDir, { repositoryName: name }),
       kind: inferred.kind || undefined,
       platforms: inferred.platforms,
       languages: languageCensus ? censusLanguages(repoDir) : [],
@@ -367,7 +391,7 @@ function mergeDiscovery(localEntries = [], githubEntries = []) {
       name: github?.name || repoName || preferred.name,
       repo: slug,
       owner: github?.owner || preferred.owner || slug.split('/')[0] || '',
-      summary: preferred.summary || github?.summary || '',
+      summary: github?.summary || preferred.summary || '',
       visibility: github?.visibility || preferred.visibility,
       isFork: github?.isFork ?? preferred.isFork,
       archived: github?.archived ?? preferred.archived,
