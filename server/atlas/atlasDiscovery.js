@@ -81,6 +81,16 @@ function resolveProjectRoot(repoDir) {
   return { projectRoot: repoDir, worktreeLayout: false };
 }
 
+function comparablePath(candidate) {
+  let resolved = path.resolve(candidate);
+  try {
+    resolved = fs.realpathSync.native(resolved);
+  } catch {
+    // Keep the lexical path when a disappearing checkout cannot be resolved.
+  }
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
 async function resolveScannedProject(repoDir) {
   const fallback = { ...resolveProjectRoot(repoDir), primaryCheckout: null };
   try {
@@ -95,11 +105,15 @@ async function resolveScannedProject(repoDir) {
   const resolvedCommonDir = path.resolve(repoDir, commonDir);
   if (path.basename(resolvedCommonDir).toLowerCase() !== '.git') return fallback;
 
-  const primaryCheckout = path.dirname(resolvedCommonDir);
-  const isPrimaryCheckout = checkout === primaryCheckout;
-  const isSiblingCheckout = path.dirname(checkout) === path.dirname(primaryCheckout);
+  const reportedPrimaryCheckout = path.dirname(resolvedCommonDir);
+  const isPrimaryCheckout = comparablePath(checkout) === comparablePath(reportedPrimaryCheckout);
+  const isSiblingCheckout = comparablePath(path.dirname(checkout))
+    === comparablePath(path.dirname(reportedPrimaryCheckout));
   if (!isPrimaryCheckout && !isSiblingCheckout) return fallback;
 
+  const primaryCheckout = isPrimaryCheckout
+    ? checkout
+    : path.join(path.dirname(checkout), path.basename(reportedPrimaryCheckout));
   const resolved = resolveProjectRoot(primaryCheckout);
   return {
     ...resolved,
