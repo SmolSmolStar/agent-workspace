@@ -32,6 +32,7 @@ class VoiceControl {
     // Audio recording for Whisper
     this.mediaRecorder = null;
     this.audioChunks = [];
+    this.recordingMimeType = '';
 
     // Backend status
     this.whisperAvailable = false;
@@ -345,9 +346,11 @@ class VoiceControl {
   async startWhisperRecording() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      this.mediaRecorder = new MediaRecorder(stream, {
-        mimeType: MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4'
-      });
+      const mimeType = this.getSupportedRecordingMimeType();
+      this.mediaRecorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+      this.recordingMimeType = String(this.mediaRecorder.mimeType || mimeType || '').trim();
       this.audioChunks = [];
 
       this.mediaRecorder.ondataavailable = (e) => {
@@ -374,6 +377,30 @@ class VoiceControl {
     }
   }
 
+  getSupportedRecordingMimeType() {
+    if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') return '';
+    return ['audio/webm', 'audio/mp4'].find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) || '';
+  }
+
+  getRecordingUploadFormat() {
+    const mimeType = String(this.mediaRecorder?.mimeType || this.recordingMimeType || 'audio/webm').trim() || 'audio/webm';
+    const baseMimeType = mimeType.split(';', 1)[0].trim().toLowerCase();
+    const extensionByMimeType = {
+      'audio/mp4': 'mp4',
+      'audio/m4a': 'm4a',
+      'audio/x-m4a': 'm4a',
+      'audio/ogg': 'ogg',
+      'audio/wav': 'wav',
+      'audio/x-wav': 'wav',
+      'audio/mp3': 'mp3',
+      'audio/mpeg': 'mp3'
+    };
+    return {
+      mimeType,
+      extension: extensionByMimeType[baseMimeType] || 'webm'
+    };
+  }
+
   stopListening() {
     if (!this.isListening) return;
 
@@ -398,9 +425,10 @@ class VoiceControl {
     this.setStatus('Transcribing...', 'processing');
 
     try {
-      const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
+      const uploadFormat = this.getRecordingUploadFormat();
+      const audioBlob = new Blob(this.audioChunks, { type: uploadFormat.mimeType });
       const formData = new FormData();
-      formData.append('audio', audioBlob, 'recording.webm');
+      formData.append('audio', audioBlob, `recording.${uploadFormat.extension}`);
 
       // Use the combined transcribe+execute endpoint
       const response = await fetch('/api/whisper/command', {

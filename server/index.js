@@ -183,6 +183,7 @@ const { PolicyService } = require('./policyService');
 const { AuditExportService } = require('./auditExportService');
 const { getInstance: getCommandHistoryService } = require('./commandHistoryService');
 const { evaluateBindSecurity, isLoopbackHost } = require('./networkSecurityPolicy');
+const { isSupportedAudioUpload } = require('./audioUploadPolicy');
 const {
   normalizeRepositoryPath,
   normalizeRepositoryRootForWorktrees,
@@ -196,8 +197,7 @@ const audioUpload = multer({
   dest: path.join(os.tmpdir(), 'orchestrator-audio'),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
   fileFilter: (req, file, cb) => {
-    const allowed = ['audio/webm', 'audio/wav', 'audio/mp3', 'audio/mpeg', 'audio/ogg', 'audio/x-wav'];
-    if (allowed.includes(file.mimetype) || file.originalname.match(/\.(wav|webm|mp3|ogg)$/i)) {
+    if (isSupportedAudioUpload(file)) {
       cb(null, true);
     } else {
       cb(new Error('Invalid audio format'));
