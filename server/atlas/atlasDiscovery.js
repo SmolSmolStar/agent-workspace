@@ -8,7 +8,9 @@ const {
   parseOwnerRepo,
   repositorySlug,
   localPathsFor,
+  rootCommitsFor,
   discoveryIdentity,
+  identityWarnings,
   comparePreferredLocal,
   uniqueStrings,
   latestActivity,
@@ -135,11 +137,16 @@ function censusLanguages(repoDir, { maxFiles = 400 } = {}) {
 }
 
 async function readGitFacts(repoDir) {
-  const [remoteUrl, lastCommit] = await Promise.all([
+  const [remoteUrl, lastCommit, shallowOutput] = await Promise.all([
     execFileAsync('git', ['-C', repoDir, 'remote', 'get-url', 'origin']),
-    execFileAsync('git', ['-C', repoDir, 'log', '-1', '--format=%cI'])
+    execFileAsync('git', ['-C', repoDir, 'log', '-1', '--format=%cI']),
+    execFileAsync('git', ['-C', repoDir, 'rev-parse', '--is-shallow-repository'])
   ]);
-  return { remoteUrl: remoteUrl || '', lastActivity: lastCommit || null };
+  const rootCommitOutput = shallowOutput === 'true'
+    ? ''
+    : await execFileAsync('git', ['-C', repoDir, 'rev-list', '--max-parents=0', 'HEAD']);
+  const rootCommits = String(rootCommitOutput || '').split(/\s+/).filter(Boolean).sort();
+  return { remoteUrl: remoteUrl || '', lastActivity: lastCommit || null, rootCommits };
 }
 
 function walkForRepos(root, maxDepth) {
@@ -204,7 +211,7 @@ async function scanLocalRepos({ roots, maxDepth = 6, languageCensus = true } = {
 
   const entries = [];
   for (const { projectRoot, repoDir, worktreeLayout, checkoutPaths } of byProject.values()) {
-    const { remoteUrl, lastActivity } = await readGitFacts(repoDir);
+    const { remoteUrl, lastActivity, rootCommits } = await readGitFacts(repoDir);
     const parsed = parseOwnerRepo(remoteUrl);
     const inferred = inferFromPath(projectRoot, searchRoots);
     const checkoutAliases = [...checkoutPaths].map((candidate) => path.resolve(candidate)).sort();
@@ -225,6 +232,7 @@ async function scanLocalRepos({ roots, maxDepth = 6, languageCensus = true } = {
       cloned: true,
       worktreeLayout,
       remoteUrl,
+      rootCommits,
       lastActivity,
       lastScannedAt: new Date().toISOString()
     });
@@ -326,6 +334,7 @@ function mergeDiscovery(localEntries = [], githubEntries = []) {
       localPath: preferredPath || localPaths[0] || null,
       localPaths,
       remoteUrl: preferred.remoteUrl || github?.remoteUrl || '',
+      rootCommits: uniqueStrings(rankedLocals.map(rootCommitsFor)).sort(),
       lastActivity: latestActivity([github, ...rankedLocals]),
       cloned: true
     };
@@ -343,6 +352,7 @@ module.exports = {
   repositorySlug,
   localPathsFor,
   discoveryIdentity,
+  identityWarnings,
   parseOwnerRepo,
   resolveProjectRoot,
   inferFromPath,

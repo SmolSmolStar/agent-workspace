@@ -35,11 +35,13 @@ describe('atlasSchema', () => {
     const entry = normalizeEntry({
       id: 'acme-tycoon',
       localPath: '/repos/acme-tycoon',
-      localPaths: ['/repos/acme-tycoon', '/repos/acme-tycoon/work1', '/repos/acme-tycoon/work1']
+      localPaths: ['/repos/acme-tycoon', '/repos/acme-tycoon/work1', '/repos/acme-tycoon/work1'],
+      rootCommits: ['B'.repeat(40), 'a'.repeat(40), 'invalid']
     }, { strict: true });
 
     expect(entry.localPath).toBe('/repos/acme-tycoon');
     expect(entry.localPaths).toEqual(['/repos/acme-tycoon', '/repos/acme-tycoon/work1']);
+    expect(entry.rootCommits).toEqual(['a'.repeat(40), 'b'.repeat(40)]);
   });
 
   test('normalizeEntry clamps quality and normalizes highlight topics', () => {
