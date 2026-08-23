@@ -85,7 +85,12 @@ server/utils/processUtils.js       - Shared spawn/env hardening helpers
 ├─ Windows packaging guardrails: applies `windowsHide`/`CREATE_NO_WINDOW`, augments GUI-app PATH with Git/node/npm/common CLI locations, and builds hidden PowerShell argument lists
 └─ Cross-platform behavior: non-Windows platforms pass through unchanged so Linux/macOS launch behavior stays stable
 server/utils/nodePtyCompat.js      - Runtime compatibility shim for the bundled `node-pty` Windows ConPTY loader
-└─ Windows PTY guard: wraps stale ConPTY calls in memory (`startProcess`, `connect`, `resize`, `clear`, `kill`) via `loadNativeModule` when available or direct `conpty.node` patching when package internals differ, so packaged installs survive read-only app-resource layouts and mixed node-pty variants
+├─ Windows PTY guard: wraps stale ConPTY calls in memory (`startProcess`, `connect`, `resize`, `clear`, `kill`) via `loadNativeModule` when available or direct `conpty.node` patching when package internals differ, so packaged installs survive read-only app-resource layouts and mixed node-pty variants
+└─ Source runtime guard: delegates Node ABI mismatch recovery to `nodePtyRuntimeRepair` before retrying the real module load
+server/utils/nodePtyRuntimeRepair.js - Bounded source-checkout recovery for a `node-pty` native ABI mismatch
+├─ Exact runtime: invokes npm CLI through the active `process.execPath`, preventing a PATH-selected Node version from rebuilding the addon for the wrong ABI
+├─ Scope: only handles Node's explicit `NODE_MODULE_VERSION` mismatch, only once per process, and never writes into packaged `resources/backend`
+└─ Override: `ORCHESTRATOR_NODE_PTY_AUTO_REBUILD=false` disables automatic recovery
 server/utils/tmuxSessionBackend.js - tmux-backed session persistence (terminals survive app-server restarts)
 ├─ Model: the orchestrator's pty is only a tmux CLIENT; the real shell/agent runs in a pane under the tmux server on a dedicated per-instance socket (`agent-workspace-<port>`), so nodemon reloads/updates/crashes detach instead of killing sessions, and `new-session -A` re-adopts them on the next createSession()
 ├─ Env hygiene: scrubs `CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT`/`TMUX` at the tmux-server choke point so nested-session guards never trip; socket options make panes behave like plain terminals (status off, prefix None, mouse off, window-size latest)
@@ -99,9 +104,24 @@ server/pullRequestService.js       - `gh`-backed PR search/view/merge/review wra
 └─ Invalidation: local merge/review actions clear the cache so the UI reflects them immediately
 server/usageLimitsService.js       - Plan-usage limits for the header widget
 ├─ Claude: reads `~/.local/state/ai-usage-monitor/claude-live.json` (tapped by the user's Claude Code status line)
-├─ Codex: runs `~/.codex/scripts/codex_usage.py` (official app-server helper), 5min cache, text parsed defensively
+├─ Codex: reads official app-server JSON-RPC envelopes through `codexRateLimitsClient`, preserves raw `resetsAt` epochs, and uses a 15min widget cache
 ├─ Grok: queries the CLI proxy billing endpoints with the grok CLI's own OAuth token (`~/.grok/auth.json`, NEVER refreshed here — expired token = stale until the grok CLI refreshes it)
 └─ Settings: per-provider toggles in user settings `global.ui.usageLimitsProviders.{claude,codex,grok}` (default on); whole-widget via `ui.visibility.header.usageLimits`
+server/codexUsageGuardService.js   - Durable Codex weekly-limit rollover and exhaustion guard
+├─ Polling: reads the main Codex weekly window directly every 2 minutes by default (configurable, clamped to 2 to 5 minutes) and bypasses the widget cache
+├─ Rollover proof: enters drain mode only when `resetsAt` advances and `usedPercentage` drops; elapsed wall-clock time alone cannot trigger it
+├─ Monitor safety: requires a live successful poll after every process boot, blocks again after repeated read failures, and recovers automatically after a valid poll; other providers remain available
+├─ Admission: blocks new Codex starts and automated Pager, Commander, and command-registry turns while leaving active PTYs running to finish in-flight work; shell command tracking covers direct, environment-prefixed, and package-runner Codex commands
+├─ Persistence: synchronizes every live app instance through `<data-dir>/codex-usage-guard.json`; a persisted drain wins over stale polls, while an explicit durable resume reaches processes that have completed a live poll
+├─ Failure handling: state read or write failures block new Codex work, and failed resume writes preserve the previous drain
+└─ Operations: `GET /api/usage/codex-guard` reports state; `POST /api/usage/codex-guard/resume` explicitly reopens a healthy drained guard; set `ORCHESTRATOR_CODEX_USAGE_GUARD_ENABLED=false` and restart only when app-server monitoring cannot run, which disables this safety gate
+server/codexUsageGuardStateStore.js - Exclusive writer lock and atomic JSON replacement for shared guard state; abandoned locks fail closed instead of risking a concurrent takeover
+server/codexRateLimitsClient.js    - Bounded Codex app-server JSON-RPC client with versioned initialize/read envelopes, bounded owned-child cancellation, and capped stderr diagnostics
+tests/unit/codexRateLimitsClient.test.js - Production envelope, notification filtering, raw reset epoch, bounded child cleanup, and stderr coverage
+tests/unit/codexUsageGuardService.test.js - Pending, startup failure, recovery, rollover, exhaustion, restart persistence, cross-process races, lock cleanup, and shutdown coverage
+tests/unit/sessionManager.codexAdmission.test.js - Central Codex start and automated-turn admission coverage
+tests/unit/batchLaunchService.admission.test.js - Verifies queued Codex cards are rejected before worktree allocation
+tests/e2e/codex-usage-guard.spec.js - Safe-port API coverage for unavailable-monitor fail-closed status
 server/tokenCounter.js             - Token usage tracking (if applicable)
 server/userSettingsService.js      - User preferences and settings management
 server/sessionRecoveryService.js   - Session recovery state persistence (CWD, agents, conversations)
@@ -117,10 +137,12 @@ server/threadService.js            - Workspace/project thread persistence (`~/.o
 └─ Lifecycle: create/list/close/archive + session association updates
 server/projectBoardService.js      - Local projects kanban board persistence (`~/.orchestrator/project-board.json`) + APIs (`GET /api/projects/board`, `POST /api/projects/board/move`, `POST /api/projects/board/patch`)
 server/repoAtlasService.js         - Repo Atlas singleton — registry bootstrap, scan orchestration, alias-aware manifest loading, query/propose/audience/sync facade (data: `~/.agent-workspace/atlas/`, registry synced to a PRIVATE git repo)
-server/atlas/                      - Atlas internals: atlasSchema (validation), atlasStore (one-file-per-repo registry IO under `entries/`), atlasIdentity (robust GitHub remote grouping, root-history-aware local grouping, root-commit collision ids, shared-history warnings, deterministic preferred checkouts, local aliases), atlasRegistryIdentity (legacy curation rebinding, exact-file precedence, duplicate and ambiguity warnings), atlasDiscovery (Git common-dir-aware linked-worktree grouping that keeps unrelated conventional-name siblings separate, plus GitHub scan; shallow clones omit unreliable root commits), atlasQuery (find/digest/list), atlasEvidence plus atlasCheckout, atlasCodeEvidence, and atlasEvidenceCoordinator (origin-verified live Git facts, code/test signals, safe file counts, request coalescing), atlasPortfolio (bounded multi-repository reports with path-safe metadata), atlasProposals (agent write-back queue, user approves), atlasCompiler (per-audience bundle redaction that keeps private entries on the machine), atlasSync (git pull/rebase/push of the registry)
+server/atlas/                      - Atlas internals: atlasSchema (validation), atlasStore (one-file-per-repo registry IO under `entries/`, plus `.repo-atlas-key` read/write and the local key cache), atlasIdentity (robust GitHub remote grouping, root-history-aware local grouping, root-commit collision ids, shared-history warnings, deterministic preferred checkouts, local aliases), atlasRegistryIdentity (legacy curation rebinding, exact-file precedence, duplicate and ambiguity warnings), atlasDiscovery (Git common-dir-aware linked-worktree grouping that keeps unrelated conventional-name siblings separate, plus GitHub scan; shallow clones omit unreliable root commits), atlasQuery (find/digest/list), atlasEvidence plus atlasCheckout, atlasCodeEvidence, and atlasEvidenceCoordinator (origin-verified live Git facts, code/test signals, safe file counts, request coalescing), atlasPortfolio (bounded multi-repository reports with path-safe metadata), atlasEncryption (repo-key-gated AES-256-GCM sealing/unsealing, `gh api` remote key fetch), atlasProposals (agent write-back queue, user approves), atlasCompiler (per-audience bundle redaction that keeps private entries on the machine), atlasSync (git pull/rebase/push of the registry)
 server/atlas/atlasLocalMetadata.js - Bounded package and README summary extraction for local repositories; rejects binary files, symlinks, markup blocks, setup boilerplate, and placeholder descriptions
 server/routes/atlasRoutes.js       - `/api/atlas/*` REST surface (status/entries/evidence/portfolio/find/digest/topics/refresh/proposals/audiences/subscriptions) with read/write policy gating
-scripts/atlas.js                   - `atlas` CLI (scan/status/list/show/evidence/report/find/digest/note/avoid/set/audience/compile/propose/proposals/remote/sync/publish/subscribe/doctor/init)
+scripts/atlas.js                   - `atlas` CLI (scan/status/list/show/evidence/report/find/digest/note/avoid/set/audience/compile/propose/proposals/remote/sync/publish/subscribe/key/doctor/init)
+├─ `atlas key generate <id> [--rotate]` - create/rotate a repo's `.repo-atlas-key` (commit it — that's what gates decryption to repo collaborators)
+├─ `atlas key sync`                     - resolve keys (cache → local clone → `gh api`) for anything currently locked; `getEntries()` itself never touches the network, only cache/local-clone
 config/repo-atlas-topics.json      - Canonical topic vocabulary for atlas highlights
 config/repo-atlas.example.json     - Annotated `.repo-atlas.json` per-repo manifest example
 skills/public/repo-atlas/SKILL.md  - Agent-facing skill doc for querying/proposing to the atlas
@@ -434,6 +456,8 @@ scripts/public-release-audit.js    - Public-release safety audit automation
 ├─ Checks: tracked cache/DB artifacts, public-doc path hygiene, loopback/auth defaults
 └─ Optional: full-history gitleaks scan (`--history-secrets`)
 scripts/render-legal-pages.js      - Generates `site/terms.html` and `site/privacy.html` from canonical markdown in `docs/legal/`
+scripts/run-e2e-safe.js             - Runs Playwright on an isolated port, HOME, and one deterministic worker; `scripts/e2eHome.js` seeds test workspace state and test-only legal acceptance
+tests/e2e/_workspace.js             - Shared race-safe workspace readiness and focus-overlay helpers for Playwright specs
 
 scripts/create-project.js          - Taxonomy-driven project scaffold generator (template/project-kit source resolution, optional post-create hooks, git init, optional GitHub remote, worktree bootstrap via WorktreeHelper)
 scripts/preview-site.js            - Tiny local preview server for the standalone `site/` showcase
@@ -503,6 +527,8 @@ git-change: {branch, status, commits}          - Git repository changes
 notification: {type, message, level}           - System notifications
 workspace-changed: {workspaceId, sessions}     - Workspace switch completed
 workspace-list: {workspaces}                   - Available workspaces update
+codex-usage-guard: {mode, admittingCodex, ...} - Persisted monitor/drain state after each direct poll or resume
+agent-start-blocked: {sessionId, agentId, ...} - A new agent start rejected by the admission controller
 ```
 
 ### Client → Server Events
@@ -554,6 +580,9 @@ LOG_LEVEL=info
 NODE_ENV=development
 ENABLE_FILE_WATCHING=true
 WORKSPACE_SCAN_MAX_DEPTH=6        # optional, clamp 1-12 for /api/workspaces/scan-repos depth
+ORCHESTRATOR_CODEX_USAGE_GUARD_ENABLED=true  # optional, set false to disable polling and gating
+ORCHESTRATOR_CODEX_USAGE_GUARD_POLL_MS=120000 # optional, clamped to 120000-300000
+ORCHESTRATOR_CODEX_USAGE_GUARD_STATE_PATH=... # optional state-file override
 ```
 
 ## Development Workflow
@@ -672,6 +701,8 @@ GET /api/setup-actions            - List Windows dependency-onboarding actions
 GET /api/setup-actions/state      - Read persisted dependency-onboarding state (completed/dismissed/current step)
 PUT /api/setup-actions/state      - Persist dependency-onboarding state into app data for desktop restarts
 GET /api/usage/limits             - Claude 5h/7d + Codex plan-usage percentages and reset times (refresh=1 bypasses Codex cache)
+GET /api/usage/codex-guard        - Durable Codex monitor/drain state and current observed weekly window
+POST /api/usage/codex-guard/resume - Explicitly reopen new Codex admissions after reviewing a drain event
 GET /api/user-settings            - Get user preferences
 PUT /api/user-settings            - Update user preferences
 

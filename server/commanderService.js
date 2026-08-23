@@ -722,6 +722,9 @@ class CommanderService {
     // handling as browser keystrokes: device-report stripping under tmux,
     // PowerShell CRLF normalization, and activity/status bookkeeping. Falls
     // back to a direct write only if writeToSession is somehow unavailable.
+    if (typeof this.sessionManager.writeNewTurnToSession === 'function') {
+      return this.sessionManager.writeNewTurnToSession(sessionId, input, { source: 'commander' });
+    }
     if (typeof this.sessionManager.writeToSession === 'function') {
       return this.sessionManager.writeToSession(sessionId, input);
     }

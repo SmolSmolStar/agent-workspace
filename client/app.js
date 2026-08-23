@@ -1551,6 +1551,37 @@ class ClaudeOrchestrator {
         this.scheduleAutoPromptFallback(sessionId, config?.agentId);
       });
 
+      this.socket.on('codex-usage-guard', (status) => {
+        const wasDraining = this.codexUsageGuardStatus?.mode === 'draining';
+        this.codexUsageGuardStatus = status || null;
+        if (status?.mode !== 'draining' || wasDraining) return;
+        const message = status.drainReason === 'exhausted'
+          ? 'Codex weekly usage is exhausted. New Codex launches are paused; active sessions continue.'
+          : 'Codex weekly usage reset. New Codex launches are paused; active sessions continue.';
+        this.showToast(message, 'warning', { force: true, durationMs: 10_000 });
+      });
+
+      this.socket.on('agent-start-blocked', ({ agentId, reason, code }) => {
+        if (String(agentId || '').toLowerCase() !== 'codex') return;
+        let message = 'Codex launch blocked because the weekly window reset and drain mode is active.';
+        if (reason === 'exhausted') {
+          message = 'Codex launch blocked because weekly usage is exhausted.';
+        } else if (code === 'codex-usage-monitor-pending') {
+          message = 'Codex launch is paused until the first usage check completes.';
+        } else if (code === 'codex-usage-monitor-unavailable' || code === 'codex-usage-monitor-error') {
+          message = 'Codex launch is paused because the usage monitor is unavailable.';
+        }
+        this.showToast(message, 'warning', { force: true, durationMs: 8_000 });
+      });
+
+      this.socket.on('agent-turn-blocked', ({ agentId, code }) => {
+        if (String(agentId || '').toLowerCase() !== 'codex') return;
+        const message = code === 'codex-usage-draining'
+          ? 'New work was not sent to Codex because drain mode is active.'
+          : 'New work was not sent to Codex because its usage check is unavailable.';
+        this.showToast(message, 'warning', { force: true, durationMs: 8_000 });
+      });
+
       this.socket.on('claude-update-required', (updateInfo) => {
         this.showClaudeUpdateRequired(updateInfo);
       });
@@ -18087,15 +18118,18 @@ class ClaudeOrchestrator {
       return;
     }
 
+    const globalSettings = this.userSettings.global || {};
+    const claudeFlags = globalSettings.claudeFlags || {};
+
     // Update global settings UI
     const globalSkipPermissions = document.getElementById('global-skip-permissions');
     if (globalSkipPermissions) {
-      globalSkipPermissions.checked = this.userSettings.global.claudeFlags.skipPermissions;
+      globalSkipPermissions.checked = claudeFlags.skipPermissions === true;
     }
 
     const globalZaiProvider = document.getElementById('global-zai-provider');
     if (globalZaiProvider) {
-      globalZaiProvider.checked = this.userSettings.global.claudeFlags.provider === 'zai';
+      globalZaiProvider.checked = claudeFlags.provider === 'zai';
     }
 
     // Update auto-start settings UI
@@ -18104,15 +18138,15 @@ class ClaudeOrchestrator {
     const autoStartMode = document.getElementById('global-auto-start-mode');
     const autoStartDelay = document.getElementById('global-auto-start-delay');
 
-    if (globalAutoStart && this.userSettings.global.autoStart) {
-      globalAutoStart.checked = this.userSettings.global.autoStart.enabled || false;
+    if (globalAutoStart && globalSettings.autoStart) {
+      globalAutoStart.checked = globalSettings.autoStart.enabled || false;
       autoStartOptions.style.display = globalAutoStart.checked ? 'block' : 'none';
 
       if (autoStartMode) {
-        autoStartMode.value = this.userSettings.global.autoStart.mode || 'fresh';
+        autoStartMode.value = globalSettings.autoStart.mode || 'fresh';
       }
       if (autoStartDelay) {
-        autoStartDelay.value = this.userSettings.global.autoStart.delay || 500;
+        autoStartDelay.value = globalSettings.autoStart.delay || 500;
       }
     }
 
@@ -18351,7 +18385,7 @@ class ClaudeOrchestrator {
     const recoveryResumeCwd = document.getElementById('recovery-resume-cwd');
     const recoveryResumeConversation = document.getElementById('recovery-resume-conversation');
 
-    const recoverySettings = this.userSettings.global.sessionRecovery || {};
+    const recoverySettings = globalSettings.sessionRecovery || {};
     if (sessionRecoveryEnabled) {
       sessionRecoveryEnabled.checked = recoverySettings.enabled !== false; // Default to enabled
       if (sessionRecoveryOptions) {

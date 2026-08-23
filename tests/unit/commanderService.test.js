@@ -159,6 +159,23 @@ describe('CommanderService', () => {
       expect(result).toBe(true);
       expect(sentData).toBe('test input');
     });
+
+    it('stops assigning Commander work after an existing session crosses the drain boundary', () => {
+      const writeNewTurnToSession = jest.fn()
+        .mockReturnValueOnce(true)
+        .mockReturnValueOnce(false);
+      service.sessionManager = {
+        sessions: new Map([
+          ['session1', { id: 'session1', pty: { write: jest.fn() } }]
+        ]),
+        writeNewTurnToSession
+      };
+
+      expect(service.sendToSession('session1', 'finish current\n')).toBe(true);
+      expect(service.sendToSession('session1', 'next\n')).toBe(false);
+      expect(writeNewTurnToSession).toHaveBeenNthCalledWith(1, 'session1', 'finish current\n', { source: 'commander' });
+      expect(writeNewTurnToSession).toHaveBeenNthCalledWith(2, 'session1', 'next\n', { source: 'commander' });
+    });
   });
 
   describe('resize', () => {

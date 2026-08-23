@@ -1,39 +1,6 @@
 const { test, expect } = require('@playwright/test');
+const { ensureWorkspaceLoaded, dismissFocusOverlay } = require('./_workspace');
 const { mockUserSettings } = require('./_mockUserSettings');
-
-const ensureWorkspaceLoaded = async (page) => {
-  const sidebar = page.locator('.sidebar');
-  if (await sidebar.isVisible().catch(() => false)) {
-    return;
-  }
-
-  await page.waitForFunction(() => window.orchestrator?.socket?.connected === true, {
-    timeout: 10000
-  });
-
-  const openWorkspaceBtn = page.getByRole('button', { name: 'Open Workspace' }).first();
-  if (await openWorkspaceBtn.count() === 0) {
-    throw new Error('No workspace available to open for tests.');
-  }
-
-  await openWorkspaceBtn.click();
-  await page.waitForSelector('#recovery-dialog, .sidebar:not(.hidden)', { timeout: 10000 });
-
-  const recoverySkipBtn = page.locator('#recovery-skip');
-  if (await recoverySkipBtn.isVisible().catch(() => false)) {
-    await recoverySkipBtn.click();
-  }
-
-  await page.waitForSelector('.sidebar:not(.hidden)', { timeout: 10000 });
-};
-
-const dismissFocusOverlay = async (page) => {
-  await page.evaluate(() => {
-    try {
-      window.orchestrator?.unfocusTerminal?.();
-    } catch {}
-  });
-};
 
 test.describe('Workflow Modes', () => {
   test('filters visible tiers and persists selection', async ({ page }) => {
@@ -63,6 +30,9 @@ test.describe('Workflow Modes', () => {
 
     await page.setViewportSize({ width: 1200, height: 800 });
     await page.goto('/');
+    await ensureWorkspaceLoaded(page);
+    await dismissFocusOverlay(page);
+
     const seeded = await page.evaluate(() => {
       if (!window.orchestrator) return { ok: false, reason: 'no orchestrator' };
 
@@ -94,9 +64,6 @@ test.describe('Workflow Modes', () => {
     expect(seeded.ok).toBeTruthy();
     expect(seeded.aId).toBeTruthy();
     expect(seeded.bId).toBeTruthy();
-
-    await page.waitForFunction(() => !!window.orchestrator, { timeout: 30000 });
-    await dismissFocusOverlay(page);
 
     // Focus mode (Tier 1–2 only)
     const settingsPut = page.waitForRequest((req) => req.method() === 'PUT' && req.url().includes('/api/user-settings/global'), { timeout: 10000 });

@@ -31,6 +31,17 @@ function commit(checkout, message, authorName, authorEmail) {
   ]);
 }
 
+function createStaleFixtureClone(root) {
+  const layout = path.join(root, 'aaa-stale-clone');
+  const checkout = path.join(layout, 'master');
+  fs.mkdirSync(checkout, { recursive: true });
+  git(checkout, ['init', '-b', 'main']);
+  git(checkout, ['remote', 'add', 'origin', 'https://github.com/owner/fixture.git']);
+  writeFile(checkout, 'src/index.js', 'module.exports = () => "stale";\n');
+  commit(checkout, 'feat: stale fixture', 'First Author', 'first@example.test');
+  return { layout, checkout };
+}
+
 describe('atlasEvidence', () => {
   let root;
   let checkout;
@@ -86,24 +97,41 @@ describe('atlasEvidence', () => {
   });
 
   test('keeps the preferred project ahead of a stale clone with the same origin', async () => {
-    const staleLayout = path.join(root, 'aaa-stale-clone');
-    const staleCheckout = path.join(staleLayout, 'master');
-    fs.mkdirSync(staleCheckout, { recursive: true });
-    git(staleCheckout, ['init', '-b', 'main']);
-    git(staleCheckout, ['remote', 'add', 'origin', 'https://github.com/owner/fixture.git']);
-    writeFile(staleCheckout, 'src/index.js', 'module.exports = () => "stale";\n');
-    commit(staleCheckout, 'feat: stale fixture', 'First Author', 'first@example.test');
+    const stale = createStaleFixtureClone(root);
 
     const report = await analyzeRepositoryEvidence({
       id: 'fixture',
       repo: 'owner/fixture',
       localPath: root,
-      localPaths: [root, checkout, staleLayout, staleCheckout],
+      localPaths: [root, checkout, stale.layout, stale.checkout],
       worktreeLayout: true
     });
 
     expect(report.available).toBe(true);
     expect(report.history.commitCount).toBe(2);
+  });
+
+  test('does not coalesce requests with different checkout priority order', async () => {
+    const stale = createStaleFixtureClone(root);
+    const analyzer = createRepositoryEvidenceAnalyzer();
+    const baseEntry = {
+      id: 'fixture',
+      repo: 'owner/fixture',
+      worktreeLayout: true
+    };
+
+    const reports = await Promise.all([
+      analyzer({
+        ...baseEntry,
+        localPaths: [root, checkout, stale.layout, stale.checkout]
+      }),
+      analyzer({
+        ...baseEntry,
+        localPaths: [stale.layout, stale.checkout, root, checkout]
+      })
+    ]);
+
+    expect(reports.map((report) => report.history.commitCount)).toEqual([2, 1]);
   });
 
   test('does not mistake a nested repository for a flat checkout', async () => {

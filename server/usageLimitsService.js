@@ -1,8 +1,8 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFile } = require('child_process');
 const winston = require('winston');
+const { CodexRateLimitsClient } = require('./codexRateLimitsClient');
 
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
@@ -23,13 +23,8 @@ const CLAUDE_LIVE_FILE = path.join(os.homedir(), '.local', 'state', 'ai-usage-mo
 // percentage from an hour ago still beats nothing.
 const CLAUDE_STALE_AFTER_MS = 60 * 60 * 1000;
 
-const CODEX_HELPER = process.env.CODEX_USAGE_HELPER
-  || path.join(os.homedir(), '.codex', 'scripts', 'codex_usage.py');
-// The Codex helper starts a local app-server round trip against the ChatGPT
-// backend, so poll gently: 15min cache (override via env) keeps the widget
-// far away from account rate limits.
+// A local app-server round trip reaches the ChatGPT backend, so poll gently.
 const CODEX_CACHE_TTL_MS = Number(process.env.ORCHESTRATOR_CODEX_USAGE_TTL_MS || 15 * 60 * 1000);
-const CODEX_TIMEOUT_MS = 60 * 1000;
 
 // Grok subscription usage comes from the CLI proxy's billing endpoints, using
 // the OAuth access token the grok CLI already keeps in ~/.grok/auth.json.
@@ -51,7 +46,8 @@ const GROK_CACHE_TTL_MS = Number(process.env.ORCHESTRATOR_GROK_USAGE_TTL_MS || 1
 const GROK_TIMEOUT_MS = 20 * 1000;
 
 class UsageLimitsService {
-  constructor() {
+  constructor({ codexRateLimitsClient = null } = {}) {
+    this.codexRateLimitsClient = codexRateLimitsClient || new CodexRateLimitsClient({ logger });
     this.codexCache = null; // { at, data }
     this.codexInFlight = null;
     this.grokCache = null; // { at, data }
@@ -203,52 +199,78 @@ class UsageLimitsService {
     }
   }
 
-  // Helper output lines look like:
-  //   "  primary (1 week): 9% used; resets Thu 20 Aug 2026 13:32:22 AEST"
-  // possibly for several buckets, preceded by bucket headers and (sometimes)
-  // drift warnings. Parse defensively; anything unparseable is skipped.
-  parseCodexOutput(text) {
+  formatCodexWindowDuration(windowDurationMins) {
+    const minutes = Number(windowDurationMins);
+    if (!Number.isFinite(minutes) || minutes <= 0) return null;
+    if (minutes % 10_080 === 0) {
+      const weeks = minutes / 10_080;
+      return `${weeks} ${weeks === 1 ? 'week' : 'weeks'}`;
+    }
+    if (minutes % 1_440 === 0) {
+      const days = minutes / 1_440;
+      return `${days} ${days === 1 ? 'day' : 'days'}`;
+    }
+    if (minutes % 60 === 0) {
+      const hours = minutes / 60;
+      return `${hours} ${hours === 1 ? 'hour' : 'hours'}`;
+    }
+    return `${minutes} minutes`;
+  }
+
+  parseCodexRateLimits(result) {
     const windows = [];
-    let bucket = null;
-    for (const line of String(text || '').split('\n')) {
-      const header = line.match(/^(\S+)\s+\[([^\]]+)\]\s*$/);
-      if (header) {
-        bucket = header[1];
-        continue;
+    if (!result || typeof result !== 'object') return windows;
+
+    const byLimitId = result.rateLimitsByLimitId && typeof result.rateLimitsByLimitId === 'object'
+      ? Object.entries(result.rateLimitsByLimitId)
+      : [];
+    const snapshots = byLimitId.length
+      ? byLimitId
+      : [['codex', result.rateLimits]];
+
+    for (const [fallbackBucket, snapshot] of snapshots) {
+      if (!snapshot || typeof snapshot !== 'object') continue;
+      const bucket = String(snapshot.limitId || fallbackBucket || '').trim();
+      if (!bucket) continue;
+      for (const name of ['primary', 'secondary']) {
+        const rawWindow = snapshot[name];
+        if (!rawWindow || typeof rawWindow !== 'object') continue;
+        const usedPercentage = Number(rawWindow.usedPercent);
+        const windowDurationMins = Number(rawWindow.windowDurationMins);
+        const resetsAt = Number(rawWindow.resetsAt);
+        const window = this.formatCodexWindowDuration(windowDurationMins);
+        if (!Number.isFinite(usedPercentage) || !window || !Number.isFinite(resetsAt) || resetsAt <= 0) continue;
+        windows.push({
+          bucket,
+          bucketName: String(snapshot.limitName || '').trim() || null,
+          name,
+          window,
+          windowDurationMins,
+          usedPercentage: Math.min(100, Math.max(0, Math.round(usedPercentage))),
+          resetsAt: Math.round(resetsAt)
+        });
       }
-      const m = line.match(/^\s*(\w+)\s*\(([^)]+)\):\s*(\d+)%\s*used;\s*resets\s+(.+?)\s*$/);
-      if (!m) continue;
-      const [, name, windowLabel, pct, resetText] = m;
-      // The timezone abbreviation (AEST etc.) isn't parseable by Date, but the
-      // helper runs on this machine, so the timestamp is in server-local time.
-      const parsed = Date.parse(resetText.replace(/\s+[A-Z]{2,5}$/, ''));
-      windows.push({
-        bucket,
-        name,
-        window: windowLabel,
-        usedPercentage: Number(pct),
-        resetsAt: Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null
-      });
     }
     return windows;
   }
 
   fetchCodexLimits() {
     if (this.codexInFlight) return this.codexInFlight;
-    this.codexInFlight = new Promise((resolve) => {
-      if (!fs.existsSync(CODEX_HELPER)) {
-        resolve({ available: false, reason: 'helper-missing' });
-        return;
-      }
-      execFile('python3', [CODEX_HELPER], { timeout: CODEX_TIMEOUT_MS, windowsHide: true }, (error, stdout, stderr) => {
-        if (error) {
-          logger.warn('codex usage helper failed', { error: error.message, stderr: String(stderr || '').slice(0, 500) });
-          resolve({ available: false, reason: 'helper-failed' });
-          return;
-        }
-        const windows = this.parseCodexOutput(`${stdout}\n${stderr}`);
-        resolve({ available: windows.length > 0, updatedAt: Math.floor(Date.now() / 1000), windows });
-      });
+    this.codexInFlight = this.codexRateLimitsClient.read().then((result) => {
+      const windows = this.parseCodexRateLimits(result);
+      return {
+        available: windows.length > 0,
+        reason: windows.length > 0 ? undefined : 'weekly-windows-missing',
+        updatedAt: Math.floor(Date.now() / 1000),
+        windows
+      };
+    }).catch((error) => {
+      const message = String(error?.message || error);
+      logger.warn('Codex app-server usage read failed', { error: message });
+      return {
+        available: false,
+        reason: message === 'codex-app-server-cancelled' ? 'cancelled' : 'app-server-failed'
+      };
     }).then((data) => {
       if (data.available) this.codexCache = { at: Date.now(), data };
       return data;
@@ -256,6 +278,11 @@ class UsageLimitsService {
       this.codexInFlight = null;
     });
     return this.codexInFlight;
+  }
+
+  async cancelCodexFetch() {
+    await this.codexRateLimitsClient.cancelActive();
+    await this.codexInFlight?.catch(() => {});
   }
 
   readGrokToken() {
@@ -354,18 +381,22 @@ class UsageLimitsService {
     return data;
   }
 
+  async getCodexLimits({ refresh = false, enabled = true } = {}) {
+    return this.getProviderCached({
+      enabled,
+      cache: refresh ? null : this.codexCache,
+      ttl: CODEX_CACHE_TTL_MS,
+      fetcher: () => this.fetchCodexLimits()
+    });
+  }
+
   async getLimits({ refresh = false, providers = {} } = {}) {
     const enabled = (name) => providers[name] !== false;
     const claude = enabled('claude')
       ? await this.getClaudeLimits({ refresh })
       : { available: false, reason: 'disabled' };
     const [codex, grok] = await Promise.all([
-      this.getProviderCached({
-        enabled: enabled('codex'),
-        cache: refresh ? null : this.codexCache,
-        ttl: CODEX_CACHE_TTL_MS,
-        fetcher: () => this.fetchCodexLimits()
-      }),
+      this.getCodexLimits({ refresh, enabled: enabled('codex') }),
       this.getProviderCached({
         enabled: enabled('grok'),
         cache: refresh ? null : this.grokCache,

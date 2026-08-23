@@ -895,9 +895,13 @@ So the normal update path is just: `git pull`/`git checkout` in `master/`, let n
 restart, done. Commander tabs and worktree terminals come back with their conversations
 intact — verified live via `tmux capture-pane` across all three Commander instances during
 that PR's own restart. Caveats:
-- If the update also changes the Node version node-pty was built against, terminals will
-  fail to spawn after the restart until `npm rebuild node-pty` runs against the exact live
-  Node binary (`readlink -f /proc/<nodemon-pid>/exe`) — this bit PR #1059 itself.
+- If the update changes the Node ABI, source checkouts rebuild `node-pty` once through the
+  exact running Node executable before retrying the module load. Set
+  `ORCHESTRATOR_NODE_PTY_AUTO_REBUILD=false` to disable this recovery. Packaged backends
+  remain read-only and fail closed instead of trying to modify installed app resources.
+- Other native load failures remain explicit. For a missing binary, interrupted install, or
+  non-ABI native error in a source checkout, inspect the reported error and run
+  `npm rebuild node-pty` manually.
 - The browser UI does a brief WebSocket reconnect at restart; no action needed, it recovers
   on its own within a few seconds.
 - If persistence is disabled or tmux is unavailable, fall back to the deferred-restart
