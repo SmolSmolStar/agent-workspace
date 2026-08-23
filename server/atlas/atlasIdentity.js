@@ -3,9 +3,26 @@ const path = require('path');
 const { kebab } = require('./atlasSchema');
 
 function parseOwnerRepo(remoteUrl) {
-  const match = String(remoteUrl || '').trim().match(/github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (!match) return null;
-  return { owner: match[1], repo: match[2], nameWithOwner: `${match[1]}/${match[2]}` };
+  const value = String(remoteUrl || '').trim();
+  const buildIdentity = (owner, rawRepo) => {
+    const repo = String(rawRepo || '').replace(/\.git$/i, '');
+    if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo)) return null;
+    return { owner, repo, nameWithOwner: `${owner}/${repo}` };
+  };
+
+  const scpMatch = value.match(/^(?:[^@\s/:]+@)?github\.com:([^/\s]+)\/([^/\s]+?)\/?$/i);
+  if (scpMatch) return buildIdentity(scpMatch[1], scpMatch[2]);
+
+  const urlValue = /^github\.com\//i.test(value) ? `https://${value}` : value;
+  try {
+    const parsed = new URL(urlValue);
+    if (parsed.hostname.toLowerCase() !== 'github.com') return null;
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    if (segments.length !== 2) return null;
+    return buildIdentity(segments[0], segments[1]);
+  } catch {
+    return null;
+  }
 }
 
 function repositorySlug(entry) {

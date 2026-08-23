@@ -12,6 +12,7 @@ const path = require('path');
 const RepoAtlasService = require('../server/repoAtlasService');
 const { KINDS, STATUSES, MATURITIES, VISIBILITIES, listCanonicalTopics } = require('../server/atlas/atlasSchema');
 const { formatDecisions } = require('../server/atlas/atlasCompiler');
+const { analyzeRepositoryEvidence, formatRepositoryEvidence } = require('../server/atlas/atlasEvidence');
 
 const atlas = RepoAtlasService.getInstance();
 
@@ -165,6 +166,15 @@ const commands = {
     const entry = atlas.getEntry(id);
     if (!entry) return fail(`no repo "${id}" on the map (try \`atlas list --query ${id}\`)`);
     return flags.json ? printJson(entry) : out(atlas.describe(id));
+  },
+
+  async evidence(positionals, flags) {
+    const id = positionals[0];
+    if (!id) return fail('usage: atlas evidence <id> [--max N] [--json]');
+    const entry = atlas.getEntry(id);
+    if (!entry) return fail(`no repo "${id}" on the map (try \`atlas list --query ${id}\`)`);
+    const report = await analyzeRepositoryEvidence(entry, { maxExamples: flags.max });
+    return flags.json ? printJson(report) : out(formatRepositoryEvidence(report));
   },
 
   find(positionals, flags) {
@@ -463,6 +473,7 @@ const commands = {
   atlas status                             where things live, how fresh they are
   atlas list [filters] [--json]            list repos
   atlas show <id> [--json]                 everything known about one repo
+  atlas evidence <id> [--max N] [--json]   measured history, code, tests, and paths
   atlas find <topic> [--min-quality N]     who did this well? (the main query)
   atlas topics [--vocabulary]              topics in use / canonical vocabulary
   atlas digest [--group-by kind] [--max N] compact map to paste into a prompt
@@ -519,7 +530,10 @@ async function main() {
   try {
     await handler(positionals, flags);
   } catch (error) {
-    fail(error?.message || String(error));
+    const gitCommand = Array.isArray(error?.gitArgs) && error.gitArgs[0]
+      ? ` Git command: git ${error.gitArgs[0]} failed.`
+      : '';
+    fail(`${error?.message || String(error)}${gitCommand}`);
   }
 }
 
