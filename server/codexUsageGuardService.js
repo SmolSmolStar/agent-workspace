@@ -1,7 +1,7 @@
-const fs = require('fs');
 const path = require('path');
 const EventEmitter = require('events');
 const { getAgentWorkspaceDir } = require('./utils/pathUtils');
+const { CodexUsageGuardStateStore } = require('./codexUsageGuardStateStore');
 
 const STATE_VERSION = 2;
 const MODE_INITIALIZING = 'initializing';
@@ -63,6 +63,11 @@ class CodexUsageGuardService extends EventEmitter {
     this.failureThreshold = resolveFailureThreshold(failureThreshold);
     this.now = now;
     this.storePath = this.resolveStorePath(storePath);
+    this.stateStore = new CodexUsageGuardStateStore({
+      filePath: this.storePath,
+      normalizeState: (value) => this.normalizeState(value),
+      logger: this.logger
+    });
     this.pollTimer = null;
     this.pollInFlight = null;
     this.state = this.loadState();
@@ -168,41 +173,135 @@ class CodexUsageGuardService extends EventEmitter {
     };
   }
 
+  readPersistedState({ throwOnError = false } = {}) {
+    return this.stateStore.read({ throwOnError });
+  }
+
   loadState() {
+    return this.readPersistedState() || this.getDefaultState();
+  }
+
+  getStateTimestamp(value) {
+    const parsed = Date.parse(String(value || ''));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  resumeCoversDrain(resumedState, drainedState) {
+    if (resumedState?.mode !== MODE_MONITORING || drainedState?.mode !== MODE_DRAINING) return false;
+    if (resumedState.resumedAt && resumedState.resumedAt === drainedState.resumedAt) return false;
+    const resumedAt = this.getStateTimestamp(resumedState.resumedAt);
+    const triggeredAt = this.getStateTimestamp(drainedState.triggeredAt);
+    if (!resumedAt || resumedAt < triggeredAt) return false;
+    const resumedReset = resumedState.observedWindow?.resetsAt || 0;
+    const drainedReset = drainedState.observedWindow?.resetsAt || 0;
+    return resumedReset >= drainedReset;
+  }
+
+  compareDrainGeneration(left, right) {
+    const leftReset = left?.observedWindow?.resetsAt || 0;
+    const rightReset = right?.observedWindow?.resetsAt || 0;
+    if (leftReset !== rightReset) return leftReset - rightReset;
+    return this.getStateTimestamp(left?.triggeredAt) - this.getStateTimestamp(right?.triggeredAt);
+  }
+
+  syncSharedState() {
+    if (!this.enabled) return;
+    let persisted;
     try {
-      if (!fs.existsSync(this.storePath)) return this.getDefaultState();
-      return this.normalizeState(JSON.parse(fs.readFileSync(this.storePath, 'utf8')));
+      persisted = this.readPersistedState({ throwOnError: true });
     } catch (error) {
-      this.logger.warn?.('Failed to load Codex usage guard state', {
-        error: error.message,
-        path: this.storePath
+      if (![MODE_DRAINING, MODE_MONITOR_UNAVAILABLE].includes(this.state.mode)) {
+        this.state = this.normalizeState({
+          ...this.state,
+          mode: MODE_MONITOR_UNAVAILABLE,
+          drainReason: 'monitor-unavailable',
+          triggeredAt: this.state.triggeredAt || this.nowIso(),
+          lastError: `usage-guard-state-read-failed: ${String(error?.message || error)}`,
+          updatedAt: this.nowIso()
+        });
+      }
+      return;
+    }
+
+    if (!persisted) {
+      if (this.state.updatedAt && ![MODE_DRAINING, MODE_MONITOR_UNAVAILABLE].includes(this.state.mode)) {
+        this.state = this.normalizeState({
+          ...this.state,
+          mode: MODE_MONITOR_UNAVAILABLE,
+          drainReason: 'monitor-unavailable',
+          triggeredAt: this.state.triggeredAt || this.nowIso(),
+          lastError: 'usage-guard-state-missing',
+          updatedAt: this.nowIso()
+        });
+      }
+      return;
+    }
+
+    if (persisted.mode === MODE_DRAINING) {
+      if (this.state.mode !== MODE_DRAINING || this.compareDrainGeneration(persisted, this.state) > 0) {
+        this.state = persisted;
+      }
+      return;
+    }
+
+    if (this.hasSuccessfulPollThisRun && this.resumeCoversDrain(persisted, this.state)) {
+      this.state = persisted;
+      return;
+    }
+
+    if (!this.hasSuccessfulPollThisRun && this.state.mode !== MODE_DRAINING) {
+      this.state = this.normalizeState({
+        ...persisted,
+        mode: persisted.mode === MODE_MONITOR_UNAVAILABLE
+          ? MODE_MONITOR_UNAVAILABLE
+          : MODE_INITIALIZING
       });
-      return this.getDefaultState();
     }
   }
 
-  persistState(nextState) {
-    const normalized = this.normalizeState({
-      ...nextState,
-      updatedAt: this.nowIso()
-    });
-    fs.mkdirSync(path.dirname(this.storePath), { recursive: true });
-    const tmpPath = `${this.storePath}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
-    fs.renameSync(tmpPath, this.storePath);
-    this.state = normalized;
-    return normalized;
+  sameDrain(left, right) {
+    return left?.mode === MODE_DRAINING
+      && right?.mode === MODE_DRAINING
+      && left.drainReason === right.drainReason
+      && left.triggeredAt === right.triggeredAt
+      && (left.observedWindow?.resetsAt || null) === (right.observedWindow?.resetsAt || null);
   }
 
-  commitState(nextState) {
+  reconcileSharedState(persisted, candidate, {
+    allowDrainExit = false,
+    drainTransition = false,
+    expectedDrain = null
+  } = {}) {
+    if (!persisted) return candidate;
+    if (persisted.mode === MODE_DRAINING && candidate.mode === MODE_DRAINING) {
+      return this.compareDrainGeneration(candidate, persisted) >= 0
+        ? candidate
+        : persisted;
+    }
+    if (persisted.mode === MODE_DRAINING && candidate.mode !== MODE_DRAINING) {
+      return allowDrainExit && this.sameDrain(persisted, expectedDrain)
+        ? candidate
+        : persisted;
+    }
+    if (candidate.mode === MODE_DRAINING && persisted.mode !== MODE_DRAINING) {
+      if (this.resumeCoversDrain(persisted, candidate)) return persisted;
+      if (!drainTransition && persisted.resumedAt) return persisted;
+    }
+    return candidate;
+  }
+
+  commitState(nextState, options = {}) {
     const previousState = this.state;
-    const normalized = this.normalizeState({
+    let normalized = this.normalizeState({
       ...nextState,
       updatedAt: this.nowIso()
     });
     this.state = normalized;
     try {
-      this.persistState(normalized);
+      normalized = this.stateStore.update((persisted) => (
+        this.reconcileSharedState(persisted, normalized, options)
+      ));
+      this.state = normalized;
     } catch (error) {
       this.logger.warn?.('Failed to persist Codex usage guard state', {
         error: error.message,
@@ -286,6 +385,7 @@ class CodexUsageGuardService extends EventEmitter {
   }
 
   async performPoll() {
+    this.syncSharedState();
     const pollAt = this.nowIso();
     try {
       if (!this.usageLimitsService?.getCodexLimits) {
@@ -335,7 +435,9 @@ class CodexUsageGuardService extends EventEmitter {
       }
 
       this.hasSuccessfulPollThisRun = true;
-      this.commitState(next);
+      this.commitState(next, {
+        drainTransition: rolloverDetected || (exhausted && !wasDraining)
+      });
       const status = this.getStatus();
       if (!wasDraining && this.state.mode === MODE_DRAINING) {
         this.logger.warn?.('Codex usage guard entered drain mode', {
@@ -370,6 +472,7 @@ class CodexUsageGuardService extends EventEmitter {
   }
 
   getAdmissionDecision({ agentId } = {}) {
+    this.syncSharedState();
     const normalizedAgent = String(agentId || '').trim().toLowerCase();
     if (!this.enabled || normalizedAgent !== 'codex' || this.state.mode === MODE_MONITORING) {
       return { allowed: true };
@@ -388,7 +491,9 @@ class CodexUsageGuardService extends EventEmitter {
   }
 
   resumeAdmissions({ acknowledgedBy = null } = {}) {
+    this.syncSharedState();
     if (this.state.mode !== MODE_DRAINING || !this.hasSuccessfulPollThisRun) return this.getStatus();
+    const expectedDrain = this.state;
     const now = this.nowIso();
     this.commitState({
       ...this.state,
@@ -399,6 +504,9 @@ class CodexUsageGuardService extends EventEmitter {
       consecutiveFailures: 0,
       resumedAt: now,
       resumedBy: String(acknowledgedBy || '').trim().slice(0, 100) || null
+    }, {
+      allowDrainExit: true,
+      expectedDrain
     });
     const status = this.getStatus();
     this.emit('state-changed', status);
@@ -406,6 +514,7 @@ class CodexUsageGuardService extends EventEmitter {
   }
 
   getStatus() {
+    this.syncSharedState();
     const mode = this.enabled ? this.state.mode : 'disabled';
     return {
       enabled: this.enabled,

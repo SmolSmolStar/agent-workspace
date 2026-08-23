@@ -107,11 +107,13 @@ server/codexUsageGuardService.js   - Durable Codex weekly-limit rollover and exh
 ├─ Rollover proof: enters drain mode only when `resetsAt` advances and `usedPercentage` drops; elapsed wall-clock time alone cannot trigger it
 ├─ Monitor safety: requires a live successful poll after every process boot, blocks again after repeated read failures, and recovers automatically after a valid poll; other providers remain available
 ├─ Admission: blocks new Codex starts and automated Pager, Commander, and command-registry turns while leaving active PTYs running to finish in-flight work; shell command tracking covers direct, environment-prefixed, and package-runner Codex commands
-├─ Persistence: atomically stores observations and drain state in `<data-dir>/codex-usage-guard.json`; write failures block new Codex work and failed resume writes preserve the previous drain
+├─ Persistence: synchronizes every live app instance through `<data-dir>/codex-usage-guard.json`; a persisted drain wins over stale polls, while an explicit durable resume reaches processes that have completed a live poll
+├─ Failure handling: state read or write failures block new Codex work, and failed resume writes preserve the previous drain
 └─ Operations: `GET /api/usage/codex-guard` reports state; `POST /api/usage/codex-guard/resume` explicitly reopens a healthy drained guard; set `ORCHESTRATOR_CODEX_USAGE_GUARD_ENABLED=false` and restart only when app-server monitoring cannot run, which disables this safety gate
+server/codexUsageGuardStateStore.js - Exclusive lock, stale-lock recovery, and atomic JSON replacement for shared guard state
 server/codexRateLimitsClient.js    - Bounded Codex app-server JSON-RPC client with versioned initialize/read envelopes, bounded owned-child cancellation, and capped stderr diagnostics
 tests/unit/codexRateLimitsClient.test.js - Production envelope, notification filtering, raw reset epoch, bounded child cleanup, and stderr coverage
-tests/unit/codexUsageGuardService.test.js - Pending, permanent startup failure, failure threshold/recovery, rollover, exhaustion, restart persistence, and shutdown coverage
+tests/unit/codexUsageGuardService.test.js - Pending, startup failure, recovery, rollover, exhaustion, restart persistence, cross-process races, lock cleanup, and shutdown coverage
 tests/unit/sessionManager.codexAdmission.test.js - Central Codex start and automated-turn admission coverage
 tests/unit/batchLaunchService.admission.test.js - Verifies queued Codex cards are rejected before worktree allocation
 tests/e2e/codex-usage-guard.spec.js - Safe-port API coverage for unavailable-monitor fail-closed status

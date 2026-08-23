@@ -322,6 +322,7 @@ describe('CodexUsageGuardService', () => {
       allowed: false,
       code: 'codex-usage-monitor-unavailable'
     });
+    expect(fs.existsSync(`${storePath}.lock`)).toBe(false);
 
     rename.mockRestore();
     expect(await service.pollOnce()).toMatchObject({
@@ -354,6 +355,165 @@ describe('CodexUsageGuardService', () => {
     expect(JSON.parse(fs.readFileSync(storePath, 'utf8'))).toMatchObject({
       mode: 'draining',
       drainReason: 'exhausted'
+    });
+    expect(fs.existsSync(`${storePath}.lock`)).toBe(false);
+  });
+
+  test('recovers a stale state writer lock', async () => {
+    usageLimitsService.getCodexLimits.mockResolvedValue(
+      codexLimits({ usedPercentage: 64, resetsAt: 1_800_000_000 })
+    );
+    const lockPath = `${storePath}.lock`;
+    fs.writeFileSync(lockPath, '', 'utf8');
+    const staleTime = new Date(Date.now() - 31_000);
+    fs.utimesSync(lockPath, staleTime, staleTime);
+
+    expect(await createService().pollOnce()).toMatchObject({
+      mode: 'monitoring',
+      admittingCodex: true
+    });
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  test('shares drains and durable resumes across live service instances', async () => {
+    let resolveStalePoll;
+    const firstLimits = {
+      getCodexLimits: jest.fn()
+        .mockResolvedValueOnce(codexLimits({ usedPercentage: 80, resetsAt: 1_800_000_000 }))
+        .mockResolvedValueOnce(codexLimits({ usedPercentage: 2, resetsAt: 1_800_604_800 }))
+    };
+    const secondLimits = {
+      getCodexLimits: jest.fn()
+        .mockResolvedValueOnce(codexLimits({ usedPercentage: 81, resetsAt: 1_800_000_000 }))
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveStalePoll = resolve; }))
+    };
+    const first = createService({ usageLimitsService: firstLimits });
+    const second = createService({ usageLimitsService: secondLimits });
+    const observer = createService();
+
+    await first.pollOnce();
+    await second.pollOnce();
+    const stalePoll = second.pollOnce();
+    expect(resolveStalePoll).toEqual(expect.any(Function));
+
+    nowMs += 2 * 60 * 1000;
+    expect(await first.pollOnce()).toMatchObject({
+      mode: 'draining',
+      drainReason: 'window-rollover'
+    });
+    expect(observer.getAdmissionDecision({ agentId: 'codex' })).toMatchObject({
+      allowed: false,
+      code: 'codex-usage-draining'
+    });
+
+    resolveStalePoll(codexLimits({ usedPercentage: 82, resetsAt: 1_800_000_000 }));
+    expect(await stalePoll).toMatchObject({
+      mode: 'draining',
+      drainReason: 'window-rollover'
+    });
+    expect(JSON.parse(fs.readFileSync(storePath, 'utf8'))).toMatchObject({
+      mode: 'draining',
+      observedWindow: { resetsAt: 1_800_604_800 }
+    });
+
+    expect(first.resumeAdmissions({ acknowledgedBy: 'test' })).toMatchObject({
+      mode: 'monitoring',
+      admittingCodex: true,
+      resumedBy: 'test'
+    });
+    expect(second.getAdmissionDecision({ agentId: 'codex' })).toEqual({ allowed: true });
+    expect(JSON.parse(fs.readFileSync(storePath, 'utf8'))).toMatchObject({
+      mode: 'monitoring',
+      resumedBy: 'test'
+    });
+  });
+
+  test('a poll started before resume cannot recreate the acknowledged drain', async () => {
+    let resolveStalePoll;
+    const firstLimits = {
+      getCodexLimits: jest.fn()
+        .mockResolvedValueOnce(codexLimits({ usedPercentage: 80, resetsAt: 1_800_000_000 }))
+        .mockResolvedValueOnce(codexLimits({ usedPercentage: 2, resetsAt: 1_800_604_800 }))
+    };
+    const secondLimits = {
+      getCodexLimits: jest.fn()
+        .mockResolvedValueOnce(codexLimits({ usedPercentage: 81, resetsAt: 1_800_000_000 }))
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveStalePoll = resolve; }))
+    };
+    const first = createService({ usageLimitsService: firstLimits });
+    const second = createService({ usageLimitsService: secondLimits });
+
+    await first.pollOnce();
+    await second.pollOnce();
+    const stalePoll = second.pollOnce();
+    nowMs += 2 * 60 * 1000;
+    expect((await first.pollOnce()).mode).toBe('draining');
+    expect(first.resumeAdmissions({ acknowledgedBy: 'test' }).mode).toBe('monitoring');
+
+    resolveStalePoll(codexLimits({ usedPercentage: 3, resetsAt: 1_800_604_800 }));
+    expect(await stalePoll).toMatchObject({
+      mode: 'monitoring',
+      admittingCodex: true,
+      resumedBy: 'test'
+    });
+    expect(JSON.parse(fs.readFileSync(storePath, 'utf8'))).toMatchObject({
+      mode: 'monitoring',
+      resumedBy: 'test',
+      observedWindow: { resetsAt: 1_800_604_800 }
+    });
+  });
+
+  test('a stale failed poll cannot replace a newer drain generation', async () => {
+    let resolveStalePoll;
+    const firstLimits = {
+      getCodexLimits: jest.fn()
+        .mockResolvedValueOnce(codexLimits({ usedPercentage: 90, resetsAt: 1_800_000_000 }))
+        .mockResolvedValueOnce(codexLimits({ usedPercentage: 100, resetsAt: 1_800_000_000 }))
+    };
+    const secondLimits = {
+      getCodexLimits: jest.fn()
+        .mockResolvedValueOnce(codexLimits({ usedPercentage: 91, resetsAt: 1_800_000_000 }))
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveStalePoll = resolve; }))
+    };
+    const first = createService({ usageLimitsService: firstLimits });
+    const second = createService({ usageLimitsService: secondLimits });
+
+    await first.pollOnce();
+    await second.pollOnce();
+    nowMs += 2 * 60 * 1000;
+    const oldDrain = await first.pollOnce();
+    expect(oldDrain.mode).toBe('draining');
+    expect(second.getAdmissionDecision({ agentId: 'codex' }).allowed).toBe(false);
+
+    const stalePoll = second.pollOnce();
+    expect(resolveStalePoll).toEqual(expect.any(Function));
+    nowMs += 2 * 60 * 1000;
+    expect(first.resumeAdmissions({ acknowledgedBy: 'test' }).mode).toBe('monitoring');
+
+    nowMs += 2 * 60 * 1000;
+    const third = createService({
+      usageLimitsService: {
+        getCodexLimits: jest.fn().mockResolvedValue(
+          codexLimits({ usedPercentage: 100, resetsAt: 1_800_000_000 })
+        )
+      }
+    });
+    const newDrain = await third.pollOnce();
+    expect(newDrain).toMatchObject({
+      mode: 'draining',
+      drainReason: 'exhausted'
+    });
+    expect(newDrain.triggeredAt).not.toBe(oldDrain.triggeredAt);
+
+    resolveStalePoll({ available: false, reason: 'stale-helper-failure' });
+    expect(await stalePoll).toMatchObject({
+      mode: 'draining',
+      triggeredAt: newDrain.triggeredAt,
+      observedWindow: { resetsAt: 1_800_000_000 }
+    });
+    expect(JSON.parse(fs.readFileSync(storePath, 'utf8'))).toMatchObject({
+      mode: 'draining',
+      triggeredAt: newDrain.triggeredAt
     });
   });
 
