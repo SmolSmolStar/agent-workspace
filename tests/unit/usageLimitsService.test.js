@@ -49,6 +49,20 @@ describe('UsageLimitsService.readClaudeLimits', () => {
   });
 });
 
+describe('UsageLimitsService.getCodexLimits', () => {
+  test('refresh bypasses the fifteen-minute cache', async () => {
+    const service = new UsageLimitsService();
+    const cached = { available: true, windows: [{ usedPercentage: 90 }] };
+    const fresh = { available: true, windows: [{ usedPercentage: 4 }] };
+    service.codexCache = { at: Date.now(), data: cached };
+    service.fetchCodexLimits = jest.fn().mockResolvedValue(fresh);
+
+    await expect(service.getCodexLimits()).resolves.toBe(cached);
+    await expect(service.getCodexLimits({ refresh: true })).resolves.toBe(fresh);
+    expect(service.fetchCodexLimits).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('UsageLimitsService grok parsing and provider gating', () => {
   const service = new UsageLimitsService();
 

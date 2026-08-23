@@ -85,6 +85,7 @@ class SessionManager extends EventEmitter {
     super();
     this.io = io;
     this.agentManager = agentManager;
+    this.agentAdmissionController = null;
     this.sessions = new Map();
     // Keep inactive workspaces' sessions alive (PTYs keep running), keyed by workspace id.
     // The active workspace is always `this.workspace`, and its sessions live in `this.sessions`.
@@ -141,6 +142,30 @@ class SessionManager extends EventEmitter {
 
     // Worktrees will be built when workspace is set
     this.worktrees = [];
+  }
+
+  setAgentAdmissionController(controller) {
+    this.agentAdmissionController = controller || null;
+  }
+
+  getAgentAdmissionDecision({ agentId, sessionId = null, config = null } = {}) {
+    if (!this.agentAdmissionController?.getAdmissionDecision) return { allowed: true };
+    try {
+      const decision = this.agentAdmissionController.getAdmissionDecision({
+        agentId,
+        sessionId,
+        config
+      });
+      if (!decision || decision.allowed !== false) return { allowed: true };
+      return decision;
+    } catch (error) {
+      logger.error('Agent admission check failed open', {
+        agentId,
+        sessionId,
+        error: error.message
+      });
+      return { allowed: true };
+    }
   }
 
   getRecoveryHydrationKey(sessionId, { workspaceId = null, session = null } = {}) {
@@ -3314,6 +3339,28 @@ class SessionManager extends EventEmitter {
     // Handle mutually exclusive flags
     const adjustedFlags = this.agentManager.validateAndAdjustFlags(config.agentId, config.flags);
     const finalConfig = { ...config, flags: adjustedFlags };
+
+    const admission = this.getAgentAdmissionDecision({
+      agentId: finalConfig.agentId,
+      sessionId,
+      config: finalConfig
+    });
+    if (!admission.allowed) {
+      logger.warn('Agent start blocked by admission controller', {
+        sessionId,
+        agentId: finalConfig.agentId,
+        code: admission.code,
+        reason: admission.reason
+      });
+      this.io?.emit?.('agent-start-blocked', {
+        sessionId,
+        agentId: finalConfig.agentId,
+        code: admission.code || 'agent-admission-blocked',
+        reason: admission.reason || null,
+        triggeredAt: admission.triggeredAt || null
+      });
+      return false;
+    }
 
     logger.info('Starting agent with configuration', {
       sessionId,

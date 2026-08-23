@@ -106,6 +106,7 @@ const { WorktreeHelper } = require('./worktreeHelper');
 const AgentManager = require('./agentManager');
 const { PortRegistry } = require('./portRegistry');
 const { UsageLimitsService } = require('./usageLimitsService');
+const { CodexUsageGuardService } = require('./codexUsageGuardService');
 const { SystemStatsService } = require('./systemStatsService');
 const { GreenfieldService } = require('./greenfieldService');
 const { ProjectTypeService } = require('./projectTypeService');
@@ -353,6 +354,16 @@ const gitHelper = new GitHelper();
 const notificationService = new NotificationService(io);
 const worktreeHelper = new WorktreeHelper();
 const portRegistry = PortRegistry.getInstance();
+const usageLimitsService = UsageLimitsService.getInstance();
+const codexUsageGuardService = CodexUsageGuardService.getInstance({
+  usageLimitsService,
+  logger
+});
+sessionManager.setAgentAdmissionController(codexUsageGuardService);
+codexUsageGuardService.on('state-changed', (status) => {
+  io.emit('codex-usage-guard', status);
+});
+codexUsageGuardService.start();
 const greenfieldService = GreenfieldService.getInstance();
 const projectTypeService = ProjectTypeService.getInstance({ logger });
 greenfieldService.setSessionManager(sessionManager);
@@ -573,6 +584,7 @@ io.on('connection', (socket) => {
     frameworks: workspaceManager.discoveredWorkspaceTypes?.frameworks || {},
     cascadedConfigs: cascadedConfigs  // Pre-computed cascaded configs
   });
+  socket.emit('codex-usage-guard', codexUsageGuardService.getStatus());
 
   // Send initial session states
   socket.emit('sessions', sessionManager.getSessionStates());
@@ -4674,13 +4686,23 @@ app.post('/api/setup-actions/open-url', requirePolicyAction('write'), express.js
 // tap file, Codex windows from the official app-server helper).
 app.get('/api/usage/limits', async (req, res) => {
   try {
-    const usageLimitsService = UsageLimitsService.getInstance();
     const providers = userSettingsService.getAllSettings()?.global?.ui?.usageLimitsProviders || {};
     const result = await usageLimitsService.getLimits({ refresh: req.query.refresh === '1', providers });
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+app.get('/api/usage/codex-guard', (req, res) => {
+  res.json(codexUsageGuardService.getStatus());
+});
+
+app.post('/api/usage/codex-guard/resume', requirePolicyAction('write'), (req, res) => {
+  const acknowledgedBy = String(req.body?.acknowledgedBy || 'api').trim().slice(0, 100);
+  const status = codexUsageGuardService.resumeAdmissions({ acknowledgedBy });
+  activityFeed.track('codex.usage_guard.resumed', { acknowledgedBy });
+  res.json(status);
 });
 
 // CPU/RAM/VRAM for the header stats button. `processes=1` pulls the
@@ -8904,6 +8926,7 @@ function shutdown(signal = 'unknown') {
 
   isShuttingDown = true;
   logger.info('Shutting down server...', { signal });
+  codexUsageGuardService.stop();
   
   // Clean up sessions first
   sessionManager.cleanup();

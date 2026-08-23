@@ -354,18 +354,22 @@ class UsageLimitsService {
     return data;
   }
 
+  async getCodexLimits({ refresh = false, enabled = true } = {}) {
+    return this.getProviderCached({
+      enabled,
+      cache: refresh ? null : this.codexCache,
+      ttl: CODEX_CACHE_TTL_MS,
+      fetcher: () => this.fetchCodexLimits()
+    });
+  }
+
   async getLimits({ refresh = false, providers = {} } = {}) {
     const enabled = (name) => providers[name] !== false;
     const claude = enabled('claude')
       ? await this.getClaudeLimits({ refresh })
       : { available: false, reason: 'disabled' };
     const [codex, grok] = await Promise.all([
-      this.getProviderCached({
-        enabled: enabled('codex'),
-        cache: refresh ? null : this.codexCache,
-        ttl: CODEX_CACHE_TTL_MS,
-        fetcher: () => this.fetchCodexLimits()
-      }),
+      this.getCodexLimits({ refresh, enabled: enabled('codex') }),
       this.getProviderCached({
         enabled: enabled('grok'),
         cache: refresh ? null : this.grokCache,

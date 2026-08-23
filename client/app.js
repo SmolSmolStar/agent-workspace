@@ -1551,6 +1551,24 @@ class ClaudeOrchestrator {
         this.scheduleAutoPromptFallback(sessionId, config?.agentId);
       });
 
+      this.socket.on('codex-usage-guard', (status) => {
+        const wasDraining = this.codexUsageGuardStatus?.mode === 'draining';
+        this.codexUsageGuardStatus = status || null;
+        if (status?.mode !== 'draining' || wasDraining) return;
+        const message = status.drainReason === 'exhausted'
+          ? 'Codex weekly usage is exhausted. New Codex launches are paused; active sessions continue.'
+          : 'Codex weekly usage reset. New Codex launches are paused; active sessions continue.';
+        this.showToast(message, 'warning', { force: true, durationMs: 10_000 });
+      });
+
+      this.socket.on('agent-start-blocked', ({ agentId, reason }) => {
+        if (String(agentId || '').toLowerCase() !== 'codex') return;
+        const message = reason === 'exhausted'
+          ? 'Codex launch blocked because weekly usage is exhausted.'
+          : 'Codex launch blocked because the weekly window reset and drain mode is active.';
+        this.showToast(message, 'warning', { force: true, durationMs: 8_000 });
+      });
+
       this.socket.on('claude-update-required', (updateInfo) => {
         this.showClaudeUpdateRequired(updateInfo);
       });
