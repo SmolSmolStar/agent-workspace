@@ -81,6 +81,33 @@ function resolveProjectRoot(repoDir) {
   return { projectRoot: repoDir, worktreeLayout: false };
 }
 
+async function resolveScannedProject(repoDir) {
+  const fallback = { ...resolveProjectRoot(repoDir), primaryCheckout: null };
+  try {
+    if (!fs.lstatSync(path.join(repoDir, '.git')).isFile()) return fallback;
+  } catch {
+    return fallback;
+  }
+  const commonDir = await execFileAsync('git', ['-C', repoDir, 'rev-parse', '--git-common-dir']);
+  if (!commonDir) return fallback;
+
+  const checkout = path.resolve(repoDir);
+  const resolvedCommonDir = path.resolve(repoDir, commonDir);
+  if (path.basename(resolvedCommonDir).toLowerCase() !== '.git') return fallback;
+
+  const primaryCheckout = path.dirname(resolvedCommonDir);
+  const isPrimaryCheckout = checkout === primaryCheckout;
+  const isSiblingCheckout = path.dirname(checkout) === path.dirname(primaryCheckout);
+  if (!isPrimaryCheckout && !isSiblingCheckout) return fallback;
+
+  const resolved = resolveProjectRoot(primaryCheckout);
+  return {
+    ...resolved,
+    worktreeLayout: resolved.worktreeLayout || !isPrimaryCheckout,
+    primaryCheckout
+  };
+}
+
 function inferFromPath(projectRoot, roots) {
   const root = roots.find((r) => projectRoot.startsWith(r));
   const relative = root ? path.relative(root, projectRoot) : path.basename(projectRoot);
@@ -183,13 +210,14 @@ async function scanLocalRepos({ roots, maxDepth = 6, languageCensus = true } = {
 
   for (const root of searchRoots) {
     for (const repoDir of walkForRepos(root, maxDepth)) {
-      const { projectRoot, worktreeLayout } = resolveProjectRoot(repoDir);
+      const { projectRoot, worktreeLayout, primaryCheckout } = await resolveScannedProject(repoDir);
       const existing = byProject.get(projectRoot);
       if (existing) {
         existing.checkoutPaths.add(repoDir);
-        // Prefer `master`/`main` as the representative checkout.
+        existing.worktreeLayout = existing.worktreeLayout || worktreeLayout;
+        // Prefer the common checkout when it appears in the scan.
         const base = path.basename(repoDir).toLowerCase();
-        if (base === 'master' || base === 'main') existing.repoDir = repoDir;
+        if (repoDir === primaryCheckout || base === 'master' || base === 'main') existing.repoDir = repoDir;
         continue;
       }
       byProject.set(projectRoot, {

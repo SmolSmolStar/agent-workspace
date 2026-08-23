@@ -1,6 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const RepoAtlasService = require('../../server/repoAtlasService');
 const store = require('../../server/atlas/atlasStore');
@@ -288,6 +289,40 @@ describe('Repo Atlas discovery identity', () => {
       expect(entries).toHaveLength(1);
       expect(entries[0].localPath).toBe(projectRoot);
       expect(entries[0].localPaths).toEqual([projectRoot, masterDir, workDir]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('named linked worktrees share their common local-only repository root', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-linked-worktree-'));
+    const projectRoot = path.join(tmpDir, 'sample');
+    const masterDir = path.join(projectRoot, 'master');
+    const featureDir = path.join(projectRoot, 'feature-preview');
+    const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+    try {
+      fs.mkdirSync(masterDir, { recursive: true });
+      git(masterDir, ['init', '--initial-branch=master']);
+      fs.writeFileSync(path.join(masterDir, 'README.md'), 'sample\n');
+      git(masterDir, ['add', 'README.md']);
+      git(masterDir, [
+        '-c', 'user.name=Atlas Test',
+        '-c', 'user.email=atlas-test@localhost',
+        'commit', '-m', 'initial'
+      ]);
+      git(masterDir, ['worktree', 'add', '-b', 'feature-preview', featureDir]);
+
+      const entries = await discovery.scanLocalRepos({
+        roots: [tmpDir],
+        maxDepth: 3,
+        languageCensus: false
+      });
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0].id).toBe('sample');
+      expect(entries[0].localPath).toBe(projectRoot);
+      expect(entries[0].localPaths).toEqual([projectRoot, featureDir, masterDir]);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
