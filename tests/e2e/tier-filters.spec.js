@@ -1,38 +1,5 @@
 const { test, expect } = require('@playwright/test');
-
-const ensureWorkspaceLoaded = async (page) => {
-  const sidebar = page.locator('.sidebar');
-  if (await sidebar.isVisible().catch(() => false)) {
-    return;
-  }
-
-  await page.waitForFunction(() => window.orchestrator?.socket?.connected === true, {
-    timeout: 10000
-  });
-
-  const openWorkspaceBtn = page.getByRole('button', { name: 'Open Workspace' }).first();
-  if (await openWorkspaceBtn.count() === 0) {
-    throw new Error('No workspace available to open for tests.');
-  }
-
-  await openWorkspaceBtn.click();
-  await page.waitForSelector('#recovery-dialog, .sidebar:not(.hidden)', { timeout: 10000 });
-
-  const recoverySkipBtn = page.locator('#recovery-skip');
-  if (await recoverySkipBtn.isVisible().catch(() => false)) {
-    await recoverySkipBtn.click();
-  }
-
-  await page.waitForSelector('.sidebar:not(.hidden)', { timeout: 10000 });
-};
-
-const dismissFocusOverlay = async (page) => {
-  await page.evaluate(() => {
-    try {
-      window.orchestrator?.unfocusTerminal?.();
-    } catch {}
-  });
-};
+const { ensureWorkspaceLoaded, dismissFocusOverlay } = require('./_workspace');
 
 test.describe('Tier Filters', () => {
   test('shows tier badges and filters sidebar', async ({ page }) => {

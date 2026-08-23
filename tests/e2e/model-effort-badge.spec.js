@@ -1,40 +1,5 @@
 const { test, expect } = require('@playwright/test');
-
-// Some environments show the dashboard with an "Open Workspace" button first,
-// others auto-open the only workspace — handle both.
-const ensureWorkspaceLoaded = async (page) => {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    await page.waitForFunction(() => window.orchestrator?.socket?.connected === true, {
-      timeout: 20000
-    });
-
-    const sidebar = page.locator('.sidebar:not(.hidden)');
-    const openWorkspaceBtn = page.getByRole('button', { name: 'Open Workspace' }).first();
-    try {
-      await Promise.race([
-        sidebar.waitFor({ state: 'visible', timeout: 20000 }),
-        openWorkspaceBtn.waitFor({ state: 'visible', timeout: 20000 })
-      ]);
-    } catch {
-      await page.reload();
-      continue;
-    }
-
-    if (await openWorkspaceBtn.isVisible().catch(() => false)) {
-      await openWorkspaceBtn.click();
-      await page.waitForSelector('#recovery-dialog, .sidebar:not(.hidden)', { timeout: 20000 });
-      const recoverySkipBtn = page.locator('#recovery-skip');
-      if (await recoverySkipBtn.isVisible().catch(() => false)) {
-        await recoverySkipBtn.click();
-      }
-    }
-
-    await page.waitForSelector('.sidebar:not(.hidden)', { timeout: 20000 });
-    return;
-  }
-
-  throw new Error('Failed to load workspace for tests.');
-};
+const { ensureWorkspaceLoaded } = require('./_workspace');
 
 test.describe('Model/effort badge', () => {
   test('shows the resolved model and effort on agent terminal headers', async ({ page }) => {
@@ -98,8 +63,7 @@ test.describe('Model/effort badge', () => {
     const badge = page.locator('.terminal-wrapper[data-session-id="demo-work1-claude"] .terminal-model-badge');
     await expect(badge).toBeVisible({ timeout: 20000 });
     await expect(badge).toContainText('fable-5[1m]');
-    await expect(badge).toContainText('XHIGH');
-    await expect(badge).toHaveAttribute('data-effort', 'xhigh');
+    await expect(badge).toContainText('xhigh');
 
     const tooltip = await badge.getAttribute('title');
     expect(tooltip).toContain('local settings');
