@@ -1269,21 +1269,23 @@ class VoiceCommandService {
         aliases: Array.isArray(c?.aliases)
           ? c.aliases.map((alias) => String(alias || '').trim().toLowerCase()).filter(Boolean)
           : [],
-        params: Array.isArray(c?.params) ? c.params : []
+        hasRequiredParams: Array.isArray(c?.params) && c.params.some((param) => param && param.required)
       });
     }
 
-    const signature = flat
-      .map((c) => `${c.name}:${c.aliases.slice().sort().join(',')}`)
-      .sort()
-      .join('|');
+    const signature = JSON.stringify(flat
+      .map((command) => ({
+        name: command.name,
+        aliases: command.aliases.slice().sort(),
+        hasRequiredParams: command.hasRequiredParams
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name)));
     if (signature === this.autoPatternSignature) return;
     this.autoPatternSignature = signature;
 
     const auto = [];
     for (const c of flat) {
-      const required = c.params.some((p) => p && p.required);
-      if (required) continue;
+      if (c.hasRequiredParams) continue;
 
       const tokens = c.name.split('-').map((t) => t.trim()).filter(Boolean);
       if (tokens.length === 0) continue;

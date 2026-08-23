@@ -35,6 +35,35 @@ describe('VoiceCommandService (rule parsing)', () => {
     expect(parsed.params).toEqual({});
   });
 
+  test('rebuilds exact rules when re-registration changes required parameters', () => {
+    const command = {
+      category: 'test',
+      description: 'test',
+      aliases: ['test-mutable-voice-shortcut'],
+      examples: [],
+      handler: () => ({})
+    };
+    commandRegistry.register('test-mutable-voice-command', {
+      ...command,
+      params: []
+    });
+    expect(voiceCommandService.parseWithRules('test mutable voice shortcut')?.command)
+      .toBe('test-mutable-voice-command');
+
+    commandRegistry.register('test-mutable-voice-command', {
+      ...command,
+      params: [{ name: 'target', required: true }]
+    });
+    expect(voiceCommandService.parseWithRules('test mutable voice shortcut')).toBeNull();
+
+    commandRegistry.register('test-mutable-voice-command', {
+      ...command,
+      params: []
+    });
+    expect(voiceCommandService.parseWithRules('test mutable voice shortcut')?.command)
+      .toBe('test-mutable-voice-command');
+  });
+
   test('includes advertised aliases in the LLM command catalog', () => {
     const prompt = voiceCommandService.buildLLMPrompt('please open my projects');
 
