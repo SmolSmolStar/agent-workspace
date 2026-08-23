@@ -36,6 +36,62 @@ class WorktreeHelper {
     return path.join(repoPath, 'master');
   }
 
+  /**
+   * Detect a "flat clone" repo (repoPath is itself the git root — no master/
+   * or main/ subdirectory) and restructure it in place to the master/ +
+   * workN/ convention every other repo uses: repoPath/master becomes the
+   * real checkout, and any existing linked worktrees are repaired to point
+   * at the new location.
+   *
+   * No-op (returns false) if repoPath already has a master/ or main/
+   * subdir, or isn't a flat git repo at all — the caller's own checks
+   * produce the right error in that case.
+   */
+  async restructureFlatCloneToMasterConvention(repoPath) {
+    for (const dir of ['master', 'main']) {
+      try {
+        await fs.access(path.join(repoPath, dir));
+        return false; // already conventional, nothing to do
+      } catch { /* keep checking */ }
+    }
+
+    try {
+      await fs.access(path.join(repoPath, '.git'));
+    } catch {
+      return false; // not a flat git repo either
+    }
+
+    logger.info(`Flat clone detected, restructuring into master/ convention: ${repoPath}`);
+
+    // Prune stale linked worktrees before moving anything, so the repair
+    // step below only deals with worktrees that actually still exist.
+    try {
+      await this.executeGitCommand('git worktree prune', repoPath);
+    } catch (error) {
+      logger.warn(`git worktree prune failed during restructure (continuing): ${error.message}`);
+    }
+
+    const parentDir = path.dirname(repoPath);
+    const repoBaseName = path.basename(repoPath);
+    const tempPath = path.join(parentDir, `.${repoBaseName}-restructure-tmp-${Date.now()}`);
+    const masterPath = path.join(repoPath, 'master');
+
+    await fs.rename(repoPath, tempPath);
+    await fs.mkdir(repoPath, { recursive: true });
+    await fs.rename(tempPath, masterPath);
+
+    // Fix up any remaining linked worktrees' administrative files in both
+    // directions now that the main checkout has moved.
+    try {
+      await this.executeGitCommand('git worktree repair', masterPath);
+    } catch (error) {
+      logger.warn(`git worktree repair failed after restructure (continuing): ${error.message}`);
+    }
+
+    logger.info(`Restructured flat clone: ${repoPath} -> ${masterPath}`);
+    return true;
+  }
+
   async resolvePreferredBaseBranch(masterPath, preferredBranch = 'master') {
     const preferred = String(preferredBranch || '').trim() || 'master';
     const candidates = preferred === 'master'

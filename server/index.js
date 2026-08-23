@@ -3065,6 +3065,15 @@ async function ensureWorkspaceMixedWorktree({
     masterPath = path.join(repoPath, 'main');
   }
   if (!fs.existsSync(masterPath)) {
+    // repoPath itself may be a flat clone (no master/main subdir) — restructure
+    // it in place to match convention instead of failing. Falls through to the
+    // error below if it's not actually a git repo either.
+    const restructured = await worktreeHelper.restructureFlatCloneToMasterConvention(repoPath);
+    if (restructured) {
+      masterPath = path.join(repoPath, 'master');
+    }
+  }
+  if (!fs.existsSync(masterPath)) {
     const error = new Error(`Repository root is missing master/main directory: ${repoPath}. Clone your repo into a master/ or main/ subdirectory first.`);
     error.statusCode = 400;
     throw error;

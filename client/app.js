@@ -1961,7 +1961,11 @@ class ClaudeOrchestrator {
           e.preventDefault();
           e.stopPropagation();
           const key = String(shortcutBtn.getAttribute('data-sidebar-project-shortcut') || '').trim();
-          if (key) this.startProjectWorktreeFromBoardKey(key);
+          if (key) {
+            Promise.resolve(this.startProjectWorktreeFromBoardKey(key)).catch((error) => {
+              this.showTemporaryMessage('Failed to open project: ' + (error?.message || error), 'error');
+            });
+          }
           if (this.isMobileLayout()) this.closeSidebar();
           return;
         }
