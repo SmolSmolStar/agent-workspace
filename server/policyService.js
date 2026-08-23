@@ -193,7 +193,7 @@ class PolicyService {
       };
     }
 
-    const requiredRole = this.inferRequiredRoleForCommand(commandName, cmdMeta, cfg);
+    const requiredRole = this.inferRequiredRoleForCommand(cmdMeta.name || commandName, cmdMeta, cfg);
     const ok = this.roleSatisfies(base.role, requiredRole);
     return {
       ...base,

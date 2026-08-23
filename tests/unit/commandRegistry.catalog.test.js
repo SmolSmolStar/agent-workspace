@@ -44,4 +44,40 @@ describe('CommandRegistry catalog metadata', () => {
     expect(first).toHaveProperty('safetyNotes');
     expect(first).toHaveProperty('surfaces');
   });
+
+  test('advertised aliases resolve to the canonical command for lookup and execution', async () => {
+    const handler = jest.fn(() => ({ message: 'Alias target ran' }));
+    commandRegistry.register('test-alias-target', {
+      category: 'test',
+      description: 'Alias execution target',
+      aliases: ['test-shortcut'],
+      params: [],
+      handler
+    });
+
+    expect(commandRegistry.getCommand(' TEST-SHORTCUT ')?.name).toBe('test-alias-target');
+    await expect(commandRegistry.execute(' TEST-SHORTCUT ')).resolves.toEqual({
+      success: true,
+      message: 'Alias target ran'
+    });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  test('rejects aliases that would make command resolution ambiguous', () => {
+    commandRegistry.register('test-first-alias-target', {
+      category: 'test',
+      description: 'First alias target',
+      aliases: ['shared-test-shortcut'],
+      params: [],
+      handler: () => ({})
+    });
+
+    expect(() => commandRegistry.register('test-second-alias-target', {
+      category: 'test',
+      description: 'Second alias target',
+      aliases: ['shared-test-shortcut'],
+      params: [],
+      handler: () => ({})
+    })).toThrow('Alias already registered: shared-test-shortcut');
+  });
 });

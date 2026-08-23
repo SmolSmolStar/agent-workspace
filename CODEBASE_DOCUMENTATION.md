@@ -97,6 +97,11 @@ server/utils/pathUtils.js          - Shared slash-normalization + data-directory
 server/pullRequestService.js       - `gh`-backed PR search/view/merge/review wrapper
 ├─ Search cache: 30s TTL + in-flight coalescing for `gh search prs` (shared by /api/prs, /api/process/tasks, /api/process/distribution); bypass with `?refresh=1`
 └─ Invalidation: local merge/review actions clear the cache so the UI reflects them immediately
+server/commandRegistry.js          - Canonical Commander/voice/UI command catalog and execution dispatcher
+├─ Aliases: advertised aliases resolve to one canonical command for metadata, policy checks, and execution; registration rejects ambiguous alias/name collisions
+└─ Discovery: grouped capabilities and the flat catalog expose the same canonical metadata
+server/voiceCommandService.js      - Rules-first natural-language command parser with optional Ollama/Claude fallback
+└─ Dynamic aliases: zero-parameter command names and aliases become exact voice rules, appear in voice help, and are included in LLM grounding prompts
 server/usageLimitsService.js       - Plan-usage limits for the header widget
 ├─ Claude: reads `~/.local/state/ai-usage-monitor/claude-live.json` (tapped by the user's Claude Code status line)
 ├─ Codex: runs `~/.codex/scripts/codex_usage.py` (official app-server helper), 5min cache, text parsed defensively

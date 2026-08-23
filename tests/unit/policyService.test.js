@@ -67,6 +67,25 @@ describe('PolicyService', () => {
     expect(decision.requiredRole).toBe('admin');
   });
 
+  test('classifies an alias with the canonical command name', () => {
+    const service = makeService(
+      {
+        enabled: true,
+        defaultRole: 'operator'
+      },
+      {
+        'ship-it': { name: 'queue-merge', safetyLevel: 'safe' }
+      }
+    );
+
+    const decision = service.authorizeCommand({
+      req: {},
+      commandName: 'ship-it'
+    });
+    expect(decision.ok).toBe(false);
+    expect(decision.requiredRole).toBe('admin');
+  });
+
   test('allows read-only command for viewer role', () => {
     const service = makeService(
       {
