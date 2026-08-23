@@ -72,7 +72,10 @@ function normalizeSummary(value, { maxChars = MAX_SUMMARY_CHARS } = {}) {
 
   const target = Math.max(1, maxChars - 3);
   const wordBoundary = cleaned.lastIndexOf(' ', target);
-  const boundary = wordBoundary >= Math.floor(target * 0.6) ? wordBoundary : target;
+  let boundary = wordBoundary >= Math.floor(target * 0.6) ? wordBoundary : target;
+  const cutsSurrogatePair = /[\uD800-\uDBFF]/.test(cleaned[boundary - 1])
+    && /[\uDC00-\uDFFF]/.test(cleaned[boundary]);
+  if (cutsSurrogatePair) boundary -= 1;
   return `${cleaned.slice(0, boundary).trimEnd().replace(/[,:;]+$/, '')}...`;
 }
 

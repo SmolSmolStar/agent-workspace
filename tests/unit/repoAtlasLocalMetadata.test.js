@@ -4,6 +4,7 @@ const path = require('path');
 
 const {
   extractReadmeSummary,
+  normalizeSummary,
   readLocalSummary
 } = require('../../server/atlas/atlasLocalMetadata');
 
@@ -79,6 +80,14 @@ describe('Repo Atlas local metadata', () => {
     expect(summary.length).toBeLessThanOrEqual(280);
     expect(summary).toMatch(/\.\.\.$/);
     expect(summary).not.toMatch(/\s\.\.\.$/);
+  });
+
+  test('does not split a surrogate pair at the hard truncation boundary', () => {
+    const summary = normalizeSummary(`${'a'.repeat(276)}😀tail`);
+
+    expect(summary).toBe(`${'a'.repeat(276)}...`);
+    expect(summary.length).toBeLessThanOrEqual(280);
+    expect(Buffer.from(summary, 'utf8').toString('utf8')).toBe(summary);
   });
 
   test('uses a case-insensitive README name and ignores malformed metadata', () => {
