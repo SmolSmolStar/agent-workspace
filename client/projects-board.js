@@ -80,6 +80,17 @@ class ProjectsBoardUI {
     }
   }
 
+  async openPortfolio() {
+    const portfolioUI = this.orchestrator?.atlasPortfolioUI;
+    if (typeof portfolioUI?.show !== 'function') {
+      this.orchestrator?.showToast?.('Repository evidence is unavailable.', 'error');
+      return false;
+    }
+    await portfolioUI.show();
+    this.hide();
+    return true;
+  }
+
   createModal() {
     const modal = document.createElement('div');
     modal.id = this.modalId;
@@ -141,8 +152,7 @@ class ProjectsBoardUI {
 
     modal.querySelector('#projects-board-portfolio')?.addEventListener('click', async (e) => {
       e.preventDefault();
-      this.hide();
-      await this.orchestrator?.atlasPortfolioUI?.show?.();
+      await this.openPortfolio();
     });
 
     const filterEl = modal.querySelector('#projects-board-filter');

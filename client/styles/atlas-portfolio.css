@@ -19,6 +19,7 @@
 }
 
 body.light-theme .atlas-portfolio-modal .modal-content {
+  background: #fff;
   color: #000;
 }
 
@@ -121,6 +122,10 @@ body.light-theme .atlas-portfolio-modal .close-btn {
   background: var(--bg-secondary);
 }
 
+body.light-theme .atlas-portfolio-toolbar {
+  background: #f6f8fa;
+}
+
 .atlas-portfolio-field {
   display: flex;
   flex-direction: column;
@@ -148,6 +153,7 @@ body.light-theme .atlas-portfolio-field {
 
 body.light-theme .atlas-portfolio-field input,
 body.light-theme .atlas-portfolio-field select {
+  background: #fff;
   color: #000;
 }
 
@@ -218,6 +224,7 @@ body.light-theme .atlas-portfolio-loading,
 body.light-theme .atlas-portfolio-error,
 body.light-theme .atlas-portfolio-empty,
 body.light-theme .atlas-portfolio-unavailable {
+  background: #f6f8fa;
   color: #000;
 }
 
@@ -286,6 +293,7 @@ body.light-theme .atlas-portfolio-summary span {
 }
 
 body.light-theme .atlas-portfolio-card {
+  background: #f6f8fa;
   color: #000;
 }
 
@@ -394,6 +402,10 @@ body.light-theme .atlas-portfolio-metrics strong {
   color: #000;
 }
 
+body.light-theme .atlas-portfolio-metrics > div {
+  background: #fff;
+}
+
 .atlas-portfolio-signals,
 .atlas-portfolio-languages {
   margin-top: 9px;
@@ -476,6 +488,10 @@ body.light-theme .atlas-portfolio-examples h5 {
 body.light-theme .atlas-portfolio-examples code,
 body.light-theme .atlas-portfolio-examples li span {
   color: #000;
+}
+
+body.light-theme .atlas-portfolio-examples li {
+  background: #fff;
 }
 
 @media (max-width: 1100px) {

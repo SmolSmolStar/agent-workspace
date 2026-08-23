@@ -89,4 +89,29 @@ describe('ProjectsBoardUI recency filter', () => {
     expect(ui.formatPushAge(Date.now() - 3 * 24 * 60 * 60 * 1000)).toBe('3d ago');
     expect(ui.formatPushAge(null)).toBe('');
   });
+
+  test('keeps the board open when repository evidence is unavailable', async () => {
+    const showToast = jest.fn();
+    const ui = new ProjectsBoardUI({ showToast });
+    ui.hide = jest.fn();
+
+    await expect(ui.openPortfolio()).resolves.toBe(false);
+
+    expect(ui.hide).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith('Repository evidence is unavailable.', 'error');
+  });
+
+  test('opens repository evidence before hiding the board', async () => {
+    const calls = [];
+    const ui = new ProjectsBoardUI({
+      atlasPortfolioUI: {
+        show: async () => { calls.push('show'); }
+      }
+    });
+    ui.hide = () => { calls.push('hide'); };
+
+    await expect(ui.openPortfolio()).resolves.toBe(true);
+
+    expect(calls).toEqual(['show', 'hide']);
+  });
 });

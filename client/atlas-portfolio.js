@@ -42,6 +42,9 @@ class AtlasPortfolioUI {
     const modal = document.createElement('div');
     modal.id = this.modalId;
     modal.className = 'modal hidden atlas-portfolio-modal';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-labelledby', 'atlas-portfolio-heading');
     modal.innerHTML = `
       <div class="modal-content">
         <div class="modal-header atlas-portfolio-header">
@@ -49,7 +52,7 @@ class AtlasPortfolioUI {
             <button type="button" class="atlas-portfolio-secondary-button" data-atlas-back>Back to projects</button>
           </div>
           <div class="atlas-portfolio-title">
-            <h3>Repository evidence</h3>
+            <h3 id="atlas-portfolio-heading">Repository evidence</h3>
             <p>Measured history, code signals, and representative paths from Repo Atlas.</p>
           </div>
           <div class="atlas-portfolio-header-side atlas-portfolio-header-right">
@@ -133,6 +136,7 @@ class AtlasPortfolioUI {
     if (!modal) return;
     modal.classList.remove('hidden');
     this.visible = true;
+    modal.querySelector('[data-atlas-query]')?.focus({ preventScroll: true });
     if (!this.escapeHandler) {
       this.escapeHandler = (event) => {
         if (event.key === 'Escape') this.hide();
