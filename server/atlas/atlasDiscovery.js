@@ -4,6 +4,16 @@ const os = require('os');
 const { execFile } = require('child_process');
 
 const { kebab } = require('./atlasSchema');
+const {
+  parseOwnerRepo,
+  repositorySlug,
+  localPathsFor,
+  discoveryIdentity,
+  comparePreferredLocal,
+  uniqueStrings,
+  latestActivity,
+  disambiguateIds
+} = require('./atlasIdentity');
 
 const SKIP_DIRECTORIES = new Set([
   'node_modules', '.git', '.svn', '.hg', 'dist', 'build', 'target', 'coverage',
@@ -57,12 +67,6 @@ function isGitRepoRoot(dirPath) {
   } catch {
     return false;
   }
-}
-
-function parseOwnerRepo(remoteUrl) {
-  const match = String(remoteUrl || '').trim().match(/github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (!match) return null;
-  return { owner: match[1], repo: match[2], nameWithOwner: `${match[1]}/${match[2]}` };
 }
 
 /**
@@ -182,25 +186,34 @@ async function scanLocalRepos({ roots, maxDepth = 6, languageCensus = true } = {
       const { projectRoot, worktreeLayout } = resolveProjectRoot(repoDir);
       const existing = byProject.get(projectRoot);
       if (existing) {
+        existing.checkoutPaths.add(repoDir);
         // Prefer `master`/`main` as the representative checkout.
         const base = path.basename(repoDir).toLowerCase();
         if (base === 'master' || base === 'main') existing.repoDir = repoDir;
         continue;
       }
-      byProject.set(projectRoot, { projectRoot, repoDir, worktreeLayout, searchRoot: root });
+      byProject.set(projectRoot, {
+        projectRoot,
+        repoDir,
+        worktreeLayout,
+        searchRoot: root,
+        checkoutPaths: new Set([repoDir])
+      });
     }
   }
 
   const entries = [];
-  for (const { projectRoot, repoDir, worktreeLayout } of byProject.values()) {
+  for (const { projectRoot, repoDir, worktreeLayout, checkoutPaths } of byProject.values()) {
     const { remoteUrl, lastActivity } = await readGitFacts(repoDir);
     const parsed = parseOwnerRepo(remoteUrl);
     const inferred = inferFromPath(projectRoot, searchRoots);
+    const checkoutAliases = [...checkoutPaths].map((candidate) => path.resolve(candidate)).sort();
+    const localPaths = [...new Set([projectRoot, ...checkoutAliases])];
 
     entries.push({
       __source: 'discovery',
       id: kebab(parsed?.repo || path.basename(projectRoot)),
-      name: path.basename(projectRoot),
+      name: parsed?.repo || path.basename(projectRoot),
       repo: parsed?.nameWithOwner || '',
       owner: parsed?.owner || '',
       kind: inferred.kind || undefined,
@@ -208,6 +221,7 @@ async function scanLocalRepos({ roots, maxDepth = 6, languageCensus = true } = {
       languages: languageCensus ? censusLanguages(repoDir) : [],
       tags: inferred.categoryPath ? [kebab(inferred.categoryPath)] : [],
       localPath: projectRoot,
+      localPaths,
       cloned: true,
       worktreeLayout,
       remoteUrl,
@@ -265,39 +279,69 @@ async function listGitHubRepos({ limit = 300, owner = '' } = {}) {
  * language detail; GitHub wins on visibility, fork/archive state, and description.
  */
 function mergeDiscovery(localEntries = [], githubEntries = []) {
-  const byKey = new Map();
-  const keyFor = (entry) => (entry.repo ? entry.repo.toLowerCase() : `id:${entry.id}`);
-
-  for (const entry of githubEntries) byKey.set(keyFor(entry), { ...entry });
-
+  const groups = new Map();
+  for (const entry of githubEntries) {
+    const key = discoveryIdentity(entry);
+    const group = groups.get(key) || { github: null, locals: [] };
+    group.github = { ...entry, repo: repositorySlug(entry) || entry.repo };
+    groups.set(key, group);
+  }
   for (const entry of localEntries) {
-    const key = keyFor(entry);
-    const existing = byKey.get(key) || byKey.get(`id:${entry.id}`);
-    if (!existing) {
-      byKey.set(key, { ...entry });
-      continue;
-    }
-    byKey.set(key, {
-      ...existing,
-      ...entry,
-      summary: entry.summary || existing.summary,
-      visibility: existing.visibility || entry.visibility,
-      isFork: existing.isFork ?? entry.isFork,
-      archived: existing.archived ?? entry.archived,
-      status: existing.status || entry.status,
-      languages: entry.languages?.length ? entry.languages : existing.languages,
-      lastActivity: existing.lastActivity || entry.lastActivity,
-      cloned: true
-    });
+    const normalized = { ...entry, repo: repositorySlug(entry) || entry.repo };
+    const key = discoveryIdentity(normalized);
+    const group = groups.get(key) || { github: null, locals: [] };
+    group.locals.push(normalized);
+    groups.set(key, group);
   }
 
-  return [...byKey.values()].sort((a, b) => a.id.localeCompare(b.id));
+  const merged = [];
+  for (const { github, locals } of groups.values()) {
+    if (!locals.length) {
+      merged.push({ ...github });
+      continue;
+    }
+
+    const rankedLocals = locals.slice().sort(comparePreferredLocal);
+    const preferred = rankedLocals[0];
+    const slug = repositorySlug(github) || repositorySlug(preferred);
+    const repoName = slug.split('/').filter(Boolean).slice(-1)[0] || '';
+    const localPaths = uniqueStrings(rankedLocals.map(localPathsFor));
+    const entry = {
+      ...(github || {}),
+      ...preferred,
+      id: kebab(github?.id || repoName || preferred.id || preferred.name),
+      name: github?.name || repoName || preferred.name,
+      repo: slug,
+      owner: github?.owner || preferred.owner || slug.split('/')[0] || '',
+      summary: preferred.summary || github?.summary || '',
+      visibility: github?.visibility || preferred.visibility,
+      isFork: github?.isFork ?? preferred.isFork,
+      archived: github?.archived ?? preferred.archived,
+      status: github?.status || preferred.status,
+      languages: uniqueStrings([
+        ...rankedLocals.map((candidate) => candidate.languages || []),
+        github?.languages || []
+      ]),
+      localPath: preferred.localPath || localPaths[0] || null,
+      localPaths,
+      remoteUrl: preferred.remoteUrl || github?.remoteUrl || '',
+      lastActivity: latestActivity([github, ...rankedLocals]),
+      cloned: true
+    };
+    merged.push(entry);
+  }
+
+  disambiguateIds(merged);
+  return merged.sort((a, b) => a.id.localeCompare(b.id) || String(a.repo || '').localeCompare(String(b.repo || '')));
 }
 
 module.exports = {
   scanLocalRepos,
   listGitHubRepos,
   mergeDiscovery,
+  repositorySlug,
+  localPathsFor,
+  discoveryIdentity,
   parseOwnerRepo,
   resolveProjectRoot,
   inferFromPath,

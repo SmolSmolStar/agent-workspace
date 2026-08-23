@@ -31,6 +31,17 @@ describe('atlasSchema', () => {
     expect(strict.highlights).toEqual([]);
   });
 
+  test('normalizeEntry keeps local checkout aliases as machine-local paths', () => {
+    const entry = normalizeEntry({
+      id: 'acme-tycoon',
+      localPath: '/repos/acme-tycoon',
+      localPaths: ['/repos/acme-tycoon', '/repos/acme-tycoon/work1', '/repos/acme-tycoon/work1']
+    }, { strict: true });
+
+    expect(entry.localPath).toBe('/repos/acme-tycoon');
+    expect(entry.localPaths).toEqual(['/repos/acme-tycoon', '/repos/acme-tycoon/work1']);
+  });
+
   test('normalizeEntry clamps quality and normalizes highlight topics', () => {
     const entry = normalizeEntry({
       id: 'x',

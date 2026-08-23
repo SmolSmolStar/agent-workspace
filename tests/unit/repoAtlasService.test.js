@@ -4,6 +4,7 @@ const path = require('path');
 
 const RepoAtlasService = require('../../server/repoAtlasService');
 const store = require('../../server/atlas/atlasStore');
+const discovery = require('../../server/atlas/atlasDiscovery');
 
 describe('RepoAtlasService', () => {
   let tmpDir;
@@ -55,6 +56,38 @@ describe('RepoAtlasService', () => {
     expect(entry.kind).toBe('game');
     expect(entry.highlights[0].topic).toBe('data-compression');
     expect(entry.sources).toEqual(['discovery', 'manifest']);
+  });
+
+  test('a manifest in any checkout alias layers over canonical discovery', () => {
+    const aliasDir = path.join(tmpDir, 'repos', 'acme-tycoon-work-feature');
+    fs.mkdirSync(aliasDir, { recursive: true });
+    fs.writeFileSync(path.join(aliasDir, '.repo-atlas.json'), JSON.stringify({
+      id: 'acme-tycoon',
+      summary: 'Manifest from another checkout'
+    }));
+    store.saveDiscoveryCache([{
+      __source: 'discovery',
+      id: 'acme-tycoon',
+      name: 'acme-tycoon',
+      repo: 'owner/acme-tycoon',
+      localPath: repoDir,
+      localPaths: [repoDir, aliasDir],
+      cloned: true
+    }]);
+    atlas.invalidate();
+
+    const entry = atlas.getEntry('owner/acme-tycoon');
+    expect(entry.summary).toBe('Manifest from another checkout');
+    expect(entry.sources).toEqual(['discovery', 'manifest']);
+  });
+
+  test('remote slugs resolve to the existing entry for curation', () => {
+    expect(atlas.getEntry('owner/acme-tycoon').id).toBe('acme-tycoon');
+
+    atlas.addHighlight('owner/acme-tycoon', { topic: 'testing', quality: 5 });
+
+    expect(Object.keys(store.loadEntries())).toEqual(['acme-tycoon']);
+    expect(atlas.getEntry('acme-tycoon').highlights[0].topic).toBe('testing');
   });
 
   test('the registry overrides the manifest — your opinion wins', () => {
@@ -145,5 +178,82 @@ describe('RepoAtlasService', () => {
     expect(status.highlightCount).toBe(1);
     expect(status.registryDir).toContain('registry');
     expect(status.curatedCount).toBe(1);
+  });
+});
+
+describe('Repo Atlas discovery identity', () => {
+  test('duplicate clones collapse by remote slug and retain every local path', () => {
+    const github = [{
+      id: 'agent-workspace',
+      name: 'agent-workspace',
+      repo: 'web3dev1337/agent-workspace',
+      summary: 'Agent orchestrator',
+      cloned: false
+    }];
+    const primary = {
+      id: 'agent-workspace',
+      name: 'claude-orchestrator',
+      repo: 'web3dev1337/agent-workspace',
+      localPath: '/repos/agent-workspace',
+      localPaths: ['/repos/agent-workspace', '/repos/agent-workspace/master', '/repos/agent-workspace/work1'],
+      worktreeLayout: true,
+      cloned: true
+    };
+    const feature = {
+      id: 'agent-workspace',
+      name: 'work-pr1029-jarvis',
+      repo: 'Web3Dev1337/Agent-Workspace',
+      localPath: '/repos/agent-workspace/work-pr1029-jarvis',
+      worktreeLayout: false,
+      cloned: true
+    };
+
+    const forward = discovery.mergeDiscovery([feature, primary], github);
+    const reverse = discovery.mergeDiscovery([primary, feature], github);
+
+    expect(forward).toEqual(reverse);
+    expect(forward).toHaveLength(1);
+    expect(forward[0].name).toBe('agent-workspace');
+    expect(forward[0].repo).toBe('web3dev1337/agent-workspace');
+    expect(forward[0].localPath).toBe('/repos/agent-workspace');
+    expect(forward[0].localPaths).toEqual([
+      '/repos/agent-workspace',
+      '/repos/agent-workspace/master',
+      '/repos/agent-workspace/work1',
+      '/repos/agent-workspace/work-pr1029-jarvis'
+    ]);
+  });
+
+  test('same-named repositories under different owners remain distinct', () => {
+    const entries = discovery.mergeDiscovery([
+      { id: 'shared', name: 'shared', repo: 'alice/shared', localPath: '/repos/alice/shared' },
+      { id: 'shared', name: 'shared', repo: 'bob/shared', localPath: '/repos/bob/shared' }
+    ], []);
+
+    expect(entries.map((entry) => entry.id)).toEqual(['alice-shared', 'bob-shared']);
+    expect(entries.map((entry) => entry.repo)).toEqual(['alice/shared', 'bob/shared']);
+  });
+
+  test('local scanning retains sibling checkout paths under one project root', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-discovery-'));
+    const projectRoot = path.join(tmpDir, 'sample');
+    const masterDir = path.join(projectRoot, 'master');
+    const workDir = path.join(projectRoot, 'work1');
+    fs.mkdirSync(path.join(masterDir, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(workDir, '.git'), { recursive: true });
+
+    try {
+      const entries = await discovery.scanLocalRepos({
+        roots: [tmpDir],
+        maxDepth: 3,
+        languageCensus: false
+      });
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0].localPath).toBe(projectRoot);
+      expect(entries[0].localPaths).toEqual([projectRoot, masterDir, workDir]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

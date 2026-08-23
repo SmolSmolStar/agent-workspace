@@ -4,6 +4,7 @@ const path = require('path');
 const schema = require('./atlas/atlasSchema');
 const store = require('./atlas/atlasStore');
 const discovery = require('./atlas/atlasDiscovery');
+const identity = require('./atlas/atlasIdentity');
 const query = require('./atlas/atlasQuery');
 const compiler = require('./atlas/atlasCompiler');
 const sync = require('./atlas/atlasSync');
@@ -110,9 +111,13 @@ class RepoAtlasService {
     }
 
     for (const entry of discovered) {
-      if (!entry?.id || !entry.localPath) continue;
-      const manifest = store.loadManifest(entry.localPath);
-      if (manifest) byId.get(entry.id).manifest = manifest;
+      if (!entry?.id) continue;
+      for (const localPath of identity.localPathsFor(entry)) {
+        const manifest = store.loadManifest(localPath);
+        if (!manifest) continue;
+        byId.get(entry.id).manifest = manifest;
+        break;
+      }
     }
 
     for (const [id, entry] of Object.entries(registry.entries || {})) {
@@ -189,8 +194,21 @@ class RepoAtlasService {
   }
 
   getEntry(id, options = {}) {
-    const key = schema.kebab(id);
+    const key = this.resolveEntryId(id, options);
     return this.getEntries(options).find((entry) => entry.id === key) || null;
+  }
+
+  resolveEntryId(value, options = {}) {
+    const raw = String(value || '').trim();
+    const key = schema.kebab(raw);
+    if (!key) return '';
+
+    const slug = identity.repositorySlug({ repo: raw, remoteUrl: raw }).toLowerCase();
+    const existing = this.getEntries(options).find((entry) => (
+      entry.id === key
+      || (slug && String(entry.repo || '').toLowerCase() === slug)
+    ));
+    return existing?.id || key;
   }
 
   search(filters = {}) {
@@ -223,7 +241,7 @@ class RepoAtlasService {
     if (!normalizedTopic) throw new Error('addHighlight requires a topic');
 
     const registry = store.loadRegistry();
-    const key = schema.kebab(id);
+    const key = this.resolveEntryId(id);
     const existing = registry.entries[key] || { id: key };
     const highlights = (existing.highlights || []).filter((h) => h.topic !== normalizedTopic);
     highlights.push({
@@ -243,7 +261,7 @@ class RepoAtlasService {
     if (!normalizedTopic) throw new Error('addAvoid requires a topic');
 
     const registry = store.loadRegistry();
-    const key = schema.kebab(id);
+    const key = this.resolveEntryId(id);
     const existing = registry.entries[key] || { id: key };
     const avoid = (existing.avoid || []).filter((a) => a.topic !== normalizedTopic);
     avoid.push({ topic: normalizedTopic, reason: String(reason || '') });
@@ -254,13 +272,13 @@ class RepoAtlasService {
   }
 
   setEntry(id, patch = {}) {
-    const saved = store.upsertRegistryEntry(id, patch);
+    const saved = store.upsertRegistryEntry(this.resolveEntryId(id), patch);
     this.invalidate();
     return saved;
   }
 
   removeEntry(id) {
-    const removed = store.removeRegistryEntry(id);
+    const removed = store.removeRegistryEntry(this.resolveEntryId(id));
     this.invalidate();
     return removed;
   }
@@ -404,7 +422,7 @@ class RepoAtlasService {
 
   initManifest(projectRoot, seed = {}) {
     const resolved = path.resolve(projectRoot);
-    const existing = this.getEntries().find((entry) => entry.localPath === resolved);
+    const existing = this.getEntries().find((entry) => identity.localPathsFor(entry).includes(resolved));
     const draft = schema.normalizeEntry({
       id: seed.id || existing?.id || path.basename(resolved),
       name: seed.name || existing?.name || path.basename(resolved),

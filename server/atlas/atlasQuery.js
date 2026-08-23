@@ -88,6 +88,7 @@ function findByTopic(entries, topic, { minQuality = null, includeAvoided = false
       repo: entry.repo,
       cloned: entry.cloned === true,
       localPath: entry.localPath || null,
+      localPaths: entry.localPaths || [],
       remoteUrl: entry.remoteUrl || '',
       status: entry.status,
       maturity: entry.maturity,
@@ -190,6 +191,8 @@ function describeEntry(entry) {
   if (entry.summary) lines.push(entry.summary);
   lines.push('');
 
+  const localAliases = (entry.localPaths || []).filter((candidate) => candidate !== entry.localPath);
+
   const facts = [
     ['kind', entry.kind],
     ['status', entry.status],
@@ -200,6 +203,7 @@ function describeEntry(entry) {
     ['groups', (entry.groups || []).join(', ')],
     ['last activity', entry.lastActivity ? entry.lastActivity.slice(0, 10) : ''],
     ['local path', entry.cloned ? entry.localPath : `not cloned${entry.remoteUrl ? ` — ${entry.remoteUrl}` : ''}`],
+    ['local aliases', entry.cloned ? localAliases.join(', ') : ''],
     ['sources', (entry.sources || []).join(' < ')]
   ].filter(([, value]) => value);
 
