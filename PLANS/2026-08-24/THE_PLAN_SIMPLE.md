@@ -77,7 +77,7 @@ This all surfaces in the app you already run:
 
 | Data | Lives in |
 |---|---|
-| Tasks, priorities, due dates, screenshots | Trello: one workspace, the 11 game boards, plus the Trello HQ board (the studio-level board: one status card per game, decisions needed, cross-game blockers) |
+| Tasks, priorities, due dates, screenshots | Trello: one workspace, the twelve boards, plus the Trello HQ board (the studio-level board: one status card per game, decisions needed, cross-game blockers) |
 | Code and PRs | GitHub, as now |
 | Which card = which agent session, reviews, proof | `~/.agent-workspace/task-records.json` on each machine (already exists) |
 | Team data every machine needs (AI budget left, member list) | one small private git repo, synced automatically |
@@ -95,15 +95,26 @@ This all surfaces in the app you already run:
 | Your 2 computers | Each publishes remaining budget to the shared repo; the brain can route a launch to whichever machine has headroom |
 | Teammates | You see their budget, you assign a card with a ready-made prompt attached, their orchestrator offers it for launch |
 | CLAUDE.md repos | One script builds each person's CLAUDE.md from shared pieces (role + OS + projects) instead of hand-maintained copies |
-| Trello vs GitHub Projects | Staying on Trello. Small trial later on the Orchestrator board; the new code never talks to Trello directly, so swapping stays cheap |
+| Trello vs GitHub Projects | Staying on Trello. Small trial later on the Orchestrator board; all new code talks to a neutral ticket layer built first, so swapping stays cheap |
 
 ## Build order
 
-1. Merge the four stuck branches (voice/brain, reviews, supervisor, Discord watcher). Most of this is already written.
-2. One Trello sitting: workspace, the Trello HQ board, same lists everywhere, Priority field. Turn on "merged PR moves the card".
-3. Build the reminder loop with the interruption budget.
-4. Upgrade the Discord bot; publish the contract for teammate bots.
-5. Review chains sized by risk, human gates included.
-6. Voice inputs plus the budget-aware routing.
-7. Team budgets and the second computer.
-8. The CLAUDE.md builder.
+(The full dependency graph and schemas live in `FINAL_IMPLEMENTATION_PLAN.md`; this is
+the short version, reviewed by three independent models.)
+
+1. Safety first, small: land the three quick fix PRs and the docs PR; make the state
+   stores atomic and single-writer; lock down the raw send-to-session endpoint; add the
+   text sanitizer; build the neutral ticket layer every new piece talks to.
+2. One Trello sitting: workspace (paid tier check first, twelve boards), the Trello HQ
+   board, same lists everywhere, Priority and Machine fields. Turn on "merged PR moves
+   the card".
+3. The alerts engine (one interruption policy shared with the supervisor) then the
+   reminder loop, leader-only, with its own dead-man alarm.
+4. Upgrade the Discord bot (images, dates, card links); rework and land the ambient
+   watcher so caught commitments become dated card proposals; publish the contract for
+   teammate bots.
+5. Land the big branches by subsystem: review chains sized by risk with human gates and
+   tamper-proof verdicts, then the voice brain, supervisor, and app-server bridge.
+6. Budget-aware routing, team budgets, the second computer, card hand-off with launch
+   leases.
+7. The CLAUDE.md builder (runs in parallel with everything after step 1).

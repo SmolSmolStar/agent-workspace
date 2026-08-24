@@ -47,8 +47,11 @@ fills the clocks in when the human does not:
 So "P0" literally means "done or downgraded within 24 hours": if a P0 is still open at
 24h the advisor escalates it to the Trello HQ board's Decisions Required, because either it is
 being worked (fine, say so on the card) or it was never really a P0 (demote it).
-"Acknowledge" means any visible claim: assigning yourself, a card comment, or the pin
-reaction on the Discord message. The capture bot and the triage agent apply the default
+"Acknowledge" means any visible HUMAN claim: assigning yourself, a card comment, or a
+dedicated claim reaction. The claim reaction is a different emoji from the bot's
+"captured" reaction, otherwise every bot-captured card is born acknowledged. These
+clocks are advisor-report-only: they surface violations, they never block work.
+The capture bot and the triage agent apply the default
 due dates automatically, which is what makes the contract enforceable instead of
 aspirational: a P1 created from Discord with no date still gets an end-of-week clock,
 and the reminder loop takes it from there.
@@ -113,9 +116,12 @@ P0 is allowed to break the limit (that is what an emergency is), and the advisor
 when it happens.
 
 **Supervisor urgency**: priority joins tier as a weight on findings from card-linked
-sessions: P0 2.0, P1 1.3, P2 1.0, P3 0.7. A P0-linked finding clears the interruption
-budget's `alwaysInterruptAbove` threshold by construction; P3 findings effectively only
-ever reach the digest.
+sessions: P0 2.0, P1 1.3, P2 1.0, P3 0.7, composed as
+`score = clamp(round(severityBase * tierWeight * priorityWeight) + blocksWork*20 + min(attempts,5)*12, 0, 100)`.
+The multiplication alone does not guarantee a P0 breaks through (a warn finding on a T3
+session scores below the interrupt threshold even at 2.0), so P0-linked findings take an
+explicit floor: `score = max(score, alwaysInterruptAbove)`. P3 findings usually land in
+the digest, but a critical finding on a T1 session still interrupts, which is correct.
 
 **Batch launch ordering**: candidate cards launch P0 first, then P1, then due date,
 then list position. Suggested `startTier` default when a card launch does not specify
@@ -163,9 +169,15 @@ What it does, per new card at capture time and in a daily Inbox sweep:
 Apply rules follow the same firewall as capture: P2/P3 assignments and duplicate links
 auto-apply with the reasoning left as a card comment; anything P0/P1, any due-date
 change on someone else's card, and any close-as-duplicate needs a human yes (the
-approval queue reuses the Atlas proposal pattern: agents propose, one click applies, an
-approved proposal is indistinguishable from hand-curation). Every triage decision is a
-card comment, so the audit trail lives where the work lives.
+approval queue copies the Atlas proposal pattern: agents propose, one click applies, an
+approved proposal is indistinguishable from hand-curation. Pattern, not store: the
+Atlas record shape is repo-specific, so triage gets its own proposal store with its own
+idempotency key so the same duplicate is not re-proposed every sweep). Every triage
+decision is a card comment, so the audit trail lives where the work lives. Two stated
+prerequisites: the triage agent only ever gets narrow card operations, never shell or
+session access; and its predicted file-overlap check depends on a curated Repo Atlas
+registry, which is empty today, so curating the active projects is part of the setup,
+not a footnote.
 
 The weekly failure mode this prevents is silent misfiling: a committed task sitting at
 P2 with no date because nobody typed "urgent" in Discord. The triage agent catches it
@@ -194,8 +206,11 @@ Benefit/Effort fields; the auto-trello score already ranks exactly this shape of
 (high benefit over effort floats up). Then the lane feeds itself:
 
 - When T3/T4 capacity is free (`launchAllowedByTier` already computes this) and the
-  usage budget is healthy (the router knows), the router batch-launches the top-scored
-  `1%` cards at T4, capped at a couple per day.
+  usage budget is healthy (the router knows), the router batch-launches top-scored
+  `1%` cards at T4, capped at a couple per day. Trust rule (non-negotiable): only cards
+  carrying the auto-eligible marker, which a human sets in the orchestrator UI and
+  which capture bots and the triage agent can never set. Card text is untrusted input
+  feeding a permissioned agent; the marker is what makes the unattended launch safe.
 - They go through the normal pipeline: low risk, so the cheap review path; evidence and
   PR-merge automation move the card like any other work.
 - Result: the backburner becomes the default diet of otherwise-idle background agents

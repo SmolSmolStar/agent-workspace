@@ -6,13 +6,18 @@ standard lists, due-date discipline") into concrete steps against what actually 
 
 ## Workspace and boards (manual admin, one sitting)
 
-1. One company workspace; move all eleven boards into it (Epic Survivors, HyFire, Zoo
-   Hytopia, Roblox Zoo, Kpop Clicker, Ball Dropper, Toy Store, Squishy Battle Pets,
-   Orchestrator, Arcade World, Calm Crypto).
+1. Verify the workspace tier first: free workspaces cap at 10 open boards and there are
+   twelve documented boards (Epic Survivors, HyFire, Zoo Hytopia, Roblox Zoo, Kpop
+   Clicker, Ball Dropper, Toy Store, Squishy Battle Pets, Orchestrator, Arcade World,
+   Calm Crypto, Epic Survivors QA Automation), so consolidation needs a paid tier. Then
+   one company workspace, all boards in it.
 2. New board `00 - Trello HQ` with lists: Studio Inbox, Current Priorities, Decisions
    Required, Cross-Project Blockers, Upcoming Milestones, Recurring Operations, Decision
-   Log. One permanent status card per active project (objective, stage, owner, next
-   milestone, health, links to board/repo/build/analytics).
+   Log. One status card per active project (objective, stage, owner, next milestone,
+   health, links), agent-generated and agent-refreshed from board/PR/task-record data.
+   Hand-maintained status cards are explicitly out: a team that forgets tasks will not
+   hand-update twelve of them, and a stale health field that gets trusted is worse than
+   none.
 3. Standardize lists on every active project board:
    Inbox / Backlog / Ready / In Progress / Review-Testing / Blocked / Done.
    Categories are labels and custom fields, not extra lists.
@@ -62,7 +67,7 @@ dates. Decide Premium later on its own merits; nothing in this plan depends on i
 ## Orchestrator configuration (config, not code)
 
 1. `boardMappings` for all boards: `trello:<boardId>` -> localPath, repositoryType,
-   defaultStartTier. This is what makes batch launch possible on the nine unmapped
+   defaultStartTier. This is what makes batch launch possible on the ten unmapped
    boards. (Dependency tracking already works on any board; the Roblox Zoo entry in
    `TRELLO_BOARDS.md` records a shortLink, not a board id, so resolve the real id
    first.)
@@ -103,8 +108,18 @@ across mapped boards (board snapshot call already exists and is cached):
 - **Escalation channels**: orchestrator UI toast + activity feed always; Discord webhook
   per severity; optional phone push later (the ADHD system already has a hardened
   notification path if a personal channel is wanted).
-- **State**: last-seen snapshot per board in the data dir so restarts do not re-alert;
+- **State**: per-occurrence alert records (card, due revision, kind, channel, status,
+  attempts, instance id) in the data dir so restarts neither re-alert nor lose alerts;
   every alert appended to a JSONL audit like the Discord bridge does.
+- **Dead-man switch**: the loop posts a daily digest even when nothing is due, so its
+  own silence is the alarm; it runs on the leader instance only; its failure alerting
+  is part of the spec, not an afterthought (the auto-trello silent-401 months are the
+  precedent).
+- **One policy owner**: all cadences here defer to `config/interruption-policy.json`,
+  shared with the supervisor (budgets, quiet hours, digests). The full engine spec and
+  provider prerequisites (dueComplete and custom fields in board snapshots, label and
+  attachment write operations, the shared API token bucket) are WP0.3/WP1.2 in
+  `FINAL_IMPLEMENTATION_PLAN.md`.
 
 This service also finally supplies the four-queues `backlog` count (`supported: false`
 today): Backlog + Ready list sizes across mapped boards.
@@ -117,8 +132,10 @@ task records (tier, risk, evidence) that Butler cannot.
 
 Adopted as posted policy, enforced by tooling in phase 2:
 
-- Any actionable request becomes a card; the bot replies with the card link and adds the
-  pin reaction. Mention without a card is not an assignment.
+- Any actionable request becomes a card; the bot replies with the card link and adds its
+  "captured" reaction. A separate, different emoji is the human "claimed" reaction
+  (using one emoji for both would make every bot-captured card born acknowledged).
+  Mention without a card is not an assignment.
 - Screenshots attach to the card (bot upgrade), so "the image was in Discord somewhere"
   stops being a failure mode.
 - The bot extracts due phrases and priority when present (or asks in-thread), so

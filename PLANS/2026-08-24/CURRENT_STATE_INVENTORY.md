@@ -28,7 +28,8 @@ Baseline: origin/main at 1b76c884.
 |---|---|---|
 | PR-merge -> Trello card automation | `prMergeAutomationService` fully built, `enabled: false` | Config flip + per-board done/test list ids |
 | PR review automation | `prReviewAutomationService` built, `enabled: false`, single-pass only | Enable after phase-3 multi-lens upgrade |
-| Board mappings | 2 of 11 boards in `boardMappings` | Add the other 9 in Settings > Tasks |
+| Board mappings | 2 of 12 documented boards in `boardMappings`, and only in the `master/` checkout's gitignored `user-settings.json` (the dev checkout has zero) | Move settings to the data dir (WP0.2), then map the rest |
+| Prompt artifacts | `server/promptArtifactService.js` (233 lines, routes, encryption) built and wired; `~/.agent-workspace/prompts/` empty, never exercised | Card hand-off (WP5.3) consumes it |
 | Combined cross-board view | Built; `combined.selections` empty, never populated | Configure selections |
 | Task-record <-> Trello links | Live store has 1 record, 0 linked; the 28-record legacy store also has 0 linked | Use batch-launch (it links automatically) |
 | Header Review Inbox button | Dead: hardcoded `style="display:none"` at `client/index.html:87` beats the `ui.visibility.header.queue: true` setting | Delete the inline style |
@@ -37,7 +38,7 @@ Baseline: origin/main at 1b76c884.
 | Discord queue path | Signed/idempotent pipeline never exercised; `~/.claude/discord-queue/` has never existed on disk | Exercise in phase 2 |
 | Discord auth/signing | Dedicated token auth and queue signing ship server-side; phase 2 enables them and adds the producer side | Phase 2 |
 | Scheduler queue cadence | Template ships `enabled: false` | Phase 2 |
-| Teammate visibility | `access: private/team/public` schema + `listWorkspaces(requestingUser)` filter exist; every call site passes null; `teammates` list empty; no identity layer | Phase 5 |
+| Teammate visibility | `access: private/team/public` schema + `listWorkspaces(requestingUser)` filter exist; every call site passes null; one live teammate entry exists in config; the `access` field gets overwritten elsewhere with GitHub repo visibility, so this needs a migration, not just wiring | Phase 5 / WP5 |
 | Atlas audiences | Zero curated entries, zero audiences, no proposals ever made | Phase 6 seeds it |
 
 ## Built but unmerged (open PRs)

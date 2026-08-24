@@ -16,3 +16,7 @@ limits-multimachine, t3-code-research, review-chains
 - [x] Backburner + 1% lane added to PRIORITY_SCHEME.md (staleness ages, idle-fill of background agents)
 - [x] GITHUB_PROJECTS_SWAP_ANALYSIS.md added (2 research passes: GH Projects v2 2026 state + Trello coupling map); verdict: stay on Trello, buy provider neutrality, pilot the Orchestrator board post-phase-1
 - [x] Non-PR work made explicit: delivery types + completion paths (TRELLO doc), parity note in GH swap analysis
+- [x] Three-model review round: Fable (11 findings), Opus (22), Codex Sol-high (14, rework verdict)
+- [x] All 47 findings dispositioned; disputed GH-Projects REST claim independently verified (Codex right, scout stale)
+- [x] FINAL_IMPLEMENTATION_PLAN.md written: DAG, 6 schemas, 7 security + 6 operational invariants, definition of done
+- [x] All 9 docs corrected (engine decision reversed, ambient->card proposals, fleet auth rewrite, wire shape, counts, supervisor formula)

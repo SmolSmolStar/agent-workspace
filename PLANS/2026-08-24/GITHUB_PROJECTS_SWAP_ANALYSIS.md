@@ -79,11 +79,15 @@ truth, which is the disease this plan exists to cure.
   or an unofficial user-attachments upload endpoint that GitHub could remove without
   notice. Note this cuts both ways: Discord CDN URLs now expire, so the phase 2 bot must
   re-host images somewhere durable regardless of which store wins.
-- **GraphQL-only.** No REST for Projects v2. `gh` CLI subcommands cover most needs, but
-  the provider gets meaningfully more complex than Trello's flat REST calls, and
-  fine-grained PAT support for the Projects API is still unverified.
+- **API split.** Correction after the review round: GitHub now documents REST endpoints
+  for Projects v2 (`/orgs/{org}/projectsV2` plus items, draft items, fields, and views
+  groups; verified against docs.github.com). The earlier "GraphQL only" claim was
+  stale. The pilot builds on REST where covered, GraphQL for the rest, verifies write
+  coverage and fine-grained PAT behavior live, and treats the `projects_v2_item`
+  webhook as an org-level preview feature paired with periodic reconciliation rather
+  than the sole sync mechanism.
 - **Free-plan automation quotas.** One auto-add workflow per project on Free (five on
-  Team). With eleven games feeding one project, auto-adding needs a trivial Actions
+  Team). With a dozen boards feeding one project, auto-adding needs a trivial Actions
   workflow (issue opened -> `addProjectV2ItemById`) instead of the built-in rule.
 
 ## What does not change at all
@@ -122,9 +126,12 @@ Two implementation paths:
    this repo ever wants a third provider (Linear, Jira) for its public audience.
 
 Either path also needs the small unblocking fixes: widen the `ticketProvider`
-allowlist, de-hardcode the two `getProvider('trello')` call sites, and make
-`batchLaunchService` stop stamping `ticketProvider: 'trello'` unconditionally (a live
-bug even for Trello-only use).
+allowlist, de-hardcode the one hardcoded `getProvider('trello')` call site
+(`taskDependencyService.js:156`; the other callers already take a provider id), and
+make `batchLaunchService` stop stamping `ticketProvider: 'trello'` unconditionally (a
+live bug even for Trello-only use). The normalized ticket layer (WP0.3 in
+`FINAL_IMPLEMENTATION_PLAN.md`) is what actually makes the swap provider-sized for all
+new code.
 
 ## Recommendation
 

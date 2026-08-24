@@ -16,6 +16,8 @@ private productivity apps, and T3 Code as external prior art. Companion docs:
 - `TEAM_VISIBILITY_AND_CROSS_MACHINE.md`, limits sharing and task hand-off between people and machines
 - `CONTEXT_DISTRIBUTION.md`, role/platform/task-scoped CLAUDE.md and skills distribution
 - `GITHUB_PROJECTS_SWAP_ANALYSIS.md`, the Trello vs GitHub Projects v2 evaluation and pilot plan
+- `FINAL_IMPLEMENTATION_PLAN.md`, the authoritative build document after the three-model
+  review round; where this file and that one disagree, that one wins
 
 ## The core finding
 
@@ -24,7 +26,7 @@ Almost nothing on the wishlist needs to be invented. The research found four sta
 
 1. **Built and merged but switched off or unconfigured.** PR-merge-to-Trello automation,
    PR review automation, the whole process/tier dashboard UI, the cross-board combined
-   view, Trello board mappings (2 of 11 boards configured), the batch-launch API that
+   view, Trello board mappings (2 of 12 documented boards configured), the batch-launch API that
    replaces the manual curl choreography still documented in CLAUDE.md.
 2. **Built but sitting on unmerged branches.** The entire JARVIS voice tier ladder
    (#1043), evidence-driven review chains (#1022), the fleet supervisor with tier-weighted
@@ -46,7 +48,7 @@ launch router, a limits/task fleet layer, and a context compiler.
 Confirmed, not just assumed. The orchestrator already has a full Trello provider
 (`server/taskProviders/trelloProvider.js`, 668 lines), a ticket registry, a dependency
 graph across `pr:`/`trello:`/`worktree:`/`session:` ids, batch launch from cards, and
-PR-merge card automation. Eleven boards exist and the team knows them. Building a custom
+PR-merge card automation. Twelve documented boards exist and the team knows them. Building a custom
 store would discard all of that for months of migration. What Trello lacks (reminders,
 recurring ops, rollups, capture discipline) is exactly what the orchestrator and the bot
 can add around it. Trello Premium is optional: its workspace table/calendar can be
@@ -84,12 +86,16 @@ Boundaries, stated once:
 
 ## Phases
 
-Each phase is a set of PR-sized items, priority-ordered within the phase. Phase 1 can
-start immediately. Phases 5 and 6 can run alongside 2-4 but gate on phase 1 items 2
-and 5 (board mappings and the reminder loop).
+Each phase is a set of PR-sized items, priority-ordered within the phase. The real
+dependency graph is the DAG in `FINAL_IMPLEMENTATION_PLAN.md`; in short, the state and
+normalization work in WP0 precedes the reminder loop and capture, the context compiler
+runs fully parallel, and phase 5 gates on identity and lease work, not on reminders.
 
-### Phase 0: land what is already built (highest value per effort)
+### Phase 0: land what is already built
 
+Split after review into 0a (the quick lands and one-line fixes, small) and 0b (the
+extraction train, the largest engineering item in the plan, gating only phases 3-4).
+The dependency ordering now lives as a DAG in `FINAL_IMPLEMENTATION_PLAN.md`.
 See `LANDING_THE_BRANCHES.md` for the full train. Summary:
 
 1. Merge #1041 (voice architecture doc). Mergeable today, docs only.
@@ -100,9 +106,12 @@ See `LANDING_THE_BRANCHES.md` for the full train. Summary:
 3. Split and rebase #1043/#1029 into a five-PR train, dropping the stale Atlas subtree
    entirely: voice core, review chains, supervisor, Discord watch, app-server bridge.
 4. Reconcile the two competing review-chain implementations (#1022's
-   `reviewWorkflowService` vs #1043's `reviewChainService`) into one. Keep #1022's
-   evidence protocol and risk-to-workflow mapping, keep #1043's read-only reviewer
-   spawning as the security boundary.
+   `reviewWorkflowService` vs #1043's `reviewChainService`) into one. Decision after the
+   review round: #1043's smaller engine (which already owns the read-only spawn
+   boundary) is the base; #1022's workflows-as-data config, risk defaults, and evidence
+   protocol port into it; verdicts become structured JSON validated and posted by the
+   trusted parent, bound to the PR head SHA. Full contract in `LANDING_THE_BRANCHES.md`
+   step 6 and `FINAL_IMPLEMENTATION_PLAN.md` WP3.
 5. One-line fixes and doc repairs: delete the hardcoded `display:none` on the header
    Review Inbox button (`client/index.html:87`); document the nine `process*` services
    and the whole `taskProviders`/`batchLaunchService`/`prMergeAutomationService`
@@ -119,8 +128,8 @@ Full detail in `TRELLO_STUDIO_OS.md`.
    active boards (Inbox/Backlog/Ready/In Progress/Review-Testing/Blocked/Done); create
    the shared Priority custom field (P0-P3, defined with time contracts and defaults in
    `PRIORITY_SCHEME.md`) on every board. Manual, one sitting.
-2. Fill `boardMappings` and `boardConventions` for all eleven boards in orchestrator
-   settings. Mappings make batch launch possible on the nine unmapped boards;
+2. Fill `boardMappings` and `boardConventions` for all twelve boards in orchestrator
+   settings. Mappings make batch launch possible on the ten unmapped boards;
    conventions give PR-merge automation explicit done/test lists instead of list-name
    guessing. (Dependency tracking already works on any board.)
 3. Turn on `automations.trello.onPrMerged`. The merged-PR-moves-the-card flow is written,
@@ -130,9 +139,11 @@ Full detail in `TRELLO_STUDIO_OS.md`.
    multi-curl sequence it currently teaches.
 5. New code, the one big missing piece: a **reminder loop** service. Polls due dates
    across mapped boards, fires escalating notifications (orchestrator UI, Discord
-   webhook to #work-alerts, optional phone push), applies Due Soon/Overdue labels,
-   nudges committed cards that carry no due date, and supports recurring operational
-   cards (Monday priorities, weekly playtest, analytics review, release checklists).
+   webhook to #work-alerts, optional phone push) under the single interruption policy,
+   applies Due Soon/Overdue labels, nudges committed cards that carry no due date,
+   supports recurring operational cards (Monday priorities, weekly playtest, analytics
+   review, release checklists), runs on the leader instance only, and posts a daily
+   digest even when empty so its own silence is an alarm.
    The 30-day-reward failure then dies in two places: capture (phase 2 extracts due
    dates so committed cards arrive dated) and follow-through (a dated card cannot go
    silent in every channel at once).
@@ -141,14 +152,16 @@ Full detail in `TRELLO_STUDIO_OS.md`.
    them). Decide when building; the data source is the same.
 7. Hygiene: consolidate the three Trello shell scripts into one that sources
    `~/.trello-credentials`, rotating the credentials as part of the consolidation; sync
-   the `trello-task` skill's 4-board table with the 11-board reality; retire the stale
+   the `trello-task` skill's 4-board table with the 12-board reality; retire the stale
    duplicate docs.
 
 ### Phase 2: Discord that cannot lose work
 
-1. Land `discordWatchService` (from #1029): cursor-based ambient reading of project
-   channels, regex extraction of assignments/claims/done markers into task records. A
-   missed message becomes structurally impossible, which is the exact failure mode today.
+1. Rework and land the ambient watcher (from #1029): cursor-based reading of project
+   channels, but every detected commitment ends as a dated Trello card proposal through
+   the triage queue, never a local-only work item (the branch's own `discord:` records
+   would dead-end outside the reminder loop). Claims must reference a specific card,
+   reply, or nonce. See WP2 in `FINAL_IMPLEMENTATION_PLAN.md` for the full rework list.
 2. Upgrade `discord-task-bot`: capture message attachments and attach them to the created
    Trello card (today the screenshot is silently dropped and the card says "Image");
    parse due phrases and priority from the message, or ask in-thread, so committed cards
@@ -220,17 +233,20 @@ Commander). This phase connects inputs, intents, and the router:
 
 Full design in `TEAM_VISIBILITY_AND_CROSS_MACHINE.md`. Summary:
 
-1. Identity: finish the half-built `requestingUser`/`teammates`/`access` wiring (schema
-   fields exist, every call site passes null today).
-2. Limits sharing: each machine already normalizes Claude/Codex/Grok limits into one
-   shape (`usageLimitsService`). Publish that snapshot per machine/member and render
-   teammate pills next to your own. Transport v1 is the Atlas git-sync pattern (one JSON
-   file per machine, conflict-free, zero new networking); v2 is direct pairing.
-3. Task hand-off v1 is Trello, not networking: assigning a card (member field) plus a
-   prompt artifact means the teammate's orchestrator batch-launches it locally with the
-   pre-cached prompt. Prompt artifacts are already in the task-record design
-   (`PLANS/2026-01-25/PROMPT_ARTIFACTS_PR.md`); pre-cached card prompts have been used
-   before and worked, the friction was driving them by hand, which batch-launch removes.
+1. Identity: a real migration, not just wiring the null `requestingUser` (review found
+   the code overwrites the workspace `access` field with GitHub repo visibility, and one
+   teammate entry already exists in live config). See WP5.
+2. Limits sharing: publish per machine/member using the versioned window-array schema in
+   `FINAL_IMPLEMENTATION_PLAN.md` (Claude, Codex, and Grok do not share one shape today;
+   Codex and Grok report window arrays). Transport v1 is the Atlas git-sync pattern (one
+   JSON file per machine, conflict-free, zero new networking); v2 is direct pairing.
+3. Task hand-off v1 is Trello, not networking: assigning a card (member field, plus the
+   Machine field created in phase 1) with a prompt artifact means the receiving
+   orchestrator offers a local launch with the pre-cached prompt, guarded by a
+   card-scoped launch lease so two machines cannot double-launch.
+   `promptArtifactService` already exists on main (233 lines, routes, encryption),
+   unexercised; batch launch must learn to consume artifacts, since today it reads only
+   card title and description.
 4. Cross-machine v2 borrows T3 Code's model (Environment = machine, pairing token, QR,
    headless serve): pair your two computers, show both machines' limits, and route a
    launch to the machine with the healthiest budget, feeding the phase 4 router.

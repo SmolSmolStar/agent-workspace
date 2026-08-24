@@ -7,15 +7,21 @@ reports only the local box, and every session endpoint addresses local PTYs only
 
 ## What already exists to build on
 
-- `usageLimitsService` normalizes Claude (5h, 7d, per-model weekly buckets via the OAuth
-  usage endpoint), Codex (app-server JSON-RPC), and Grok into one shape:
-  `{available, updatedAt, stale, fiveHour, sevenDay, extraBuckets}`. That shape is the
-  wire format; do not invent another.
+- `usageLimitsService` fetches Claude (5h, 7d, per-model weekly buckets via the OAuth
+  usage endpoint), Codex (app-server JSON-RPC), and Grok. Correction from review: the
+  shapes are NOT uniform today (Claude reports `fiveHour/sevenDay/extraBuckets`, Codex
+  and Grok report `windows` arrays). The wire format is the versioned window-array
+  schema in `FINAL_IMPLEMENTATION_PLAN.md`, and `available: false` means "unknown",
+  never "drained".
 - `codexUsageGuardService` already blocks local launches when a weekly window is drained.
   The same admission-controller hook generalizes to "route elsewhere when drained".
 - Half-built teammate wiring: `access: private|team|public` on workspaces,
-  `listWorkspaces(requestingUser)` filtering, `config.user.teammates`. All dead code
-  because nothing supplies an identity. Finish it rather than redesign it.
+  `listWorkspaces(requestingUser)` filtering, `config.user.teammates` (which is not
+  empty: one live teammate entry exists). Correction from review: this cannot simply be
+  "finished", because the code elsewhere overwrites the `access` field with GitHub
+  repository visibility. WP5 does a small migration instead: separate
+  `workspaceAudience` from repository visibility, explicit ACLs, subject from
+  authenticated peer credentials, deny unknown by default.
 - Prompt artifacts in the task-record design (`PLANS/2026-01-25/PROMPT_ARTIFACTS_PR.md`).
   Pre-cached card prompts have been used before and worked; the friction was driving
   them by hand, which batch-launch removes.
@@ -38,9 +44,11 @@ have Fable budget left this week".
 operation, not a network call:
 
 1. Assign the card to the member (or set a Machine custom field for your own second box).
-2. Attach the prompt: the batch-launch prompt builder already assembles title +
-   description + context; store the curated version as the task record's prompt artifact
-   and paste it into a card attachment/comment for portability.
+2. Attach the prompt: store it via `promptArtifactService` (exists on main,
+   unexercised) and as a deterministic card attachment (`prompt.json`, versioned
+   schema with author, content hash, expiry). Batch launch must learn to consume it: it
+   reads only card title and description today. Launch is guarded by a card-scoped
+   lease (nonce + expiry, rechecked before spawn) so two machines cannot both run it.
 3. The receiving side's orchestrator polls its assigned cards (reminder-loop
    infrastructure) and offers one-click batch-launch, or auto-launches at the card's
    `startTier` if the member has that automation on.
@@ -66,8 +74,15 @@ every client sees the same live state.
 Adopt the shape incrementally:
 
 1. **Pairing**: `POST /api/fleet/pair` mints a short-lived token + QR; the peer stores
-   `{name, url, token}`. Reuse `AUTH_TOKEN` semantics per pair; loopback/tailnet binds
-   only, never public.
+   `{name, url, token}`. Correction from review: do NOT reuse `AUTH_TOKEN` semantics (a
+   single bearer accepted even in query strings; one leak on a machine that launches
+   permissioned agents is remote code execution). Peers get hashed, revocable,
+   per-peer credentials scoped to capabilities (`read-limits`, `request-launch`),
+   identity comes from the credential rather than any caller-supplied header, launch
+   fields are validated against server-side allowlists, remote launches require local
+   acceptance, and terminal-input/session endpoints are never proxied. Loopback/tailnet
+   binds only, never public. Request/response schemas for all five endpoints are
+   written before code (WP5.4).
 2. **Peer proxy, read-only first**: `GET /api/fleet/peers`,
    `GET /api/fleet/:peer/limits`, `GET /api/fleet/:peer/sessions` proxy the peer's
    existing endpoints. The header widget grows a per-machine section; the git-sync
