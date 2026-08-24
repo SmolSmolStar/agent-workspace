@@ -10,6 +10,7 @@ synthesis. Read in this order:
 5. `PRIORITY_SCHEME.md`, P0-P3 definitions, time contracts, spoken aliases, the triage agent
 6. `TEAM_VISIBILITY_AND_CROSS_MACHINE.md`, limits sharing, task hand-off, machine pairing
 7. `CONTEXT_DISTRIBUTION.md`, role/platform/task-scoped instruction compilation
+8. `GITHUB_PROJECTS_SWAP_ANALYSIS.md`, what changes if Trello is swapped for GitHub Projects v2, and the pilot plan
 
 Private-system references (ADHD system, standards repos, board specifics) are kept at
 architecture level; implementation details for those live in their own private repos.

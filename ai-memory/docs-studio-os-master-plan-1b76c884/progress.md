@@ -14,3 +14,4 @@ discord-bots, trello-stack, standards-distribution, agent-efficiency, repo-atlas
 limits-multimachine, t3-code-research, review-chains
 - [x] PRIORITY_SCHEME.md added: P0-P3 contracts, aliases, triage agent (priority + conflicts), wired into master plan/Trello doc/README
 - [x] Backburner + 1% lane added to PRIORITY_SCHEME.md (staleness ages, idle-fill of background agents)
+- [x] GITHUB_PROJECTS_SWAP_ANALYSIS.md added (2 research passes: GH Projects v2 2026 state + Trello coupling map); verdict: stay on Trello, buy provider neutrality, pilot the Orchestrator board post-phase-1

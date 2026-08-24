@@ -16,3 +16,12 @@
 - PR 1041 = PLANS/2026-08-15/VOICE_TIERED_ARCHITECTURE.md spec, MERGEABLE as-is, safe to land any time.
 - Doc verified: "Hermes agents: not a thing in this codebase (zero references)."
 - NOTE: 1043 and 1029 overlap heavily (supervisor, discordWatch, appServer appear in BOTH). Plan must pick one canonical landing path.
+
+## GitHub Projects v2 research (done)
+- Fields: text/number/date/single-select/iteration; 50 fields/project, 50 options/select. Views: table/board/roadmap, NO calendar. Advanced AND/OR search GA 2026-07.
+- Item limit 50k (GA 2025-04), archive 10k. Sub-issues (100/parent, 8 deep) + issue types (25/org) GA 2025-04; issue dependencies blocked-by/blocking GA 2025-08 (50 per relationship); gh CLI manages all three since 2026-06. Tasklist blocks dead (2025-04).
+- Automation: built-in workflows (item added/reopened/closed, PR merged -> status, auto-add by query [Free: 1, Team: 5], auto-archive). NO native due-date reminders anywhere (community-requested, unshipped); milestones due_on silent; Slack scheduled reminders = PR reviews only. Teams use Actions cron + GraphQL.
+- API: GraphQL only (no REST), projects_v2_item webhook includes prev+current values (2024-06); gh project subcommands cover fields/items; rate limits trivial for 5-min polling. Fine-grained PAT support UNVERIFIED.
+- Images via bots: no official API; undocumented uploads.github.com/user-attachments endpoint works (unofficial, could die); safest = commit to assets repo. Discord CDN URLs expire, never hotlink.
+- Access: Free org + outside collaborators = testers free; on Team plan every private-repo viewer needs a $4 seat. Mobile Projects = view/move/comment only, adding items broken (as of last reports).
+- Insights charts: Free ~2 saved charts private, Team+ unlimited (best-effort).

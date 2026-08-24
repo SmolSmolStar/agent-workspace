@@ -26,6 +26,11 @@ standard lists, due-date discipline") into concrete steps against what actually 
    linked cards or checklist items under it. WIP limit: two parent cards In Progress per
    human.
 
+A store-choice note: GitHub Projects v2 was evaluated as the alternative
+(`GITHUB_PROJECTS_SWAP_ANALYSIS.md`). Trello stays for now; the reminder loop and triage
+agent below are built against the provider interface, not Trello REST, so that decision
+stays reversible.
+
 ## Premium or not
 
 The advice assumes Premium for workspace table/calendar/planner and card mirroring. Not

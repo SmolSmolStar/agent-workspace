@@ -15,6 +15,7 @@ private productivity apps, and T3 Code as external prior art. Companion docs:
 - `PRIORITY_SCHEME.md`, P0-P3: definitions, time contracts, spoken aliases, the triage agent
 - `TEAM_VISIBILITY_AND_CROSS_MACHINE.md`, limits sharing and task hand-off between people and machines
 - `CONTEXT_DISTRIBUTION.md`, role/platform/task-scoped CLAUDE.md and skills distribution
+- `GITHUB_PROJECTS_SWAP_ANALYSIS.md`, the Trello vs GitHub Projects v2 evaluation and pilot plan
 
 ## The core finding
 
@@ -265,7 +266,11 @@ Full design in `CONTEXT_DISTRIBUTION.md`. Summary:
 
 ## What this plan deliberately does not do
 
-- No platform migration (ClickUp/Linear/Notion). Trello plus the orchestrator covers it.
+- No platform migration now. ClickUp/Linear/Notion are ruled out; GitHub Projects v2 is
+  the one credible alternative and gets a real evaluation plus a post-phase-1 pilot in
+  `GITHUB_PROJECTS_SWAP_ANALYSIS.md`. Until that pilot decides otherwise, Trello plus
+  the orchestrator covers it, and the reminder loop and triage agent are built against
+  the provider interface so the swap stays a provider-sized PR.
 - No merge queue in the CI sense. Nothing found justifies stacked-merge infrastructure at
   current team size; the review chains plus PR-merge automation cover the actual pain.
 - No cloud relay for v1 cross-machine. Trello-as-queue and git-sync limits sharing get
