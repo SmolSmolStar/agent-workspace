@@ -95,7 +95,9 @@ Capture defaults (Discord bot and voice task creation):
 
 ## System hookups and defaults
 
-**Reminder loop cadence** (extends `TRELLO_STUDIO_OS.md`):
+**Reminder loop cadence** (extends `TRELLO_STUDIO_OS.md`; this table states intent,
+and the single implementation owner is `config/interruption-policy.json`, shared with
+the supervisor, per `FINAL_IMPLEMENTATION_PLAN.md`):
 
 | | Due Soon alert | Due-day alert | Overdue | No due date set |
 |---|---|---|---|---|

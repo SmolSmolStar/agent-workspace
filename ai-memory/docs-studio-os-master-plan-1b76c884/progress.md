@@ -20,3 +20,5 @@ limits-multimachine, t3-code-research, review-chains
 - [x] All 47 findings dispositioned; disputed GH-Projects REST claim independently verified (Codex right, scout stale)
 - [x] FINAL_IMPLEMENTATION_PLAN.md written: DAG, 6 schemas, 7 security + 6 operational invariants, definition of done
 - [x] All 9 docs corrected (engine decision reversed, ambient->card proposals, fleet auth rewrite, wire shape, counts, supervisor formula)
+- [x] Independent verification sweep: 46 findings checked line-by-line against docs; 44 OK, 2 partial (O21, C7) + 2 side-notes, all four closed (triage eval set, attachment timing tests, launch outcome on card, cursor disposition rule, card-text red-team)
+- [x] PLAN 100% READY FOR IMPLEMENTATION

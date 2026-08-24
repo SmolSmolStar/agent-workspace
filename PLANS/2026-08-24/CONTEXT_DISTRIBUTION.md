@@ -1,5 +1,10 @@
 # Context distribution: role x platform x task
 
+(Build requirements hardened after review: ownership manifest, refuse-unmanaged
+overwrites, lock + validate + atomic replace, last-known-good, dry-run diff, golden
+tests, and the migration table for existing CLAUDE.md files live in
+`FINAL_IMPLEMENTATION_PLAN.md` WP6, which is authoritative over this doc.)
+
 Problem: instructions and skills are distributed as whole repos symlinked at fixed
 layers. It works for one person on one machine, but there is no way to vary content by
 role (dev vs tester), platform (Windows/WSL/Linux), or task type, and every audience

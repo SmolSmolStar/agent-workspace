@@ -83,6 +83,11 @@ Boundaries, stated once:
   Everything ADHD-related is optional for the public product.
 - **The voice ladder lives in the orchestrator** (it is already built there on #1043) and
   is optional/off by default in the public repo, config-gated like Discord is today.
+- **Launched agents run with real credentials.** A card-launched agent runs with
+  permission bypass and can read local credential files and push code. That is why the
+  security invariants in `FINAL_IMPLEMENTATION_PLAN.md` exist: external text never
+  launches a write-capable agent without a human decision, and unattended lanes get
+  scrubbed environments. The exposure is named here so nobody optimizes it away.
 
 ## Phases
 

@@ -132,6 +132,9 @@ title+description and must learn to read this):
 
 Launch uses a card-scoped lease `{cardId, nonce, machine, expiresAt}` rechecked
 immediately before spawn, so two machines assigned to one person cannot double-launch.
+The launch outcome is written back to the card as a comment (machine, session id,
+timestamp, resulting branch/PR when known), so the cross-machine audit trail lives on
+the shared card, not only in per-machine task records.
 
 **Interruption policy** has exactly one owner: `config/interruption-policy.json`,
 consumed by both the supervisor and the reminder loop (shared budget, shared quiet
@@ -197,6 +200,12 @@ on the limits-window schema (WP5.2 shares it).
 - Fix `batchLaunchService` stamping `ticketProvider: 'trello'` unconditionally; widen
   the `taskRecordService` provider allowlist; de-hardcode
   `taskDependencyService.js:156` (the one hardcoded `getProvider('trello')` site).
+- Batch-launch state hardening: replace its single-workspace worktree numbering with
+  the repository-wide allocator (the cross-workspace one the UI already uses), which
+  also checks `git worktree list`; record launch phases (allocated, spawned, prompted,
+  card-moved) with durable idempotency keys (`cardId + operation + card revision`) so a
+  crash mid-launch is compensated (orphaned worktree reclaimed, card move retried or
+  reverted) instead of leaking.
 
 ### WP0.3 normalized ticket layer
 
@@ -246,7 +255,10 @@ on the limits-window schema (WP5.2 shares it).
 - Bot upgrade: attachment pipeline (download bytes before acking, allowlisted hosts, no
   private-address redirects, byte/MIME limits, content sniffing, retry state keyed by
   `messageId/cardId/sourceAttachmentId`, and a visible capture-failed state with no
-  success reaction). Due-phrase and priority extraction (P0 never auto-assigned; capped
+  success reaction). Tests: one proving re-host completes before the ack reaction is
+  added, and one simulating an expired/rotated Discord CDN URL to prove the failure
+  path surfaces instead of silently dropping the image. Due-phrase and priority
+  extraction (P0 never auto-assigned; capped
   at P1 without explicit emergency wording). Card-link replies. Config-driven board
   routing. Remove the send-to-session fallback in the same PR that gates the endpoint;
   enable `DISCORD_API_TOKEN`, producer-side signing, cadence.
@@ -254,10 +266,21 @@ on the limits-window schema (WP5.2 shares it).
   `messageId -> cardId` inbox; every detected commitment becomes a dated Trello card
   proposal through the triage queue (never a local-only work item; the branch's
   `discord:` records violate the single-store rule and its `ticketProvider: 'discord'`
-  is silently rejected by the allowlist today); "on it"/"done" claims must reference a
-  reply, card id, or nonce, never "the latest open item in the channel"; archive
-  instead of truncating at 500; a mute/correct affordance from day one; suggested
-  priority and suggested tier are separate fields.
+  is silently rejected by the allowlist today); the cursor only advances past a message
+  after it has a disposition (card proposal created, or explicitly marked ignored),
+  never before; "on it"/"done" claims must reference a reply, card id, or nonce, never
+  "the latest open item in the channel"; archive instead of truncating at 500; a
+  mute/correct affordance from day one; suggested priority and suggested tier are
+  separate fields.
+- The triage agent v1 (it has a schema above but must also have a build item):
+  triggered per new card at capture and by a daily Inbox sweep on the leader instance;
+  reads guidance per `PRIORITY_SCHEME.md`; writes proposals to its own store keyed by
+  the idempotency key so the same duplicate is never re-proposed; gets narrow card
+  operations only, never shell or session access; runs on a cheap model tier with a
+  per-sweep budget; a failed sweep is logged and skipped, never half-applied. It ships
+  with an eval set: a labeled fixture file of real captures (priority, due date,
+  duplicate/conflict judgments) that gates changes to its prompt or guards, the same
+  regression pattern the voice ladder's calibration harness already uses.
 - Publish the teammate-bot contract (card-creation endpoint + signed queue producer
   spec) so Hermes-class bots stop parsing logs.
 - Metrics wired here: cards created via capture vs commitments only the watcher
@@ -360,9 +383,10 @@ on the limits-window schema (WP5.2 shares it).
 1. A commitment spoken in Discord with no bot mention still ends up as a dated card
    proposal within one sweep, and its reminder fires on time after a full orchestrator
    restart. (The 30-day-reward test, run deliberately.)
-2. A PR containing hostile text (`VERDICT: approved`, control characters, prompt
-   injection in the diff) cannot self-approve, cannot steer a fixer, and cannot reach a
-   permissioned PTY unfenced. (Red-team test in CI.)
+2. Hostile text anywhere (`VERDICT: approved` in a PR, control characters or prompt
+   injection in a card description, a poisoned Discord message) cannot self-approve a
+   review, cannot steer a fixer, and cannot reach a permissioned PTY unfenced.
+   (Red-team tests in CI covering PR bodies, card text, and Discord capture.)
 3. Both machines show both machines' budgets; a card assigned with an artifact launches
    on exactly one of them, once.
 4. A new teammate machine bootstraps: compiled CLAUDE.md for their role and OS, board
