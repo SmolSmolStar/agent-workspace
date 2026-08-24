@@ -5190,31 +5190,13 @@ class ClaudeOrchestrator {
         if (!repoByKey.has(key)) repoByKey.set(key, repo);
       }
 
-      const getOrderIndex = (columnId) => {
-        const raw = board?.orderByColumn && typeof board.orderByColumn === 'object' ? board.orderByColumn[columnId] : null;
-        const order = Array.isArray(raw) ? raw : [];
-        const index = new Map();
-        order.forEach((k, i) => {
-          const key = this.normalizeProjectsBoardProjectKey(k);
-          if (!key || index.has(key)) return;
-          index.set(key, i);
-        });
-        return index;
-      };
-
       const collect = (columnId) => {
         const out = [];
         for (const [key, repo] of repoByKey.entries()) {
           const col = this.getProjectsBoardColumnForProjectKey(key, boardData);
           if (col === columnId) out.push({ key, repo });
         }
-        const index = getOrderIndex(columnId);
-        out.sort((a, b) => {
-          const aRank = index.has(a.key) ? index.get(a.key) : Number.POSITIVE_INFINITY;
-          const bRank = index.has(b.key) ? index.get(b.key) : Number.POSITIVE_INFINITY;
-          if (aRank !== bRank) return aRank - bRank;
-          return String(a.repo?.name || '').localeCompare(String(b.repo?.name || ''));
-        });
+        out.sort((a, b) => String(a.repo?.name || a.key || '').localeCompare(String(b.repo?.name || b.key || '')));
         return out;
       };
 
