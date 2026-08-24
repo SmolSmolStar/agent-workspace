@@ -3,6 +3,7 @@
 Output of a research sweep (13 parallel scouts plus two PR-specific passes) and
 synthesis. Read in this order:
 
+0. `THE_PLAN_SIMPLE.md`, the whole thing on one page, plain words
 1. `STUDIO_OS_MASTER_PLAN.md`, the plan: findings, architecture, seven phases
 2. `CURRENT_STATE_INVENTORY.md`, verified audit: on/off/unmerged/broken/missing
 3. `LANDING_THE_BRANCHES.md`, the PR train for the four big unmerged branches and three fix PRs
