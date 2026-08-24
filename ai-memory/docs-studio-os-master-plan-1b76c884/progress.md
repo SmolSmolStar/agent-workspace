@@ -12,3 +12,4 @@
 plans-process, jarvis-voice, queue-pr-review, adhd-system, start-finishing-trello-auto,
 discord-bots, trello-stack, standards-distribution, agent-efficiency, repo-atlas,
 limits-multimachine, t3-code-research, review-chains
+- [x] PRIORITY_SCHEME.md added: P0-P3 contracts, aliases, triage agent (priority + conflicts), wired into master plan/Trello doc/README

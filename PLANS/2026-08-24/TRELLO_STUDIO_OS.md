@@ -16,9 +16,12 @@ standard lists, due-date discipline") into concrete steps against what actually 
 3. Standardize lists on every active project board:
    Inbox / Backlog / Ready / In Progress / Review-Testing / Blocked / Done.
    Categories are labels and custom fields, not extra lists.
-4. Card discipline for committed work: one accountable owner, priority label (P0-P3),
-   type label, a concrete completion condition in the description, links to the Discord
-   context, and a due date with reminder whenever the work is a commitment.
+4. Card discipline for committed work: one accountable owner, the Priority custom
+   field (P0-P3, default P2; levels, clocks, and aliases defined in
+   `PRIORITY_SCHEME.md`), type label, a concrete completion condition in the
+   description, links to the Discord context, and a due date with reminder whenever the
+   work is a commitment. Create the Priority dropdown on every board alongside the
+   existing Agent field; the provider matches custom fields by name.
    Parent-card rule for agent-heavy work: one human-owned parent card, agent jobs as
    linked cards or checklist items under it. WIP limit: two parent cards In Progress per
    human.
@@ -57,8 +60,9 @@ dates. Decide Premium later on its own merits; nothing in this plan depends on i
 across mapped boards (board snapshot call already exists and is cached):
 
 - **Due soon**: within 24h -> add Due Soon label, top of list, notify owner
-  (orchestrator notification + Discord #work-alerts webhook). Critical-labeled cards get
-  a second same-day alert.
+  (orchestrator notification + Discord #work-alerts webhook). Alert cadence scales with
+  the card's priority level per the table in `PRIORITY_SCHEME.md` (P0 re-alerts until
+  claimed, P3 never alerts).
 - **Overdue**: past due, not complete -> Overdue label, alert to Discord, repeats daily
   until completed, rescheduled, or cancelled. Overdue never goes silent.
 - **Blocked follow-up**: cards in Blocked carry a next-review date; ping when it passes.

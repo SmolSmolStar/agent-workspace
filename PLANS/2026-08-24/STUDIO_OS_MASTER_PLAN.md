@@ -12,6 +12,7 @@ private productivity apps, and T3 Code as external prior art. Companion docs:
 - `CURRENT_STATE_INVENTORY.md`, what exists today, what is on, off, stale, or broken
 - `LANDING_THE_BRANCHES.md`, the PR train for #1041/#1083/#1081/#1085/#1043/#1022/#1029
 - `TRELLO_STUDIO_OS.md`, Trello as the task store: workspace shape, config, reminder loop
+- `PRIORITY_SCHEME.md`, P0-P3: definitions, time contracts, spoken aliases, the triage agent
 - `TEAM_VISIBILITY_AND_CROSS_MACHINE.md`, limits sharing and task hand-off between people and machines
 - `CONTEXT_DISTRIBUTION.md`, role/platform/task-scoped CLAUDE.md and skills distribution
 
@@ -114,8 +115,9 @@ See `LANDING_THE_BRANCHES.md` for the full train. Summary:
 Full detail in `TRELLO_STUDIO_OS.md`.
 
 1. Create the single company workspace and the Studio HQ board; standardize lists on
-   active boards (Inbox/Backlog/Ready/In Progress/Review-Testing/Blocked/Done). Manual,
-   one sitting.
+   active boards (Inbox/Backlog/Ready/In Progress/Review-Testing/Blocked/Done); create
+   the shared Priority custom field (P0-P3, defined with time contracts and defaults in
+   `PRIORITY_SCHEME.md`) on every board. Manual, one sitting.
 2. Fill `boardMappings` and `boardConventions` for all eleven boards in orchestrator
    settings. Mappings make batch launch possible on the nine unmapped boards;
    conventions give PR-merge automation explicit done/test lists instead of list-name
@@ -206,7 +208,10 @@ Commander). This phase connects inputs, intents, and the router:
    reasoning effort from the normalized usage-limit shape before any spawn, hooked into
    the existing admission-controller seam (`sessionManager.setAgentAdmissionController`,
    which the Codex weekly guard already uses). Policy thresholds live in config as data.
-   Local-only here; phase 5 adds the other machine's budgets as inputs.
+   Local-only here; phase 5 adds the other machine's budgets as inputs. The same agent
+   carries triage duty: proposing priority, due dates, and overlap/conflict flags for
+   new cards from written guidance (see the triage agent section of
+   `PRIORITY_SCHEME.md`), auto-applying only the low-stakes calls.
 5. Recalibrate T2 on real transcripts (the GEPA harness and transcript log ship with
    #1043) once real usage accumulates.
 
