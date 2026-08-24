@@ -1,0 +1,109 @@
+# Trello as the studio operating system
+
+Trello stays the permanent home of work. Discord is conversation, GitHub is code, the
+orchestrator is execution. This doc turns the external advice ("one workspace, Studio HQ,
+standard lists, due-date discipline") into concrete steps against what actually exists.
+
+## Workspace and boards (manual admin, one sitting)
+
+1. One company workspace; move all eleven boards into it (Epic Survivors, HyFire, Zoo
+   Hytopia, Roblox Zoo, Kpop Clicker, Ball Dropper, Toy Store, Squishy Battle Pets,
+   Orchestrator, Arcade World, Calm Crypto).
+2. New board `00 - Studio HQ` with lists: Studio Inbox, Current Priorities, Decisions
+   Required, Cross-Project Blockers, Upcoming Milestones, Recurring Operations, Decision
+   Log. One permanent status card per active project (objective, stage, owner, next
+   milestone, health, links to board/repo/build/analytics).
+3. Standardize lists on every active project board:
+   Inbox / Backlog / Ready / In Progress / Review-Testing / Blocked / Done.
+   Categories are labels and custom fields, not extra lists.
+4. Card discipline for committed work: one accountable owner, priority label (P0-P3),
+   type label, a concrete completion condition in the description, links to the Discord
+   context, and a due date with reminder whenever the work is a commitment.
+   Parent-card rule for agent-heavy work: one human-owned parent card, agent jobs as
+   linked cards or checklist items under it. WIP limit: two parent cards In Progress per
+   human.
+
+## Premium or not
+
+The advice assumes Premium for workspace table/calendar/planner and card mirroring. Not
+required: the orchestrator's combined view is already a cross-board kanban (it just has
+never been configured), and the reminder loop below plus a small calendar pane covers
+dates. Decide Premium later on its own merits; nothing in this plan depends on it.
+
+## Orchestrator configuration (config, not code)
+
+1. `boardMappings` for all boards: `trello:<boardId>` -> localPath, repositoryType,
+   defaultStartTier. This is what makes batch launch possible on the nine unmapped
+   boards. (Dependency tracking already works on any board; the Roblox Zoo entry in
+   `TRELLO_BOARDS.md` records a shortLink, not a board id, so resolve the real id
+   first.)
+2. `boardConventions` per board: doneListId, forTestListId, comment template. PR-merge
+   automation works unconfigured via list-name matching; conventions make the targets
+   explicit.
+3. Enable `automations.trello.onPrMerged`. Merged PR -> card commented and moved. The
+   agent prompt already embeds `trello:<shortLink>` so the linkage is automatic when
+   launches go through batch-launch.
+4. Populate `combined.selections` with each board's Ready + In Progress + Blocked lists:
+   that is the studio-wide table view, for free.
+5. Replace the CLAUDE.md manual multi-curl batch-launch choreography with
+   `POST /api/tasks/batch-launch` (`dryRun: true` first). The endpoint already does
+   worktree pick, agent detection from the card's Agent custom field by name, prompt
+   assembly with title + full description + Trello tag, task-record linkage, launch, and
+   card move.
+
+## The reminder loop (the one new service)
+
+`server/trelloReminderService.js`, singleton, config-gated, polling every 5 minutes
+across mapped boards (board snapshot call already exists and is cached):
+
+- **Due soon**: within 24h -> add Due Soon label, top of list, notify owner
+  (orchestrator notification + Discord #work-alerts webhook). Critical-labeled cards get
+  a second same-day alert.
+- **Overdue**: past due, not complete -> Overdue label, alert to Discord, repeats daily
+  until completed, rescheduled, or cancelled. Overdue never goes silent.
+- **Blocked follow-up**: cards in Blocked carry a next-review date; ping when it passes.
+- **No-date guard**: committed cards (Ready / In Progress) without a due date get an
+  advisor nudge, so the card-discipline rule has tooling behind it instead of memory.
+- **Recurring operations**: a small template table (in settings) creates cards on
+  schedule into Recurring Operations / project boards: Monday priority selection, weekly
+  playtest, weekly analytics review, build verification, Friday close-out, release
+  checklist, post-release analytics. Completing a recurring card just ends that
+  occurrence; the schedule creates the next.
+- **Escalation channels**: orchestrator UI toast + activity feed always; Discord webhook
+  per severity; optional phone push later (the ADHD system already has a hardened
+  notification path if a personal channel is wanted).
+- **State**: last-seen snapshot per board in the data dir so restarts do not re-alert;
+  every alert appended to a JSONL audit like the Discord bridge does.
+
+This service also finally supplies the four-queues `backlog` count (`supported: false`
+today): Backlog + Ready list sizes across mapped boards.
+
+Why orchestrator-side instead of Trello Butler: we own the code, it works on the free
+tier, alerts route through the same channels as everything else, and the logic can see
+task records (tier, risk, evidence) that Butler cannot.
+
+## Capture rules (Discord)
+
+Adopted as posted policy, enforced by tooling in phase 2:
+
+- Any actionable request becomes a card; the bot replies with the card link and adds the
+  pin reaction. Mention without a card is not an assignment.
+- Screenshots attach to the card (bot upgrade), so "the image was in Discord somewhere"
+  stops being a failure mode.
+- The bot extracts due phrases and priority when present (or asks in-thread), so
+  committed cards arrive dated instead of relying on someone adding the date later.
+- Bugs from testers become cards before they are treated as accepted work.
+- #work-alerts (read-only, automated) and #blockers channels; the reminder loop and
+  supervisor post there.
+
+## Hygiene backlog
+
+- Consolidate the three Trello shell scripts into one that sources
+  `~/.trello-credentials`, rotating the credentials as part of the consolidation.
+- Sync the `trello-task` skill board table to the full board list; keep
+  `TRELLO_BOARDS.md` as the single source; retire `TRELLO_WORKFLOW.md`.
+- Real duplicate detection: a helper that pulls the board snapshot and does deterministic
+  fuzzy matching before card creation, replacing eyeball-the-list.
+- auto-trello: fix the failing token (401 on score/sort since months, backup fine), add
+  failure alerting to #work-alerts, or retire the Actions jobs and fold scoring into the
+  reminder service. Merge or close its stale dependency-pin PR.
