@@ -42,7 +42,11 @@ truth, which is the disease this plan exists to cure.
   `trello.com/c/` links out of PR bodies because GitHub cannot know about Trello. With
   issues as tickets, "Closes #N" plus the built-in "PR merged -> Status: Done" workflow
   replaces most of that service. The dependency graph's `pr:owner/repo#N` id kind
-  already exists; `issue:owner/repo#N` slots in beside it.
+  already exists; `issue:owner/repo#N` slots in beside it. Scope check: this only
+  upgrades code-type work. Plenty of tickets never produce a PR (Roblox dashboard
+  changes, research, sign-ups, ad campaigns); those become plain issues or draft items
+  that close manually, by voice, or by the bot, exactly as their cards would on Trello.
+  Parity for non-code work, improvement for code work.
 - **Dependencies and subtasks stop being hacks.** Native blocked-by/blocking and
   sub-issues (both manageable from `gh` CLI since 2026-06) replace the
   Dependencies-checklist convention and its ten provider methods.

@@ -31,6 +31,27 @@ A store-choice note: GitHub Projects v2 was evaluated as the alternative
 agent below are built against the provider interface, not Trello REST, so that decision
 stays reversible.
 
+## Not everything becomes a PR
+
+PR linkage is one completion path, not the model. A card is the unit of work; a PR is
+just how code-type work happens to finish. Plenty of studio work never touches GitHub:
+Roblox dashboard and store-page changes, ad campaigns, signing up for services,
+renewals, research, playtest sessions. The type label decides which automation applies:
+
+| Type | Deliverable | How it completes |
+|---|---|---|
+| Feature / Bug / Technical | a PR | merge automation moves the card; review chains apply |
+| Content / platform config (Roblox settings, store pages, ads) | changed state on an external service | owner marks it done with proof (screenshot or comment on the card); computer-use verification can supply the evidence |
+| Research | findings | agent-doable end to end: launch against the card, deliverable posted back as a card comment or attachment |
+| Operations (sign-ups, renewals, emails) | done in the world | human-only; the reminder loop is the whole system here; "mark X done" by voice or bot closes it |
+
+Everything else in this plan is type-blind: due dates, reminders, priority contracts,
+the triage agent, Studio HQ, and the calendar all run on cards whether or not a repo is
+involved. Only batch launch and PR-merge automation are code-specific. Two follow-ons
+this implies: the "done with proof" habit reuses the evidence protocol (a screenshot on
+the card is evidence, same as on a PR), and a later batch-launch tweak can run Research
+cards in a scratch worktree with the result returned to the card instead of a branch.
+
 ## Premium or not
 
 The advice assumes Premium for workspace table/calendar/planner and card mirroring. Not
