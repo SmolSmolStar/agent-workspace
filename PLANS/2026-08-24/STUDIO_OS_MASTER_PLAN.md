@@ -115,7 +115,7 @@ See `LANDING_THE_BRANCHES.md` for the full train. Summary:
 
 Full detail in `TRELLO_STUDIO_OS.md`.
 
-1. Create the single company workspace and the Studio HQ board; standardize lists on
+1. Create the single company workspace and the HQ board; standardize lists on
    active boards (Inbox/Backlog/Ready/In Progress/Review-Testing/Blocked/Done); create
    the shared Priority custom field (P0-P3, defined with time contracts and defaults in
    `PRIORITY_SCHEME.md`) on every board. Manual, one sitting.

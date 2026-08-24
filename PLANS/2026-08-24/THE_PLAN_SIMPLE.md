@@ -6,30 +6,34 @@ You talk to it by voice or Discord. Nothing important lives only in chat.
 
 ## The picture
 
-```
-  YOU / TEAM                     THE MACHINE                      RESULT
-  say it (voice)          bot/agent makes a Trello card      card with owner,
-  type it            -->  triage agent sets priority,   -->  priority, due date,
-  post in Discord         due date, spots duplicates          screenshot attached
+```mermaid
+flowchart TD
+    V["Voice"] --> B
+    K["Typed"] --> B
+    D["Discord message + screenshot"] --> B
+    B["Bot + triage agent<br/>sets priority and due date, spots duplicates and clashes"] --> C
+    C["TRELLO CARD<br/>owner, priority, due date, screenshot"]
 
-  card sits there         reminder loop checks every          nobody can forget:
-                     -->  5 min: due soon? overdue?      -->  pings owner, pings
-                          P0 and unclaimed?                   Discord, won't stop
+    C --> R["Reminder loop, every 5 min"]
+    R -->|"due soon / overdue / P0 unclaimed"| P["Pings owner + Discord,<br/>daily until someone deals with it"]
 
-  card is code work       one call launches an agent          PR opens, reviewers
-                     -->  in a worktree, card text is    -->  (1-3 agents by risk),
-                          the prompt                          merge moves card Done
+    C -->|"code work"| A["Agent launches in a worktree,<br/>card text is the prompt"]
+    A --> PR["Pull request"]
+    PR --> RV["Review chain:<br/>0-3 agent reviewers, picked by risk"]
+    RV --> M["Merge"]
+    M -->|"automatic"| DN["Card moves to Done"]
 
-  card is not code        reminder loop nags the human;       done = say "done" +
-  (Roblox, research, -->  research cards can run on an   -->  proof screenshot on
-  sign-ups)               agent, findings post to card        the card
+    C -->|"research"| RA["Agent runs it,<br/>findings posted to the card"]
+    RA --> DP["Done, proof on the card"]
+    C -->|"Roblox config, sign-ups, ops"| H["Human does it,<br/>reminder loop nags until then"]
+    H --> DP
 ```
 
 ## Where data lives
 
 | Data | Lives in |
 |---|---|
-| Tasks, priorities, due dates, screenshots | Trello. One workspace, the 11 boards, plus a Studio HQ board |
+| Tasks, priorities, due dates, screenshots | Trello. One workspace, the 11 boards, plus an HQ board |
 | Code and PRs | GitHub, as now |
 | Which card = which agent session, reviews, proof | `~/.agent-workspace/task-records.json` on each machine (already exists) |
 | Team stuff both machines/people need (AI usage left, member list) | one small private git repo, synced automatically |

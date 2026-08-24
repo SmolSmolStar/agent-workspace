@@ -1,7 +1,7 @@
 # Trello as the studio operating system
 
 Trello stays the permanent home of work. Discord is conversation, GitHub is code, the
-orchestrator is execution. This doc turns the external advice ("one workspace, Studio HQ,
+orchestrator is execution. This doc turns the external advice ("one workspace, the HQ board,
 standard lists, due-date discipline") into concrete steps against what actually exists.
 
 ## Workspace and boards (manual admin, one sitting)
@@ -9,7 +9,7 @@ standard lists, due-date discipline") into concrete steps against what actually 
 1. One company workspace; move all eleven boards into it (Epic Survivors, HyFire, Zoo
    Hytopia, Roblox Zoo, Kpop Clicker, Ball Dropper, Toy Store, Squishy Battle Pets,
    Orchestrator, Arcade World, Calm Crypto).
-2. New board `00 - Studio HQ` with lists: Studio Inbox, Current Priorities, Decisions
+2. New board `00 - HQ` with lists: Studio Inbox, Current Priorities, Decisions
    Required, Cross-Project Blockers, Upcoming Milestones, Recurring Operations, Decision
    Log. One permanent status card per active project (objective, stage, owner, next
    milestone, health, links to board/repo/build/analytics).
@@ -46,7 +46,7 @@ renewals, research, playtest sessions. The type label decides which automation a
 | Operations (sign-ups, renewals, emails) | done in the world | human-only; the reminder loop is the whole system here; "mark X done" by voice or bot closes it |
 
 Everything else in this plan is type-blind: due dates, reminders, priority contracts,
-the triage agent, Studio HQ, and the calendar all run on cards whether or not a repo is
+the triage agent, the HQ board, and the calendar all run on cards whether or not a repo is
 involved. Only batch launch and PR-merge automation are code-specific. Two follow-ons
 this implies: the "done with proof" habit reuses the evidence protocol (a screenshot on
 the card is evidence, same as on a PR), and a later batch-launch tweak can run Research

@@ -45,7 +45,7 @@ fills the clocks in when the human does not:
 | P3 | none | never scheduled | none |
 
 So "P0" literally means "done or downgraded within 24 hours": if a P0 is still open at
-24h the advisor escalates it to Studio HQ's Decisions Required, because either it is
+24h the advisor escalates it to the HQ board's Decisions Required, because either it is
 being worked (fine, say so on the card) or it was never really a P0 (demote it).
 "Acknowledge" means any visible claim: assigning yourself, a card comment, or the pin
 reaction on the Discord message. The capture bot and the triage agent apply the default
@@ -103,7 +103,7 @@ Capture defaults (Discord bot and voice task creation):
 
 **Advisor rules** (new, alongside the existing ones):
 
-- P0 open longer than 24h: escalate to Decisions Required on Studio HQ.
+- P0 open longer than 24h: escalate to Decisions Required on the HQ board.
 - More than 2 open P0s or more than 5 open P1s across boards: "everything urgent means
   nothing is" advice, prompting a triage pass.
 - P1 in Ready without a due date; P0 without an owner.
@@ -134,7 +134,7 @@ The router agent (phase 4 item 4) gets a second duty: triage. It reads guidance,
 vibes, and its guidance inputs are all things that already exist or land in phase 1:
 
 - This document (the level semantics and entry criteria).
-- Studio HQ's Current Priorities list and the milestone cards with dates.
+- The HQ board's Current Priorities list and the milestone cards with dates.
 - The dependency graph (`taskDependencyService`) for blocked-by relationships.
 - The pairing service's conflict scoring (`processPairingService`: file overlap, same
   project, parallel PRs) for "these two cards will collide" detection.
@@ -184,7 +184,7 @@ escalation, the priority never changes on its own:
 - P2 untouched for 30 days: the triage agent proposes one of demote to P3, give it a
   date, or fold it into a bigger card. The proposal waits in the Friday close-out.
 - P3 untouched for 90 days: quarterly archive candidate (already in the rules below).
-- The daily sweep also produces a backburner report on Studio HQ: oldest cards, count by
+- The daily sweep also produces a backburner report on the HQ board: oldest cards, count by
   board, and what it proposed for each, so "been sitting there for ages" is a report you
   read, not a discovery you make.
 
