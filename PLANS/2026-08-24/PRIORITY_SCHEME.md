@@ -171,6 +171,39 @@ The weekly failure mode this prevents is silent misfiling: a committed task sitt
 P2 with no date because nobody typed "urgent" in Discord. The triage agent catches it
 because the milestone card says otherwise.
 
+## Backburner and 1% better work
+
+Low priority has two failure modes: cards that quietly rot for months, and small
+"makes it 1% better" improvements that never win a priority contest against anything,
+ever, despite being exactly what compounds into a polished game. Both get explicit
+handling so low priority never means invisible.
+
+**Staleness ages.** Every card gets a decision at a known age; surfacing is not
+escalation, the priority never changes on its own:
+
+- P2 untouched for 30 days: the triage agent proposes one of demote to P3, give it a
+  date, or fold it into a bigger card. The proposal waits in the Friday close-out.
+- P3 untouched for 90 days: quarterly archive candidate (already in the rules below).
+- The daily sweep also produces a backburner report on Studio HQ: oldest cards, count by
+  board, and what it proposed for each, so "been sitting there for ages" is a report you
+  read, not a discovery you make.
+
+**The 1% lane.** Small, self-contained improvements (a sound effect, a tooltip, a
+magic-number cleanup, a load-time shave) get a `1%` label plus the existing
+Benefit/Effort fields; the auto-trello score already ranks exactly this shape of card
+(high benefit over effort floats up). Then the lane feeds itself:
+
+- When T3/T4 capacity is free (`launchAllowedByTier` already computes this) and the
+  usage budget is healthy (the router knows), the router batch-launches the top-scored
+  `1%` cards at T4, capped at a couple per day.
+- They go through the normal pipeline: low risk, so the cheap review path; evidence and
+  PR-merge automation move the card like any other work.
+- Result: the backburner becomes the default diet of otherwise-idle background agents
+  instead of a graveyard, and polish accumulates without ever outranking a P1.
+
+A monthly Backburner Review recurring card (reminder loop) has a human skim the report
+and the lane's output, so the automation stays supervised.
+
 ## Anti-inflation rules
 
 - Overdue never auto-escalates priority. An overdue P2 stays P2 and stays visible until

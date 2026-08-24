@@ -70,9 +70,10 @@ across mapped boards (board snapshot call already exists and is cached):
   advisor nudge, so the card-discipline rule has tooling behind it instead of memory.
 - **Recurring operations**: a small template table (in settings) creates cards on
   schedule into Recurring Operations / project boards: Monday priority selection, weekly
-  playtest, weekly analytics review, build verification, Friday close-out, release
-  checklist, post-release analytics. Completing a recurring card just ends that
-  occurrence; the schedule creates the next.
+  playtest, weekly analytics review, build verification, Friday close-out, monthly
+  backburner review (see `PRIORITY_SCHEME.md`), release checklist, post-release
+  analytics. Completing a recurring card just ends that occurrence; the schedule creates
+  the next.
 - **Escalation channels**: orchestrator UI toast + activity feed always; Discord webhook
   per severity; optional phone push later (the ADHD system already has a hardened
   notification path if a personal channel is wanted).
