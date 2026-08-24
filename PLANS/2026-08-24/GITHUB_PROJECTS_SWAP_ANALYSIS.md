@@ -32,7 +32,7 @@ truth, which is the disease this plan exists to cure.
 | Checklists | Sub-issues (GA 2025-04, 100 per parent, 8 deep) | An upgrade, not a port |
 | Dependencies checklist hack | Native blocked-by/blocking (GA 2025-08, 50 each way) | The hack gets deleted |
 | Card attachments | No official API; commit images to an assets repo | See below |
-| The HQ board | An HQ project, plus saved views on the main project | |
+| The Trello HQ board | An HQ project, plus saved views on the main project | |
 | Recurring cards | Actions cron creating issues | |
 | auto-trello Benefit/Effort/Score | Number fields plus the reminder loop computing Score | |
 

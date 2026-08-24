@@ -1,80 +1,109 @@
 # The plan, simply
 
-Every piece of work becomes a Trello card with a priority and a due date.
-Robots watch the cards: they remind people, launch agents, review code, and report back.
-You talk to it by voice or Discord. Nothing important lives only in chat.
+Trello holds the work. An agent brain decides what happens at every step: nothing in
+this system is a fixed pipe. Agent Workspace is where you see and steer all of it.
 
-## The picture
+## What happens when you say something
 
 ```mermaid
 flowchart TD
-    V["Voice"] --> B
-    K["Typed"] --> B
-    D["Discord message + screenshot"] --> B
-    B["Bot + triage agent<br/>sets priority and due date, spots duplicates and clashes"] --> C
-    C["TRELLO CARD<br/>owner, priority, due date, screenshot"]
+    V["Voice: hotkey, phone, button"] --> BR
+    K["Typing: Commander, UI"] --> BR
+    DC["Discord channels"] --> DB
+    DB["Discord bots: ours, plus teammate bots<br/>like Hermes through a documented contract"] --> BR
 
-    C --> R["Reminder loop, every 5 min"]
-    R -->|"due soon / overdue / P0 unclaimed"| P["Pings owner + Discord,<br/>daily until someone deals with it"]
+    BR["THE BRAIN (orchestrator agent)<br/>cheap lanes first: exact phrase, tiny local model, local chat model,<br/>Commander Claude only when it actually needs to think"]
 
-    C -->|"code work"| A["Agent launches in a worktree,<br/>card text is the prompt"]
-    A --> PR["Pull request"]
-    PR --> RV["Review chain:<br/>0-3 agent reviewers, picked by risk"]
-    RV --> M["Merge"]
-    M -->|"automatic"| DN["Card moves to Done"]
-
-    C -->|"research"| RA["Agent runs it,<br/>findings posted to the card"]
-    RA --> DP["Done, proof on the card"]
-    C -->|"Roblox config, sign-ups, ops"| H["Human does it,<br/>reminder loop nags until then"]
-    H --> DP
+    BR --> A1["Just answer you"]
+    BR --> A2["Ask back / confirm first"]
+    BR --> A3["Create one or MANY Trello cards"]
+    BR --> A4["Update, complete, or reprioritize cards"]
+    BR --> A5["Launch one or more agents"]
+    BR --> A6["Alert someone / post to Discord"]
+    BR --> A7["Hand work to another machine or teammate"]
 ```
+
+Every arrow out of the brain is a choice it makes per request. A Trello card is one
+possible outcome, not the outcome.
+
+## What happens to a card
+
+- The triage agent proposes priority, due date, duplicates, and clashes with other work.
+  Small calls apply themselves with the reasoning left as a comment; anything P0/P1 or
+  destructive waits for a human yes.
+- The reminder loop is budgeted, not a spam cannon. Interruptions go through the same
+  budget the supervisor uses: so many per hour, minimum gaps, quiet hours, low-grade
+  stuff batched into a digest. Only a P0 is allowed to keep breaking through. Everything
+  else escalates by channel (UI first, Discord later) and then lands in the Friday
+  close-out, where a human decides: finish it, reschedule it, or kill it. Overdue never
+  disappears, and it also never turns into infinite pinging.
+
+## How code work finishes
+
+Launch from the card (one call, card text becomes the prompt, agent works in a
+worktree) -> PR opens. Then review is sized by risk, and it is not always automatic:
+
+| Change | Review |
+|---|---|
+| Trivial (docs, tiny fix) | none |
+| Normal | one agent reviewer |
+| Dangerous (player data, economy, launch week) | several agents with different lenses, PLUS a human |
+
+Merging is a person's call unless that repo and change type is explicitly allowed to
+auto-merge. Some teammates can merge on some projects and never on others; that policy
+lives in config, not in vibes. Whoever merges, however they merge, the card then moves
+itself. That last step is the only automatic part.
+
+## Where results go
+
+Wherever fits: a PR, a card comment, a doc, a Discord reply. Research might end as
+findings on the card, or as a PR, or both. The only rule: the card links to wherever
+the result lives, so the trail is never lost.
+
+## What you see in Agent Workspace
+
+This all surfaces in the app you already run:
+
+| Surface | Shows |
+|---|---|
+| Terminal grid | every agent working, grouped by worktree; Focus / Review / Background mode filters what is on screen |
+| Queue / Review Inbox | everything waiting on a review or a decision, sorted by priority and tier |
+| Tasks panel | your Trello boards inside the app, including the all-boards combined view |
+| Jarvis panel (Alt+J) | what the supervisor found, the batched digest, Discord work it spotted, proposals waiting for your yes |
+| Header | your remaining Claude/Codex/Grok budget; later your teammates' and your other machine's too |
+| Voice | the realtime manager speaks only on real changes (agent finished, something broke), silent in background mode |
 
 ## Where data lives
 
 | Data | Lives in |
 |---|---|
-| Tasks, priorities, due dates, screenshots | Trello. One workspace, the 11 boards, plus an HQ board |
+| Tasks, priorities, due dates, screenshots | Trello: one workspace, the 11 game boards, plus the Trello HQ board (the studio-level board: one status card per game, decisions needed, cross-game blockers) |
 | Code and PRs | GitHub, as now |
 | Which card = which agent session, reviews, proof | `~/.agent-workspace/task-records.json` on each machine (already exists) |
-| Team stuff both machines/people need (AI usage left, member list) | one small private git repo, synced automatically |
+| Team data every machine needs (AI budget left, member list) | one small private git repo, synced automatically |
 | Names and nicknames for voice ("the kpop game", people) | one config file per machine |
-| Chat | Discord. Disposable. Anything that matters becomes a card within minutes |
-
-## The rules
-
-| Priority | Means | The system does |
-|---|---|---|
-| P0 | emergency, done or downgraded in 24h | pings until someone claims it, escalates at 24h |
-| P1 | promised, has a deadline | due date required, reminded 24h before + on the day + daily after |
-| P2 | normal (the default) | reminded only if you gave it a date |
-| P3 | someday | silent; idle agents chip away at the small "1% better" ones |
-
-Nothing auto-bumps priority. Overdue stays loud until a human finishes, moves, or kills it.
-Old P2s get surfaced after 30 days, old P3s after 90, so nothing rots silently.
+| Chat | Discord. Disposable. Anything that matters gets captured out of it within minutes |
 
 ## How it hooks into what you already have
 
 | You have | What happens to it |
 |---|---|
-| Orchestrator | Already contains the Trello client, card-to-agent launcher, PR automation, task records. Most of it is just switched on and configured. New code: the reminder loop and the triage agent |
-| Jarvis voice (branch #1043) | Gets merged. "Make a card on Zoo, P1, due Friday" works by voice. Cheap local model answers fast stuff, Claude only for real work |
-| Discord bot | Kept. Learns to attach screenshots to the card, set priority and due date from your words, and reply with the card link |
-| ADHD system | Stays its own private app. Its phone/hotkey capture gets one new route: "this is a studio task" sends it to Trello instead of your personal list |
-| Your 2 computers | Each publishes its remaining Claude/Codex/Grok budget to the shared repo. You see both in the header. Assign work to the other machine by assigning the card; it launches there |
-| Teammates | Same: their orchestrator shows on the shared repo, you see their budget, you assign them a card with a ready-made prompt attached. They press launch |
-| CLAUDE.md repos | One script builds each person's CLAUDE.md from shared pieces (their role + their OS + their projects) instead of you maintaining copies |
-| Trello vs GitHub Projects | Staying on Trello. GitHub Projects gets a small trial on the Orchestrator board later; if it wins, the swap is one file, because the new code never talks to Trello directly |
+| Orchestrator / Agent Workspace | The center. Already contains the Trello client, card-to-agent launcher, PR automation, task records. Mostly switched on and configured; new code is the reminder loop, triage duty, and the brain's routing |
+| Jarvis (branch #1043) | Gets merged. It IS the brain's voice lanes: exact-phrase, tiny model, local chat, Commander |
+| Discord bot | Kept and upgraded: screenshots onto cards, priority and due date from your words, card-link replies. Teammate bots (Hermes) plug in through a published contract instead of scraping logs |
+| ADHD system | Stays its own private app. Its phone/hotkey capture gets one route: "studio task" goes to the studio instead of your personal list |
+| Your 2 computers | Each publishes remaining budget to the shared repo; the brain can route a launch to whichever machine has headroom |
+| Teammates | You see their budget, you assign a card with a ready-made prompt attached, their orchestrator offers it for launch |
+| CLAUDE.md repos | One script builds each person's CLAUDE.md from shared pieces (role + OS + projects) instead of hand-maintained copies |
+| Trello vs GitHub Projects | Staying on Trello. Small trial later on the Orchestrator board; the new code never talks to Trello directly, so swapping stays cheap |
 
 ## Build order
 
-1. Merge the four stuck branches (voice, reviews, supervisor, Discord watcher). Most of the system is already written and sitting there.
-2. One Trello sitting: one workspace, HQ board, same lists everywhere, Priority field on every board. Flip on the "PR merged moves the card" automation.
-3. Build the reminder loop. This is the piece that makes forgetting impossible.
-4. Upgrade the Discord bot (images, due dates, card links).
-5. Review chains: risky code gets 2-3 agent reviewers, trivial code gets none.
-6. Hook up voice inputs and the picker that chooses which AI runs a task based on budget left.
-7. Team budgets + second computer.
+1. Merge the four stuck branches (voice/brain, reviews, supervisor, Discord watcher). Most of this is already written.
+2. One Trello sitting: workspace, the Trello HQ board, same lists everywhere, Priority field. Turn on "merged PR moves the card".
+3. Build the reminder loop with the interruption budget.
+4. Upgrade the Discord bot; publish the contract for teammate bots.
+5. Review chains sized by risk, human gates included.
+6. Voice inputs plus the budget-aware routing.
+7. Team budgets and the second computer.
 8. The CLAUDE.md builder.
-
-That's it. Trello holds the work, the orchestrator does the work, Discord and voice are
-how you talk to it, and the reminder loop makes sure nothing is ever forgotten again.

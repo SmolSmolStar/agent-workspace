@@ -59,7 +59,7 @@ replaced by the orchestrator's combined view plus a calendar surface (see
 INPUT                      BRAIN                        STORE                 EXECUTION
 voice (hotkey/phone/     T1 exact phrase              Trello (tasks,        Commander(s)
  button/browser)    -->  T2 tiny local model     -->   due dates,      -->  worktree agents
-Discord messages         T2.5 deterministic data       boards, HQ)          review chains
+Discord messages         T2.5 deterministic data       boards, Trello HQ)          review chains
 typed commands           T3 local brain               task records          bare-agent fleets
                          T4 Commander + router        dependency graph      teammate machines
 
@@ -115,7 +115,7 @@ See `LANDING_THE_BRANCHES.md` for the full train. Summary:
 
 Full detail in `TRELLO_STUDIO_OS.md`.
 
-1. Create the single company workspace and the HQ board; standardize lists on
+1. Create the single company workspace and the Trello HQ board; standardize lists on
    active boards (Inbox/Backlog/Ready/In Progress/Review-Testing/Blocked/Done); create
    the shared Priority custom field (P0-P3, defined with time contracts and defaults in
    `PRIORITY_SCHEME.md`) on every board. Manual, one sitting.
