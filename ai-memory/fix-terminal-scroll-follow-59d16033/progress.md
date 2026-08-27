@@ -10,4 +10,4 @@
 - [x] Unit tests (9) green; full jest suite 998/998 green
 - [x] node --check on all edited client files
 - [x] CODEBASE_DOCUMENTATION.md updated (separate commit 59d16033)
-- [ ] Push branch + open PR
+- [x] Push branch + open PR: https://github.com/web3dev1337/agent-workspace/pull/1100
