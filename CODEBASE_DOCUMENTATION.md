@@ -52,6 +52,7 @@ server/sessionManager.js           - Terminal session lifecycle management
 ├─ Workspace cleanup: `cleanupWorkspaceSessions(workspaceId)` tears down active or stashed sessions for a specific workspace before delete/archive flows
 ├─ Workspace switch guard: switching to the already-active workspace short-circuits and reuses the current session map instead of re-initializing PTYs
 ├─ Stale-agent cleanup: when status detection sees an explicit shell/no-agent prompt, recovery `lastAgent` markers are cleared to keep sidebar status accurate (`no-agent` vs `busy/waiting`)
+├─ Marker-clear ground truth: for tmux-backed sessions `paneStillRunsAgent()` checks `pane_current_command` before clearing — garbled/wrapped agent frames that end in a prompt-looking line (bare `>` / `❯`) can no longer wipe the marker off a live agent and resurrect the Fresh/Continue/Resume overlay
 ├─ Status model: periodic status re-evaluation prevents stale "busy" lights after output quiets down
 └─ Uses: node-pty for terminal emulation
 
