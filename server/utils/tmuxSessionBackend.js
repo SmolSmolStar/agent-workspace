@@ -254,6 +254,19 @@ class TmuxSessionBackend {
     }
   }
 
+  // Name of the foreground process in the pane ('claude', 'codex', 'bash', ...).
+  // Ground truth for "is an agent still running here" — output heuristics can be
+  // fooled by wrapped/garbled frames that happen to look like a shell prompt.
+  paneCurrentCommand(sessionId) {
+    try {
+      const out = this.run(['list-panes', '-t', this.target(sessionId), '-F', '#{pane_current_command}']);
+      const command = String(out || '').trim().split('\n')[0].trim();
+      return command || null;
+    } catch {
+      return null;
+    }
+  }
+
   // Current pane geometry, so a re-attaching client can adopt at the real size
   // instead of a hardcoded default (avoids a resize-down-then-up on attach).
   getPaneSize(sessionId) {
