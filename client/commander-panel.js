@@ -217,6 +217,7 @@ class CommanderPanel {
       await fetch(`${this.serverUrl}/api/commander/instances/${encodeURIComponent(id)}`, { method: 'DELETE' });
     } catch { /* remove locally regardless */ }
     const tab = this.tabs.get(id);
+    this.scrollKeeper?.detach(id);
     try { tab?.terminal?.dispose?.(); } catch { /* already gone */ }
     document.getElementById(`commander-terminal-${id}`)?.remove();
     this.tabs.delete(id);
@@ -512,6 +513,25 @@ class CommanderPanel {
 
     // Use requestAnimationFrame to ensure renderer is ready before fitting
     this.fitTerminalSoon();
+
+    // Commander writes rely on xterm's native follow-at-bottom, so it never yanks
+    // a reader out of scrollback — but a forgotten scroll-up would strand the view
+    // in history forever. The keeper returns it to the bottom after a quiet period,
+    // same policy as the worktree terminals.
+    if (typeof TerminalScrollKeeper !== 'undefined') {
+      if (!this.scrollKeeper) {
+        this.scrollKeeper = new TerminalScrollKeeper({
+          getSnapBackSeconds: () => {
+            const settings = this.orchestrator?.settings;
+            if (!settings || settings.autoScroll === false) return 0;
+            const seconds = Number(settings.scrollSnapBackSeconds);
+            return Number.isFinite(seconds) ? seconds : SCROLL_KEEPER_DEFAULTS.snapBackSeconds;
+          }
+        });
+        this.scrollKeeper.start();
+      }
+      this.scrollKeeper.attach(this.activeInstance || 'main', this.terminal, container);
+    }
 
     // Replay server-side history first; live socket output stays buffered
     // until the replay finishes so nothing is written out of order.
