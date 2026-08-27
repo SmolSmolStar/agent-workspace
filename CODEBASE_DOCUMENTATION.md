@@ -306,6 +306,7 @@ client/app.js                      - Main client application
 client/assets/agent-workspace-logo.png - Shared circular brand mark used by the app favicon, sidebar/dashboard title logo, and as the source for bundled desktop icons
 
 client/terminal.js                 - Terminal component implementation
+├─ Fit ratchet escape: a down-fit below 60% of lastGoodPtyDimensions is accepted once the same dimensions repeat `stableSmallFitConfirmations` times (settled layout), so one oversized mid-layout fit can't wedge a terminal at a huge PTY size (the stacked-duplicate-frames bug)
 ├─ Scroll policy: output follows only when the viewport is already at the bottom (sampled pre-write); a user reading scrollback keeps their position
 └─ Scroll snap-back: TerminalScrollKeeper returns a terminal left scrolled up to the bottom after `settings.scrollSnapBackSeconds` (default 60, 0 disables) of no wheel/drag/touch/key activity
 client/terminal-scroll-keeper.js   - Shared TerminalScrollKeeper (worktree terminals + Commander panel): per-terminal activity tracking (wheel/mousedown/touch + noteActivity for keys), interval tick, snap-back countdown armed from first scrolled-up sighting so programmatic scroll-to-top gets the full grace period; unit-tested in tests/unit/terminalScrollKeeper.test.js

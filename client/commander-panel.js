@@ -22,7 +22,8 @@ class CommanderPanel {
     this.lineBuffer = '';
     this.historyPending = false;
     this.lastSyncedSize = null;
-    this.resizeObserver = null;
+    this.resizeObservers = new Map(); // instanceId -> ResizeObserver on that tab's container
+    this.windowResizeHandler = null;
     this.inputChain = Promise.resolve();
     // Commander tabs: 'main' always exists; extra instances are cmd-2..cmd-6.
     this.activeInstance = 'main';
@@ -218,6 +219,11 @@ class CommanderPanel {
     } catch { /* remove locally regardless */ }
     const tab = this.tabs.get(id);
     this.scrollKeeper?.detach(id);
+    const observer = this.resizeObservers?.get(id);
+    if (observer) {
+      observer.disconnect();
+      this.resizeObservers.delete(id);
+    }
     try { tab?.terminal?.dispose?.(); } catch { /* already gone */ }
     document.getElementById(`commander-terminal-${id}`)?.remove();
     this.tabs.delete(id);
@@ -576,21 +582,32 @@ class CommanderPanel {
       }
     });
 
-    // Handle resize
-    window.addEventListener('resize', () => {
-      if (this.isVisible && this.fitAddon) {
-        this.fitTerminalSoon();
-      }
-    });
-
-    // Refit when the panel itself changes size, not just the window
-    if (window.ResizeObserver && !this.resizeObserver) {
-      this.resizeObserver = new ResizeObserver(() => {
+    // Handle window resize (register once, not once per Commander tab)
+    if (!this.windowResizeHandler) {
+      this.windowResizeHandler = () => {
         if (this.isVisible && this.fitAddon) {
           this.fitTerminalSoon();
         }
-      });
-      this.resizeObserver.observe(container);
+      };
+      window.addEventListener('resize', this.windowResizeHandler);
+    }
+
+    // Refit when the panel itself changes size (drag handle), not just the
+    // window. EVERY tab's container needs its own observer — observing only the
+    // first one left Commander 2+ un-fitted after a panel resize until a tab
+    // switch forced it. Hidden tabs' containers are display:none (0x0), so gate
+    // on this tab still being the active one.
+    if (window.ResizeObserver) {
+      const instanceId = this.activeInstance;
+      if (!this.resizeObservers.has(instanceId)) {
+        const observer = new ResizeObserver(() => {
+          if (this.isVisible && this.fitAddon && this.activeInstance === instanceId) {
+            this.fitTerminalSoon();
+          }
+        });
+        observer.observe(container);
+        this.resizeObservers.set(instanceId, observer);
+      }
     }
   }
 

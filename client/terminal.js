@@ -32,6 +32,16 @@ class TerminalManager {
     this.minPtyCols = 40;
     this.minPtyRows = 5;
 
+    // A down-fit proposal below the lastGood ratchet is accepted once the SAME
+    // dimensions have been proposed this many times in a row — a repeated
+    // measurement is a settled layout, not a mid-transition glitch. Without this
+    // escape hatch, one oversized fit (full-width container measured mid-layout
+    // after a reload, or a focused single-terminal view) poisons lastGood and
+    // every later correct fit is refused forever: the PTY stays huge while the
+    // tile is small, and the TUI's wide frames wrap into stacked duplicates.
+    this.stableSmallFitConfirmations = 3;
+    this.pendingSmallFits = new Map(); // sessionId -> { cols, rows, count }
+
     // Auto-heal: terminal-resize messages are fire-and-forget, so a dropped one
     // (socket reconnecting, session still spawning) leaves the PTY and the rendered
     // grid disagreeing — the classic garbled-TUI state that a manual window resize
@@ -719,7 +729,33 @@ class TerminalManager {
             : this.minPtyCols;
           const minStableRows = this.minPtyRows;
 
-          if (proposedCols < minStableCols || proposedRows < minStableRows) {
+          // Track repeated identical below-ratchet proposals. Only proposals that
+          // are at least the absolute PTY minimums count — genuinely tiny or 0x0
+          // measurements always stay refused.
+          const plausibleSmallFit =
+            proposedCols >= this.minPtyCols && proposedRows >= this.minPtyRows &&
+            (proposedCols < minStableCols || proposedRows < minStableRows);
+          if (plausibleSmallFit) {
+            const pending = this.pendingSmallFits.get(sessionId);
+            const count = pending && pending.cols === proposedCols && pending.rows === proposedRows
+              ? pending.count + 1
+              : 1;
+            this.pendingSmallFits.set(sessionId, { cols: proposedCols, rows: proposedRows, count });
+          } else {
+            this.pendingSmallFits.delete(sessionId);
+          }
+          const stableSmallFit = plausibleSmallFit &&
+            this.pendingSmallFits.get(sessionId).count >= this.stableSmallFitConfirmations;
+          if (stableSmallFit) {
+            // The layout has clearly settled at this smaller size — accept the
+            // down-fit instead of refusing it forever off a stale lastGood.
+            this.debugFit(
+              sessionId,
+              'stable-small-fit-accepted',
+              `Terminal ${sessionId} accepting settled down-fit ${proposedCols}x${proposedRows} (lastGood ratchet was ${minStableCols}x${minStableRows})`
+            );
+            this.pendingSmallFits.delete(sessionId);
+          } else if (proposedCols < minStableCols || proposedRows < minStableRows) {
             if (retryCount < 5) {
               const retryDelay = 120 * (retryCount + 1);
               this.debugFit(
@@ -1337,8 +1373,10 @@ class TerminalManager {
     if (suggestTimer) clearTimeout(suggestTimer);
     this.suggestTimers.delete(sessionId);
 
-    // Clean up scroll state
+    // Clean up scroll + fit state
     this.scrollKeeper.detach(sessionId);
+    this.pendingSmallFits.delete(sessionId);
+    this.lastGoodPtyDimensions.delete(sessionId);
 
     // Clean up addons (terminal.dispose() above already disposes loaded addons;
     // just drop our references so the maps don't leak).
