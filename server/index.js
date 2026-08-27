@@ -115,6 +115,8 @@ const { QuickLinksService } = require('./quickLinksService');
 const { RecommendationsService } = require('./recommendationsService');
 const { RepoAtlasService } = require('./repoAtlasService');
 const { createAtlasRoutes } = require('./routes/atlasRoutes');
+const { TeamActivityService } = require('./teamActivityService');
+const { createTeamRoutes } = require('./routes/teamRoutes');
 const { ProductLauncherService } = require('./productLauncherService');
 const { CommanderService } = require('./commanderService');
 const { ConversationService } = require('./conversationService');
@@ -2708,6 +2710,15 @@ app.use('/api/atlas', createAtlasRoutes({
   logger,
   requireRead: requirePolicyAction('read'),
   requireWrite: requirePolicyAction('write')
+}));
+
+const teamActivityService = TeamActivityService.getInstance({
+  settingsProvider: () => userSettingsService.getAllSettings()?.global
+});
+app.use('/api/team', createTeamRoutes({
+  teamActivityService,
+  logger,
+  requireRead: requirePolicyAction('read')
 }));
 
 app.get('/api/policy/templates', requirePolicyAction('read'), (req, res) => {
