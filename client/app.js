@@ -8460,6 +8460,9 @@ class ClaudeOrchestrator {
 	      notifications: false,
 	      sounds: false,
 	      autoScroll: true,
+	      // How long a terminal left scrolled up sits idle before the view returns
+	      // to the bottom on its own. 0 disables the snap-back.
+	      scrollSnapBackSeconds: 60,
 	      autoSuggestions: false,
 	      theme: 'dark',
 	      skin: 'blue'
@@ -12441,11 +12444,6 @@ class ClaudeOrchestrator {
 
         if (!pushBottom) return;
 
-        try {
-          this.terminalManager?.userScrolling?.set?.(sid, false);
-        } catch {
-          // ignore
-        }
         try {
           term.scrollToBottom?.();
         } catch {

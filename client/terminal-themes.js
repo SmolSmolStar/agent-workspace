@@ -60,3 +60,30 @@ window.TERMINAL_THEMES = {
 window.getTerminalTheme = function getTerminalTheme(theme) {
   return theme === 'light' ? window.TERMINAL_THEMES.light : window.TERMINAL_THEMES.dark;
 };
+
+// Shared xterm construction options — the single source of truth for how every
+// terminal surface looks and behaves (font, cursor, scrollback, selection).
+// Worktree terminals and the Commander panel each used to hand-copy this object,
+// which is exactly how visual drift between them starts.
+window.TERMINAL_BASE_OPTIONS = {
+  fontSize: 12,
+  fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+  cursorBlink: true,
+  cursorStyle: 'bar',
+  scrollback: 5000,
+  tabStopWidth: 4,
+  bellStyle: 'none',
+  allowTransparency: false,
+  convertEol: false,  // CRITICAL: don't convert \r to \r\n — needed for spinner animations
+  wordSeparator: ' ()[]{}\'"',
+  rightClickSelectsWord: true
+  // NOTE: xterm 5.x removed the `rendererType`/`experimentalCharAtlas` options.
+  // The renderer is selected by loading the Canvas addon after open() at each
+  // call site (the DOM renderer intermittently leaves garbled rows).
+};
+
+// Fresh options object (never a shared reference xterm could mutate) with the
+// palette for the requested app theme baked in.
+window.getTerminalOptions = function getTerminalOptions(theme) {
+  return { ...window.TERMINAL_BASE_OPTIONS, theme: window.getTerminalTheme(theme) };
+};

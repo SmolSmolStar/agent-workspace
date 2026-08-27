@@ -21,9 +21,10 @@ class TerminalManager {
     this.lastWordDeleteTimes = new Map();
     this.wordDeleteCooldown = 150; // milliseconds
     
-    // Track scroll state per terminal
-    this.terminalScrollStates = new Map();
-    this.userScrolling = new Map();
+    // Scroll policy: follow output only when the viewport is already at the bottom;
+    // a user reading scrollback keeps their position, and the keeper returns a
+    // forgotten scroll-up to the bottom after a quiet period.
+    this.scrollKeeper = TerminalScrollKeeper.forSettings(() => this.orchestrator?.settings);
     this.ephemeralLineState = new Map();
 
     // Guardrail: never resize the PTY to tiny dimensions (can hard-wrap output irreversibly).
@@ -66,12 +67,6 @@ class TerminalManager {
 
     // Apply global terminal scrollbar styles
     this.applyScrollbarStyles();
-    
-    // Terminal themes — shared with the Commander panel via terminal-themes.js
-    // so both surfaces always render diffs/colors identically and both react
-    // to a theme switch. See that file for why this used to drift.
-    this.theme = window.TERMINAL_THEMES.dark;
-    this.lightTheme = window.TERMINAL_THEMES.light;
   }
 
   getDomId(prefix, sessionId) {
@@ -269,25 +264,9 @@ class TerminalManager {
       return null;
     }
     
-    // Create Xterm instance
-    const terminal = new Terminal({
-      fontSize: 12,
-      fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-      theme: this.orchestrator.settings.theme === 'light' ? this.lightTheme : this.theme,
-      cursorBlink: true,
-      cursorStyle: 'bar',
-      scrollback: 5000,
-      tabStopWidth: 4,
-      bellStyle: 'none',
-      allowTransparency: false,
-      convertEol: false,  // CRITICAL: Don't convert \r to \r\n - needed for spinner animations
-      wordSeparator: ' ()[]{}\'"',
-      rightClickSelectsWord: true
-      // NOTE: xterm 5.x removed the `rendererType`/`experimentalCharAtlas` options.
-      // The renderer is now selected by loading an addon after open() — see CanvasAddon
-      // below. Without it, xterm falls back to the DOM renderer, which intermittently
-      // fails to repaint damaged rows (garbled text until a scroll forces a redraw).
-    });
+    // Create Xterm instance — visual config comes from the shared base options
+    // (terminal-themes.js) so Commander and worktree terminals cannot drift apart.
+    const terminal = new Terminal(window.getTerminalOptions(this.orchestrator.settings.theme));
     
     // Load addons
     const fitAddon = new FitAddon.FitAddon();
@@ -390,40 +369,9 @@ class TerminalManager {
       }
     });
     
-    // Track user scrolling with mouse wheel
-    terminalElement.addEventListener('wheel', (e) => {
-      // User is scrolling, mark as user interaction
-      this.userScrolling.set(sessionId, true);
-      
-      // Clear user scrolling flag after a short delay
-      setTimeout(() => {
-        this.checkScrollPosition(sessionId);
-      }, 100);
-    });
-    
-    // Track scrollbar dragging
-    terminalElement.addEventListener('mousedown', (e) => {
-      // Check if clicking on scrollbar (rough approximation)
-      const rect = terminalElement.getBoundingClientRect();
-      const isScrollbar = e.clientX > rect.right - 20; // Scrollbar is typically ~17px wide
-      
-      if (isScrollbar) {
-        this.userScrolling.set(sessionId, true);
-        
-        // Monitor mouse up to check final position
-        const handleMouseUp = () => {
-          setTimeout(() => {
-            this.checkScrollPosition(sessionId);
-          }, 100);
-          document.removeEventListener('mouseup', handleMouseUp);
-        };
-        document.addEventListener('mouseup', handleMouseUp);
-      }
-    });
-    
-    // Initialize scroll state
-    this.userScrolling.set(sessionId, false);
-    
+    // Wheel/drag/touch activity tracking for the scroll snap-back countdown.
+    this.scrollKeeper.attach(sessionId, terminal, terminalElement);
+
     // Custom key handlers
     this.setupKeyHandlers(terminal, sessionId);
     
@@ -460,18 +408,6 @@ class TerminalManager {
     }
     if (!textarea.name) {
       textarea.name = `terminal-input-${sessionId}`;
-    }
-  }
-  
-  checkScrollPosition(sessionId) {
-    const terminal = this.terminals.get(sessionId);
-    if (terminal) {
-      const buffer = terminal.buffer.active;
-      const scrollOffset = buffer.baseY - buffer.viewportY;
-      // If user scrolled back to bottom (within 5 lines), clear the flag
-      if (scrollOffset <= 5) {
-        this.userScrolling.set(sessionId, false);
-      }
     }
   }
   
@@ -550,18 +486,12 @@ class TerminalManager {
         return false;
       }
       
-      // Track keyboard scrolling (Page Up, Page Down, Home, End, Ctrl+Home, Ctrl+End)
-      if (e.key === 'PageUp' || e.key === 'PageDown' || 
-          e.key === 'Home' || e.key === 'End' ||
-          (e.ctrlKey && (e.key === 'Home' || e.key === 'End'))) {
-        this.userScrolling.set(sessionId, true);
-        
-        // Check if at bottom after keyboard navigation
-        setTimeout(() => {
-          this.checkScrollPosition(sessionId);
-        }, 100);
+      // Keyboard scrolling (Page Up/Down, Home, End) counts as scroll activity
+      if (e.key === 'PageUp' || e.key === 'PageDown' ||
+          e.key === 'Home' || e.key === 'End') {
+        this.scrollKeeper.noteActivity(sessionId);
       }
-      
+
       return true;
     });
   }
@@ -942,29 +872,23 @@ class TerminalManager {
       return;
     }
 
-    // Check if user is manually scrolling
-    const isUserScrolling = this.userScrolling.get(sessionId) || false;
-
     const normalized = this.normalizeOutput(sessionId, data);
     if (!normalized) {
       return;
     }
 
-    // Write data to terminal
-    terminal.write(normalized);
+    // Decide follow-vs-stay from the REAL viewport position, sampled before the
+    // write moves the buffer. A viewport at the bottom follows new output; one the
+    // user scrolled up stays put (the keeper snaps it back after a quiet period).
+    const wasNearBottom = this.scrollKeeper.isNearBottom(terminal);
+
+    // xterm processes writes asynchronously — scroll in the write callback so the
+    // new lines exist before the viewport moves.
+    const follow = this.orchestrator.settings.autoScroll !== false && wasNearBottom;
+    terminal.write(normalized, follow ? () => terminal.scrollToBottom() : undefined);
 
     // Reposition or clear autosuggestion overlay after new output
     this.repositionSuggestion(sessionId);
-
-    // Check if this is a carriage return update (like a spinner)
-    // Don't auto-scroll for CR updates to avoid breaking the overwrite behavior
-    const hasCarriageReturn = normalized.includes('\r') && !normalized.includes('\n');
-
-    // Only auto-scroll if user is not manually scrolling and autoScroll is enabled
-    // AND this isn't a carriage return update (spinner)
-    if (this.orchestrator.settings.autoScroll && !isUserScrolling && !hasCarriageReturn) {
-      terminal.scrollToBottom();
-    }
 
     // Check for special patterns (optional enhancement)
     this.checkOutputPatterns(sessionId, normalized);
@@ -1414,8 +1338,7 @@ class TerminalManager {
     this.suggestTimers.delete(sessionId);
 
     // Clean up scroll state
-    this.terminalScrollStates.delete(sessionId);
-    this.userScrolling.delete(sessionId);
+    this.scrollKeeper.detach(sessionId);
 
     // Clean up addons (terminal.dispose() above already disposes loaded addons;
     // just drop our references so the maps don't leak).
@@ -1437,8 +1360,8 @@ class TerminalManager {
   }
   
   updateTheme(theme) {
-    const themeConfig = theme === 'light' ? this.lightTheme : this.theme;
-    
+    const themeConfig = window.getTerminalTheme(theme);
+
     for (const [sessionId, terminal] of this.terminals) {
       terminal.options.theme = themeConfig;
     }
