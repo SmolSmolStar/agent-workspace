@@ -468,25 +468,10 @@ class CommanderPanel {
     // Clear placeholder
     container.innerHTML = '';
 
-    // Create terminal
-    this.terminal = new Terminal({
-      cursorBlink: true,
-      cursorStyle: 'bar',
-      fontSize: 12,
-      fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-      scrollback: 5000,
-      tabStopWidth: 4,
-      bellStyle: 'none',
-      allowTransparency: false,
-      convertEol: false,
-      wordSeparator: ' ()[]{}\'"',
-      rightClickSelectsWord: true,
-      // xterm 5.x removed rendererType/experimentalCharAtlas; the Canvas renderer is
-      // loaded as an addon after open() below (DOM renderer leaves garbled rows).
-      // Shared with worktree terminals (terminal-themes.js) so Commander matches
-      // them exactly — including when the user switches theme, see updateTheme().
-      theme: window.getTerminalTheme(this.orchestrator?.settings?.theme)
-    });
+    // Create terminal — same shared base options as the worktree terminals
+    // (terminal-themes.js), so fonts/colors/cursor/scrollback always match,
+    // including when the user switches theme (see updateTheme()).
+    this.terminal = new Terminal(window.getTerminalOptions(this.orchestrator?.settings?.theme));
 
     // Add fit addon
     this.fitAddon = new FitAddon.FitAddon();

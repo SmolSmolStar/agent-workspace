@@ -309,6 +309,7 @@ client/terminal.js                 - Terminal component implementation
 ├─ Scroll policy: output follows only when the viewport is already at the bottom (sampled pre-write); a user reading scrollback keeps their position
 └─ Scroll snap-back: TerminalScrollKeeper returns a terminal left scrolled up to the bottom after `settings.scrollSnapBackSeconds` (default 60, 0 disables) of no wheel/drag/touch/key activity
 client/terminal-scroll-keeper.js   - Shared TerminalScrollKeeper (worktree terminals + Commander panel): per-terminal activity tracking (wheel/mousedown/touch + noteActivity for keys), interval tick, snap-back countdown armed from first scrolled-up sighting so programmatic scroll-to-top gets the full grace period; unit-tested in tests/unit/terminalScrollKeeper.test.js
+client/terminal-themes.js          - Single source of truth for terminal visuals: shared light/dark xterm palettes (`TERMINAL_THEMES`), `getTerminalTheme()`, and `getTerminalOptions()` (font/cursor/scrollback base options) used by BOTH worktree terminals and the Commander panel so they cannot drift apart
 client/terminal-manager.js         - Terminal lifecycle management
 client/file-watcher-adapter.js     - File watching integration
 client/notifications.js            - Browser notification handling

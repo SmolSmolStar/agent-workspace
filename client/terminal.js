@@ -67,12 +67,6 @@ class TerminalManager {
 
     // Apply global terminal scrollbar styles
     this.applyScrollbarStyles();
-    
-    // Terminal themes — shared with the Commander panel via terminal-themes.js
-    // so both surfaces always render diffs/colors identically and both react
-    // to a theme switch. See that file for why this used to drift.
-    this.theme = window.TERMINAL_THEMES.dark;
-    this.lightTheme = window.TERMINAL_THEMES.light;
   }
 
   getDomId(prefix, sessionId) {
@@ -270,25 +264,9 @@ class TerminalManager {
       return null;
     }
     
-    // Create Xterm instance
-    const terminal = new Terminal({
-      fontSize: 12,
-      fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-      theme: this.orchestrator.settings.theme === 'light' ? this.lightTheme : this.theme,
-      cursorBlink: true,
-      cursorStyle: 'bar',
-      scrollback: 5000,
-      tabStopWidth: 4,
-      bellStyle: 'none',
-      allowTransparency: false,
-      convertEol: false,  // CRITICAL: Don't convert \r to \r\n - needed for spinner animations
-      wordSeparator: ' ()[]{}\'"',
-      rightClickSelectsWord: true
-      // NOTE: xterm 5.x removed the `rendererType`/`experimentalCharAtlas` options.
-      // The renderer is now selected by loading an addon after open() — see CanvasAddon
-      // below. Without it, xterm falls back to the DOM renderer, which intermittently
-      // fails to repaint damaged rows (garbled text until a scroll forces a redraw).
-    });
+    // Create Xterm instance — visual config comes from the shared base options
+    // (terminal-themes.js) so Commander and worktree terminals cannot drift apart.
+    const terminal = new Terminal(window.getTerminalOptions(this.orchestrator.settings.theme));
     
     // Load addons
     const fitAddon = new FitAddon.FitAddon();
@@ -1382,8 +1360,8 @@ class TerminalManager {
   }
   
   updateTheme(theme) {
-    const themeConfig = theme === 'light' ? this.lightTheme : this.theme;
-    
+    const themeConfig = window.getTerminalTheme(theme);
+
     for (const [sessionId, terminal] of this.terminals) {
       terminal.options.theme = themeConfig;
     }

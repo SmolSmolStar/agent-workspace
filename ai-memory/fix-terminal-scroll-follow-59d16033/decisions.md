@@ -1,0 +1,1 @@
+- Commander vs worktree visual parity: colors were already shared (terminal-themes.js); extracted getTerminalOptions() so font/cursor/scrollback options are shared too
