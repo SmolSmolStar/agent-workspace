@@ -52,6 +52,25 @@ function basenameNoExt(p) {
   return base.replace(/\.(gguf|bin)$/i, '');
 }
 
+// Windows' '\GPU Process Memory(*)\Dedicated Usage' counter has one instance
+// PER (pid, adapter, engine-type) tuple — a single process using more than
+// one GPU engine (3D, Copy, Video Encode/Decode, Compute) or more than one
+// adapter shows up as several separate rows sharing the same pid. Collapse
+// those into one row per real process before anything downstream (naming,
+// enrichment, display) treats each row as an independent process.
+function dedupeByPid(processes) {
+  const byPid = new Map();
+  for (const p of processes) {
+    const existing = byPid.get(p.pid);
+    if (existing) {
+      existing.usedGB = round1(existing.usedGB + p.usedGB);
+    } else {
+      byPid.set(p.pid, { ...p });
+    }
+  }
+  return [...byPid.values()].sort((a, b) => b.usedGB - a.usedGB);
+}
+
 // Best-effort identity for a locally-running (WSL-side) GPU process from its
 // argv — this is what lets the VRAM breakdown say "Qwen3.8-27B (llama.cpp)"
 // instead of just "python" or an opaque PID.
@@ -206,13 +225,12 @@ class SystemStatsService {
           resolve({ available: false, reason: String(error.message) });
           return;
         }
-        const processes = stdout.split('\n').map(l => l.trim()).filter(Boolean)
+        const processes = dedupeByPid(stdout.split('\n').map(l => l.trim()).filter(Boolean)
           .map((line) => {
             const [pid, name, usedMiB] = line.split(',').map(s => s.trim());
             return { pid: Number(pid), name, usedGB: round1(Number(usedMiB) / 1024) };
           })
-          .filter(p => Number.isFinite(p.usedGB))
-          .sort((a, b) => b.usedGB - a.usedGB);
+          .filter(p => Number.isFinite(p.usedGB)));
         resolve({ available: true, processes, source: 'nvidia-smi' });
       });
     });
@@ -249,17 +267,23 @@ class SystemStatsService {
   // leave that as one opaque line, identify what's actually running inside
   // WSL and use its name — WSL doesn't expose a per-process memory split,
   // so with more than one candidate they share the one combined total.
+  // A second WSL distro (or a second vmwp instance) would produce a second
+  // bucket under a different pid — merge every matching bucket into one
+  // instead of enriching only the first, so no combined-usage row is left
+  // stranded under its raw, unidentified name.
   async _enrichWslBucket(processes) {
-    const bucket = processes.find(p => p.name === 'WSL2 VM (Linux-side GPU usage)');
-    if (!bucket) return processes;
+    const buckets = processes.filter(p => p.name === 'WSL2 VM (Linux-side GPU usage)');
+    if (!buckets.length) return processes;
     const local = await this._fetchLocalWslGpuProcesses();
     if (!local.length) return processes;
+    const [primary, ...rest] = buckets;
+    primary.usedGB = round1(buckets.reduce((sum, b) => sum + b.usedGB, 0));
     const names = local.map(p => p.label).join(', ');
-    bucket.name = local.length === 1
+    primary.name = local.length === 1
       ? `${local[0].label} (${local[0].kind})`
       : `${names} (${local.length} processes, combined)`;
-    bucket.identified = local.map(p => ({ pid: p.pid, kind: p.kind, label: p.label, port: p.port }));
-    return processes;
+    primary.identified = local.map(p => ({ pid: p.pid, kind: p.kind, label: p.label, port: p.port }));
+    return rest.length ? processes.filter(p => !rest.includes(p)) : processes;
   }
 
   _fetchGpuProcessesWindows() {
@@ -294,11 +318,11 @@ class SystemStatsService {
           resolve({ available: false, reason: 'parse-failed' });
           return;
         }
-        let processes = rows.map(r => ({
+        let processes = dedupeByPid(rows.map(r => ({
           pid: r.pid,
           name: r.name === 'vmwp' ? 'WSL2 VM (Linux-side GPU usage)' : r.name,
           usedGB: round1(r.mb / 1024)
-        }));
+        })));
         try {
           processes = await this._enrichWslBucket(processes);
         } catch (enrichError) {
@@ -404,6 +428,17 @@ class SystemStatsService {
       includeProcesses ? this.getGpuProcesses({ refresh }) : Promise.resolve(null),
       includeProcesses ? this.getLoadedModels({ refresh }) : Promise.resolve(null)
     ]);
+    // A single process reporting more VRAM than the card physically has is
+    // impossible — Windows' GPU dedicated-usage counter is known to misreport
+    // for capture/encode-heavy background processes (screen recorders, clip
+    // tools). Flag rather than silently trust it, so the UI can say so
+    // instead of showing a number that looks authoritative but can't be real.
+    if (gpuProcesses?.available && gpu?.available && Number.isFinite(gpu.totalGB)) {
+      for (const p of gpuProcesses.processes) {
+        p.suspect = p.usedGB > gpu.totalGB;
+      }
+      gpuProcesses.hasSuspect = gpuProcesses.processes.some(p => p.suspect);
+    }
     return {
       cpu: { percent: this.cpuPercent, cores: os.cpus().length },
       ram: this.getRam(),
@@ -415,4 +450,4 @@ class SystemStatsService {
   }
 }
 
-module.exports = { SystemStatsService };
+module.exports = { SystemStatsService, dedupeByPid };

@@ -77,8 +77,8 @@ class SystemStatsWidget {
       return '<div class="system-stats-empty">No process using more than 30MB of VRAM right now.</div>';
     }
     const rows = gpuProcesses.processes.map(p => `
-      <div class="system-stats-process-row">
-        <span class="system-stats-process-name">${this.escape(p.name)}</span>
+      <div class="system-stats-process-row${p.suspect ? ' system-stats-process-suspect' : ''}">
+        <span class="system-stats-process-name">${p.suspect ? '⚠ ' : ''}${this.escape(p.name)}</span>
         <span class="system-stats-process-pid">PID ${p.pid}</span>
         <span class="system-stats-process-mem">${p.usedGB}GB</span>
       </div>
@@ -91,7 +91,10 @@ class SystemStatsWidget {
     const sourceNote = gpuProcesses.source === 'windows-gpu-counters'
       ? 'Via Windows GPU performance counters (WSL2 can\'t see host process VRAM directly).'
       : 'Via nvidia-smi.';
-    return `<div class="system-stats-process-list">${rows}</div><div class="system-stats-source-note">${this.escape(sourceNote)}</div>`;
+    const suspectNote = gpuProcesses.hasSuspect
+      ? '<div class="system-stats-source-note">⚠ marked rows report more VRAM than the card physically has — a known Windows GPU-counter misreport for capture/encode-heavy processes, not real usage.</div>'
+      : '';
+    return `<div class="system-stats-process-list">${rows}</div><div class="system-stats-source-note">${this.escape(sourceNote)}</div>${suspectNote}`;
   }
 
   renderModelsHtml(models) {
