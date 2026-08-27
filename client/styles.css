@@ -16233,6 +16233,9 @@ body.dependency-onboarding-active #dependency-setup-modal {
 .system-stats-process-subrow { opacity: 0.85; }
 .system-stats-process-subrow .system-stats-process-name { font-style: italic; }
 
+.system-stats-process-suspect .system-stats-process-name,
+.system-stats-process-suspect .system-stats-process-mem { color: #ffd685; }
+
 .system-stats-model-row {
   display: flex;
   align-items: center;
