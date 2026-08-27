@@ -244,8 +244,13 @@ class CommanderPanel {
 
   fitTerminalSoon({ focus = true } = {}) {
     if (!this.fitAddon || !this.terminal) return;
+    // Snapshot the tab this fit was scheduled for: a tab switch during the two
+    // rAF hops swaps this.terminal/this.fitAddon, and finishing the fit against
+    // the new tab would push the OLD tab's size onto the new tab's PTY.
+    const instanceAtSchedule = this.activeInstance;
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
+        if (this.activeInstance !== instanceAtSchedule) return;
         const beforeCols = this.terminal.cols;
         const beforeRows = this.terminal.rows;
         this.fitAddon?.fit();

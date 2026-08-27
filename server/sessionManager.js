@@ -19,6 +19,10 @@ const { augmentProcessEnv, buildPowerShellArgs } = require('./utils/processUtils
 const { loadNodePty } = require('./utils/nodePtyCompat');
 const { TmuxSessionBackend, stripDeviceReports } = require('./utils/tmuxSessionBackend');
 
+// Foreground pane commands that mean "back at a plain shell". Anything else in
+// the pane (claude, codex, node, ...) means an agent/process is still running.
+const SHELL_FOREGROUND_COMMANDS = new Set(['bash', 'zsh', 'sh', 'fish', 'dash', 'ksh', 'tcsh', 'csh']);
+
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
   format: winston.format.combine(
@@ -2335,7 +2339,8 @@ class SessionManager extends EventEmitter {
       const recentLines = recentOutput.split('\n');
       const lastNonEmptyLine = this.statusDetector.getLastNonEmptyLine(recentLines).trim();
       const recentAll = this.statusDetector.getLastNonEmptyLines(recentLines, 6).join('\n');
-      if (this.statusDetector.hasExplicitShellIndicator(recentAll, lastNonEmptyLine)) {
+      if (this.statusDetector.hasExplicitShellIndicator(recentAll, lastNonEmptyLine)
+          && !this.paneStillRunsAgent(sessionId, session)) {
         // Agent exited back to a shell — clear launch/input markers so the
         // next launch starts a fresh no-input-yet window.
         session.agentStartedAt = null;
@@ -2360,6 +2365,20 @@ class SessionManager extends EventEmitter {
       session.pendingStatus = null;
       session.pendingStatusDueAt = null;
     }
+  }
+
+  // Ground-truth check before trusting a shell-prompt heuristic: wrapped or
+  // garbled agent frames can end in a line that LOOKS like a shell prompt
+  // (a bare ">" or "❯" matches), and clearing the agent marker off that false
+  // positive resurrects the Fresh/Continue/Resume overlay over a live agent.
+  // For tmux-backed sessions the pane's foreground command settles it.
+  paneStillRunsAgent(sessionId, session) {
+    if (session?.persistence?.backend !== 'tmux' || !this.sessionPersistenceEnabled) {
+      return false; // no ground truth available — keep the heuristic's verdict
+    }
+    const command = this.sessionPersistence.paneCurrentCommand(sessionId);
+    if (!command) return false;
+    return !SHELL_FOREGROUND_COMMANDS.has(command.toLowerCase());
   }
   
   maybeApplyStatusUpdate(sessionId, session, newStatus) {
