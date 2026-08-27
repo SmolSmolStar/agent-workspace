@@ -520,15 +520,7 @@ class CommanderPanel {
     // same policy as the worktree terminals.
     if (typeof TerminalScrollKeeper !== 'undefined') {
       if (!this.scrollKeeper) {
-        this.scrollKeeper = new TerminalScrollKeeper({
-          getSnapBackSeconds: () => {
-            const settings = this.orchestrator?.settings;
-            if (!settings || settings.autoScroll === false) return 0;
-            const seconds = Number(settings.scrollSnapBackSeconds);
-            return Number.isFinite(seconds) ? seconds : SCROLL_KEEPER_DEFAULTS.snapBackSeconds;
-          }
-        });
-        this.scrollKeeper.start();
+        this.scrollKeeper = TerminalScrollKeeper.forSettings(() => this.orchestrator?.settings);
       }
       this.scrollKeeper.attach(this.activeInstance || 'main', this.terminal, container);
     }

@@ -19,6 +19,15 @@ const SCROLL_KEEPER_DEFAULTS = {
   followToleranceRows: 2
 };
 
+// Single translation from orchestrator settings to a snap-back duration, shared by
+// every terminal surface (worktree terminals, Commander panel). autoScroll off or
+// scrollSnapBackSeconds <= 0 disables the snap-back.
+function snapBackSecondsFromSettings(settings) {
+  if (!settings || settings.autoScroll === false) return 0;
+  const seconds = Number(settings.scrollSnapBackSeconds);
+  return Number.isFinite(seconds) ? seconds : SCROLL_KEEPER_DEFAULTS.snapBackSeconds;
+}
+
 class TerminalScrollKeeper {
   constructor(options = {}) {
     this.getSnapBackSeconds = typeof options.getSnapBackSeconds === 'function'
@@ -153,10 +162,19 @@ class TerminalScrollKeeper {
   }
 }
 
+// Build + start a keeper wired to live settings — the one constructor call sites use.
+TerminalScrollKeeper.forSettings = function forSettings(getSettings) {
+  const keeper = new TerminalScrollKeeper({
+    getSnapBackSeconds: () => snapBackSecondsFromSettings(getSettings?.())
+  });
+  keeper.start();
+  return keeper;
+};
+
 if (typeof window !== 'undefined') {
   window.TerminalScrollKeeper = TerminalScrollKeeper;
   window.SCROLL_KEEPER_DEFAULTS = SCROLL_KEEPER_DEFAULTS;
 }
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { TerminalScrollKeeper, SCROLL_KEEPER_DEFAULTS };
+  module.exports = { TerminalScrollKeeper, SCROLL_KEEPER_DEFAULTS, snapBackSecondsFromSettings };
 }

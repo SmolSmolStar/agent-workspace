@@ -24,15 +24,7 @@ class TerminalManager {
     // Scroll policy: follow output only when the viewport is already at the bottom;
     // a user reading scrollback keeps their position, and the keeper returns a
     // forgotten scroll-up to the bottom after a quiet period.
-    this.scrollKeeper = new TerminalScrollKeeper({
-      getSnapBackSeconds: () => {
-        const settings = this.orchestrator?.settings;
-        if (!settings || settings.autoScroll === false) return 0;
-        const seconds = Number(settings.scrollSnapBackSeconds);
-        return Number.isFinite(seconds) ? seconds : SCROLL_KEEPER_DEFAULTS.snapBackSeconds;
-      }
-    });
-    this.scrollKeeper.start();
+    this.scrollKeeper = TerminalScrollKeeper.forSettings(() => this.orchestrator?.settings);
     this.ephemeralLineState = new Map();
 
     // Guardrail: never resize the PTY to tiny dimensions (can hard-wrap output irreversibly).

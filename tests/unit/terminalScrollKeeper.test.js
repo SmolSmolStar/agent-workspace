@@ -1,4 +1,8 @@
-const { TerminalScrollKeeper, SCROLL_KEEPER_DEFAULTS } = require('../../client/terminal-scroll-keeper');
+const {
+  TerminalScrollKeeper,
+  SCROLL_KEEPER_DEFAULTS,
+  snapBackSecondsFromSettings
+} = require('../../client/terminal-scroll-keeper');
 
 function makeTerminal({ baseY = 100, viewportY = 100 } = {}) {
   const term = {
@@ -148,5 +152,28 @@ describe('TerminalScrollKeeper', () => {
   test('defaults are exposed for callers', () => {
     expect(SCROLL_KEEPER_DEFAULTS.snapBackSeconds).toBe(60);
     expect(SCROLL_KEEPER_DEFAULTS.followToleranceRows).toBe(2);
+  });
+
+  test('snapBackSecondsFromSettings maps orchestrator settings to a duration', () => {
+    expect(snapBackSecondsFromSettings(undefined)).toBe(0);
+    expect(snapBackSecondsFromSettings({ autoScroll: false, scrollSnapBackSeconds: 60 })).toBe(0);
+    expect(snapBackSecondsFromSettings({ autoScroll: true })).toBe(SCROLL_KEEPER_DEFAULTS.snapBackSeconds);
+    expect(snapBackSecondsFromSettings({ autoScroll: true, scrollSnapBackSeconds: 120 })).toBe(120);
+    expect(snapBackSecondsFromSettings({ autoScroll: true, scrollSnapBackSeconds: 0 })).toBe(0);
+    expect(snapBackSecondsFromSettings({ autoScroll: true, scrollSnapBackSeconds: 'nope' }))
+      .toBe(SCROLL_KEEPER_DEFAULTS.snapBackSeconds);
+  });
+
+  test('forSettings builds a started keeper reading live settings', () => {
+    const settings = { autoScroll: true, scrollSnapBackSeconds: 60 };
+    const keeper = TerminalScrollKeeper.forSettings(() => settings);
+    try {
+      expect(keeper.timer).not.toBeNull();
+      expect(keeper.getSnapBackSeconds()).toBe(60);
+      settings.autoScroll = false; // live: flipping the setting disables snap-back
+      expect(keeper.getSnapBackSeconds()).toBe(0);
+    } finally {
+      keeper.dispose();
+    }
   });
 });
