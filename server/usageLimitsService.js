@@ -40,6 +40,14 @@ const CLAUDE_OAUTH_USAGE_URL = process.env.CLAUDE_OAUTH_USAGE_URL || 'https://ap
 const CLAUDE_OAUTH_CACHE_TTL_MS = Number(process.env.ORCHESTRATOR_CLAUDE_USAGE_TTL_MS || 5 * 60 * 1000);
 const CLAUDE_OAUTH_TIMEOUT_MS = 15 * 1000;
 
+// A usage percentage only means anything inside the window it was measured in.
+// Once resets_at has passed the window has rolled over and the quota is back,
+// so a reading that still carries the old percentage has to be dropped instead
+// of shown as current. This bites hardest on the status-line tap file: when
+// every session is sitting blocked on a full 5-hour window, nothing rewrites
+// the tap, and the widget kept reporting "5h 99%" hours after the reset.
+const WINDOW_EXPIRY_GRACE_MS = 60 * 1000;
+
 const GROK_AUTH_FILE = path.join(os.homedir(), '.grok', 'auth.json');
 const GROK_BILLING_BASE = process.env.GROK_BILLING_BASE_URL || 'https://cli-chat-proxy.grok.com/v1';
 const GROK_CACHE_TTL_MS = Number(process.env.ORCHESTRATOR_GROK_USAGE_TTL_MS || 15 * 60 * 1000);
@@ -61,6 +69,36 @@ class UsageLimitsService {
       UsageLimitsService.instance = new UsageLimitsService();
     }
     return UsageLimitsService.instance;
+  }
+
+  isWindowOver(bucket, now = Date.now()) {
+    const resetsAt = Number(bucket?.resetsAt);
+    // No reset time means no way to tell the window ended (the per-model weekly
+    // buckets arrive that way), so those are always kept.
+    if (!Number.isFinite(resetsAt) || resetsAt <= 0) return false;
+    return resetsAt * 1000 + WINDOW_EXPIRY_GRACE_MS <= now;
+  }
+
+  liveBucket(bucket, now = Date.now()) {
+    return bucket && !this.isWindowOver(bucket, now) ? bucket : null;
+  }
+
+  dropExpiredWindows(providerData, now = Date.now()) {
+    if (!providerData?.available || !Array.isArray(providerData.windows)) return providerData;
+    const windows = providerData.windows.filter((w) => !this.isWindowOver(w, now));
+    if (windows.length === providerData.windows.length) return providerData;
+    return { ...providerData, windows };
+  }
+
+  dropExpiredClaudeBuckets(limits, now = Date.now()) {
+    if (!limits?.available) return limits;
+    return {
+      ...limits,
+      fiveHour: this.liveBucket(limits.fiveHour, now),
+      sevenDay: this.liveBucket(limits.sevenDay, now),
+      extraBuckets: (Array.isArray(limits.extraBuckets) ? limits.extraBuckets : [])
+        .filter((b) => !this.isWindowOver(b, now))
+    };
   }
 
   readClaudeOauthToken() {
@@ -135,10 +173,21 @@ class UsageLimitsService {
 
   // Live OAuth data when available (fresher + has the per-model weekly bucket),
   // status-line tap file as fallback.
+  // The cached OAuth response is only good until one of its windows resets —
+  // past that the cached percentages describe a window that no longer exists,
+  // so refetch rather than serve them for the rest of the TTL.
+  claudeOauthCacheUsable(now = Date.now()) {
+    if (!this.claudeOauthCache) return false;
+    if (now - this.claudeOauthCache.at >= CLAUDE_OAUTH_CACHE_TTL_MS) return false;
+    const { fiveHour, sevenDay, extraBuckets } = this.claudeOauthCache.data || {};
+    return ![fiveHour, sevenDay, ...(Array.isArray(extraBuckets) ? extraBuckets : [])]
+      .some((bucket) => this.isWindowOver(bucket, now));
+  }
+
   async getClaudeLimits({ refresh = false } = {}) {
     const tap = this.readClaudeLimits();
     if (this.claudeOauthInFlight) await this.claudeOauthInFlight.catch(() => {});
-    let oauth = (!refresh && this.claudeOauthCache && Date.now() - this.claudeOauthCache.at < CLAUDE_OAUTH_CACHE_TTL_MS)
+    let oauth = (!refresh && this.claudeOauthCacheUsable())
       ? this.claudeOauthCache.data
       : null;
     if (!oauth) {
@@ -151,7 +200,9 @@ class UsageLimitsService {
       oauth = await this.claudeOauthInFlight;
     }
     if (!oauth?.available) return tap;
-    return {
+    // tap is already expiry-filtered, so a bucket the live payload omits is only
+    // grafted in when its window is still running.
+    return this.dropExpiredClaudeBuckets({
       available: true,
       updatedAt: Math.round(Date.now() / 1000),
       stale: false,
@@ -159,7 +210,7 @@ class UsageLimitsService {
       fiveHour: oauth.fiveHour || tap?.fiveHour || null,
       sevenDay: oauth.sevenDay || tap?.sevenDay || null,
       extraBuckets: (oauth.extraBuckets && oauth.extraBuckets.length) ? oauth.extraBuckets : (tap?.extraBuckets || [])
-    };
+    });
   }
 
   readClaudeLimits() {
@@ -185,7 +236,7 @@ class UsageLimitsService {
         const parsed = bucket(value);
         if (parsed) extraBuckets.push({ key, ...parsed });
       }
-      return {
+      return this.dropExpiredClaudeBuckets({
         available: true,
         updatedAt,
         stale: updatedAt ? (Date.now() - updatedAt * 1000) > CLAUDE_STALE_AFTER_MS : true,
@@ -193,7 +244,7 @@ class UsageLimitsService {
         fiveHour: bucket(limits.five_hour),
         sevenDay: bucket(limits.seven_day),
         extraBuckets
-      };
+      });
     } catch {
       return { available: false };
     }
@@ -375,9 +426,13 @@ class UsageLimitsService {
 
   async getProviderCached({ enabled, cache, ttl, fetcher }) {
     if (!enabled) return { available: false, reason: 'disabled' };
-    if (cache && Date.now() - cache.at < ttl) return cache.data;
+    if (cache && Date.now() - cache.at < ttl) return this.dropExpiredWindows(cache.data);
     const data = await fetcher();
-    if (!data.available && cache) return { ...cache.data, stale: true };
+    // A failed refresh falls back to the last good read, which may well be old
+    // enough that some of its windows have since reset.
+    if (!data.available && cache) return this.dropExpiredWindows({ ...cache.data, stale: true });
+    // A fresh read is passed through untouched — the Codex guard reads rollover
+    // out of it and must see exactly what the provider reported.
     return data;
   }
 

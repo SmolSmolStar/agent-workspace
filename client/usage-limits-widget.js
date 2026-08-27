@@ -19,6 +19,7 @@ const PACE_LOSE_ORANGE = 0.05;
 const PACE_DEFICIT_ORANGE = 0.35; // behind linear pace by 35+ points
 const PACE_DEFICIT_YELLOW = 0.20;
 const PACE_DEFICIT_MAX_SECONDS_LEFT = 2 * 24 * 3600; // only flag linear-pace deficit inside the last 2 days — plenty of runway before that
+const WINDOW_EXPIRY_GRACE_SECONDS = 60; // clock-skew slack before a window counts as reset
 
 class UsageLimitsWidget {
   constructor() {
@@ -29,8 +30,12 @@ class UsageLimitsWidget {
     if (!this.el) return;
     this.fetchLimits();
     setInterval(() => this.fetchLimits(), this.refreshMs);
-    // Re-render between fetches so countdowns stay current.
-    setInterval(() => this.render(), this.tickMs);
+    // Re-render between fetches so countdowns stay current, and pull fresh
+    // numbers the moment a window resets instead of waiting out the poll.
+    setInterval(() => {
+      if (this.hasExpiredWindow()) this.fetchLimits();
+      else this.render();
+    }, this.tickMs);
   }
 
   async fetchLimits() {
@@ -42,6 +47,25 @@ class UsageLimitsWidget {
     } catch {
       // Leave the last known render in place.
     }
+  }
+
+  // A percentage belongs to the window it was measured in. Past that window's
+  // reset the number is history, so the bucket is dropped rather than rendered
+  // as "99%·now" until the next poll lands.
+  isWindowOver(bucket) {
+    const resetsAt = Number(bucket?.resetsAt);
+    if (!Number.isFinite(resetsAt) || resetsAt <= 0) return false;
+    return resetsAt + WINDOW_EXPIRY_GRACE_SECONDS <= Date.now() / 1000;
+  }
+
+  hasExpiredWindow() {
+    if (!this.data) return false;
+    const claude = this.data.claude || {};
+    const buckets = [claude.fiveHour, claude.sevenDay, ...(claude.extraBuckets || [])];
+    for (const provider of [this.data.codex, this.data.grok]) {
+      if (Array.isArray(provider?.windows)) buckets.push(...provider.windows);
+    }
+    return buckets.some((bucket) => this.isWindowOver(bucket));
   }
 
   formatCountdown(resetsAtSeconds) {
@@ -105,6 +129,7 @@ class UsageLimitsWidget {
   // severity on the countdown for weekly windows.
   formatBucketHtml(label, bucket, { weekly = false, windowSeconds = WEEKLY_WINDOW_SECONDS } = {}) {
     if (!bucket || bucket.usedPercentage === null || bucket.usedPercentage === undefined) return null;
+    if (this.isWindowOver(bucket)) return null;
     const countdown = this.formatCountdown(bucket.resetsAt);
     const pctHtml = this.sevSpan(`${bucket.usedPercentage}%`, this.usageSeverity(bucket.usedPercentage));
     const countdownHtml = countdown
@@ -179,9 +204,10 @@ class UsageLimitsWidget {
     const rendered = buckets.filter(Boolean);
     if (!rendered.length) return null;
     const tips = [`Claude plan usage${claude.model ? ` (${claude.model})` : ''}${claude.stale ? ' (stale — open any Claude session to refresh)' : ''}:`];
-    if (claude.fiveHour?.resetsAt) tips.push(`  5-hour window: ${claude.fiveHour.usedPercentage}% used, resets ${new Date(claude.fiveHour.resetsAt * 1000).toLocaleString()}`);
-    if (claude.sevenDay?.resetsAt) tips.push(`  7-day window: ${claude.sevenDay.usedPercentage}% used, resets ${new Date(claude.sevenDay.resetsAt * 1000).toLocaleString()}`);
+    if (claude.fiveHour?.resetsAt && !this.isWindowOver(claude.fiveHour)) tips.push(`  5-hour window: ${claude.fiveHour.usedPercentage}% used, resets ${new Date(claude.fiveHour.resetsAt * 1000).toLocaleString()}`);
+    if (claude.sevenDay?.resetsAt && !this.isWindowOver(claude.sevenDay)) tips.push(`  7-day window: ${claude.sevenDay.usedPercentage}% used, resets ${new Date(claude.sevenDay.resetsAt * 1000).toLocaleString()}`);
     for (const extra of (Array.isArray(claude.extraBuckets) ? claude.extraBuckets : [])) {
+      if (this.isWindowOver(extra)) continue;
       const resetsAt = extra.resetsAt || (/seven_day/.test(extra.key) ? claude.sevenDay?.resetsAt : null);
       if (resetsAt) tips.push(`  ${this.labelForExtraBucket(extra.key)}: ${extra.usedPercentage}% used, resets ${new Date(resetsAt * 1000).toLocaleString()}${extra.resetsAt ? '' : ' (assumed, shares the weekly cycle)'}`);
     }
@@ -211,7 +237,7 @@ class UsageLimitsWidget {
     if (!buckets.length) return null;
     const tips = ['Codex plan usage:'];
     for (const w of sortedWindows) {
-      if (w.resetsAt) tips.push(`  ${w.bucket || w.name} (${w.window}): ${w.usedPercentage}% used, resets ${new Date(w.resetsAt * 1000).toLocaleString()}`);
+      if (w.resetsAt && !this.isWindowOver(w)) tips.push(`  ${w.bucket || w.name} (${w.window}): ${w.usedPercentage}% used, resets ${new Date(w.resetsAt * 1000).toLocaleString()}`);
     }
     return this.pill(`Codex${codex.stale ? '?' : ''} ${buckets.join('  ')}`, tips);
   }
@@ -234,7 +260,7 @@ class UsageLimitsWidget {
     if (!buckets.length) return null;
     const tips = ['Grok plan usage:'];
     for (const w of sortedWindows) {
-      if (w.resetsAt) tips.push(`  ${w.name} (${w.window}): ${w.usedPercentage}% used, resets ${new Date(w.resetsAt * 1000).toLocaleString()}`);
+      if (w.resetsAt && !this.isWindowOver(w)) tips.push(`  ${w.name} (${w.window}): ${w.usedPercentage}% used, resets ${new Date(w.resetsAt * 1000).toLocaleString()}`);
     }
     return this.pill(`Grok${grok.stale ? '?' : ''} ${buckets.join('  ')}`, tips);
   }
