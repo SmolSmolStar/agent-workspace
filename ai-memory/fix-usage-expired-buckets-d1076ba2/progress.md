@@ -1,0 +1,6 @@
+- [x] Reproduce: stale tap (5h 99%, resets_at 2h ago) + no OAuth token still returned 99%
+- [x] Server drops buckets past resets_at (tap reader, OAuth/tap merge, cached Codex/Grok windows)
+- [x] Cached OAuth response refetched once one of its windows resets, instead of riding out the 5min TTL
+- [x] Fresh Codex reads left untouched so the Codex drain guard still sees raw rollover data
+- [x] Widget skips expired buckets and refetches on the next tick instead of rendering "99%-now"
+- [x] Tests: tests/unit/usageLimitsService.expiredWindows.test.js (9 cases); full suite 1020 passed
