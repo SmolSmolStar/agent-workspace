@@ -141,8 +141,9 @@ class TeamActivityService {
           githubUsername: member.githubUsername,
           incomplete: true,
           error: 'Lookup failed. Is `gh` authenticated?',
-          totals: { prsOpened: 0, prsMerged: 0, commits: 0, tickets: 0 },
-          days: []
+          totals: { prsOpened: 0, prsMerged: 0, commits: 0, tickets: 0, medianCycleHours: null },
+          days: [],
+          timeline: []
         };
       })));
 
@@ -261,6 +262,32 @@ class TeamActivityService {
     });
 
     const orderedDays = [...days.values()].sort((a, b) => b.date.localeCompare(a.date));
+
+    // A flat, undated-bucket view of the same PRs for a timeline/Gantt render,
+    // where a PR is one bar from createdAt to mergedAt (or to "now" if still
+    // open) rather than two separate day-bucket entries.
+    const timeline = prs.items
+      .filter((pr) => inWindow(this.localDateKey(pr.createdAt)) || inWindow(this.localDateKey(pr.mergedAt)))
+      .map((pr) => ({
+        number: pr.number,
+        title: pr.title,
+        url: pr.url,
+        repo: pr.repo,
+        state: pr.state,
+        createdAt: pr.createdAt,
+        mergedAt: pr.mergedAt,
+        cycleHours: pr.mergedAt ? (new Date(pr.mergedAt) - new Date(pr.createdAt)) / 3600000 : null
+      }))
+      .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+
+    const cycleHoursInWindow = timeline
+      .filter((pr) => inWindow(this.localDateKey(pr.mergedAt)) && Number.isFinite(pr.cycleHours))
+      .map((pr) => pr.cycleHours)
+      .sort((a, b) => a - b);
+    const medianCycleHours = cycleHoursInWindow.length
+      ? cycleHoursInWindow[Math.floor((cycleHoursInWindow.length - 1) / 2)]
+      : null;
+
     return {
       name: member.name || member.githubUsername,
       githubUsername: member.githubUsername,
@@ -269,9 +296,11 @@ class TeamActivityService {
         prsOpened: prs.items.filter((pr) => inWindow(this.localDateKey(pr.createdAt))).length,
         prsMerged: prs.items.filter((pr) => inWindow(this.localDateKey(pr.mergedAt))).length,
         commits: commits.items.filter((commit) => inWindow(this.localDateKey(commit.authoredAt))).length,
-        tickets: [...new Set(prs.items.flatMap((pr) => pr.tickets))].length
+        tickets: [...new Set(prs.items.flatMap((pr) => pr.tickets))].length,
+        medianCycleHours
       },
-      days: orderedDays
+      days: orderedDays,
+      timeline
     };
   }
 }
