@@ -642,6 +642,14 @@ io.on('connection', (socket) => {
     logger.debug('Terminal resize', { sessionId, cols, rows });
     sessionManager.resizeSession(sessionId, cols, rows);
   });
+
+  // On-demand recovery for a garbled terminal: force a fresh OS-level resize
+  // and replace the client's buffer with a clean read of the pane's true
+  // current content, rather than waiting on the passive heal sweep.
+  socket.on('resync-session', ({ sessionId }) => {
+    logger.info('Terminal resync requested', { sessionId });
+    sessionManager.resyncSession(sessionId);
+  });
   
   // Handle session restart
   socket.on('restart-session', ({ sessionId }) => {

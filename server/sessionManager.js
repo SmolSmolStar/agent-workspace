@@ -2154,9 +2154,9 @@ class SessionManager extends EventEmitter {
       // then block the auto-heal for good. Re-apply after a cooldown even when
       // the sizes match.
       const now = Date.now();
-      const withinReassertCooldown =
-        (now - (session.lastResizeAppliedAt || 0)) < SessionManager.RESIZE_REASSERT_COOLDOWN_MS;
-      if (session.lastAppliedCols === cols && session.lastAppliedRows === rows && withinReassertCooldown) {
+      const isSameSize = session.lastAppliedCols === cols && session.lastAppliedRows === rows;
+      const withinReassertCooldown = (now - (session.lastResizeAppliedAt || 0)) < SessionManager.RESIZE_REASSERT_COOLDOWN_MS;
+      if (isSameSize && withinReassertCooldown) {
         return true;
       }
 
@@ -2164,6 +2164,18 @@ class SessionManager extends EventEmitter {
       session.lastAppliedCols = cols;
       session.lastAppliedRows = rows;
       session.lastResizeAppliedAt = now;
+
+      // A same-size call that made it past the cooldown exists ONLY because we
+      // don't trust the last resize actually took at the OS level. If it
+      // really did silently fail, a TUI mid-redraw could have written
+      // cursor-addressed output for the wrong width straight into the
+      // client's xterm buffer — garbled text no repaint can fix, since the
+      // buffer itself, not just the pixels, is wrong. Replace it with a
+      // clean read of the pane's true current content instead of hoping the
+      // next natural redraw happens to fix it.
+      if (isSameSize) {
+        this.resyncSessionBuffer(sessionId, session);
+      }
       return true;
     } catch (error) {
       // Handle ENOTTY/EBADF errors gracefully - these mean the PTY is dead
@@ -2191,7 +2203,43 @@ class SessionManager extends EventEmitter {
       return false;
     }
   }
-  
+
+  // Pulls the pane's true current content straight from tmux and hands it to
+  // clients to replace their own (possibly corrupted) buffer wholesale. Only
+  // meaningful for a tmux-backed session — a plain node-pty session has no
+  // independent authoritative copy to read back.
+  resyncSessionBuffer(sessionId, session) {
+    if (!session?.persistence || typeof this.sessionPersistence?.capturePane !== 'function') {
+      return false;
+    }
+    const fresh = this.sessionPersistence.capturePane(sessionId, 2000);
+    if (!fresh) return false;
+    this.io.emit('terminal-resync', {
+      sessionId,
+      buffer: fresh.endsWith('\n') ? fresh : `${fresh}\n`,
+      workspaceId: session.workspace || this.workspace?.id || null
+    });
+    return true;
+  }
+
+  // Manual, on-demand version of the same recovery the reassert path above
+  // does automatically: force the OS-level resize again (bypassing the
+  // cooldown deliberately — this is explicit user intent, not a passive
+  // heal-sweep tick) and replace the client's buffer with a clean read.
+  resyncSession(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.pty || session.pty.killed) return false;
+    if (session.lastAppliedCols && session.lastAppliedRows) {
+      try {
+        session.pty.resize(session.lastAppliedCols, session.lastAppliedRows);
+        session.lastResizeAppliedAt = Date.now();
+      } catch (error) {
+        logger.warn('Manual terminal resync resize failed', { sessionId, error: error.message });
+      }
+    }
+    return this.resyncSessionBuffer(sessionId, session);
+  }
+
   normalizeCwdPath(cwdPath) {
     if (typeof cwdPath !== 'string' || cwdPath.length === 0) {
       return cwdPath;

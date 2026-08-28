@@ -1344,6 +1344,18 @@ class TerminalManager {
     }
   }
 
+  // Full resync: the buffer itself may be wrong (a TUI mid-redraw writing
+  // cursor-addressed output for the wrong width after a resize that looked
+  // like it succeeded but didn't at the OS level), not just stale pixels —
+  // reset() clears cursor/attribute state too before replaying the server's
+  // authoritative capture-pane snapshot.
+  handleResync(sessionId, buffer) {
+    const terminal = this.terminals.get(sessionId);
+    if (!terminal) return;
+    terminal.reset();
+    if (buffer) terminal.write(buffer);
+  }
+
   destroyTerminal(sessionId) {
     const terminal = this.terminals.get(sessionId);
     if (terminal) {

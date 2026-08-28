@@ -54,7 +54,8 @@ server/sessionManager.js           - Terminal session lifecycle management
 ├─ Stale-agent cleanup: when status detection sees an explicit shell/no-agent prompt, recovery `lastAgent` markers are cleared to keep sidebar status accurate (`no-agent` vs `busy/waiting`)
 ├─ Marker-clear ground truth: for tmux-backed sessions `paneStillRunsAgent()` checks `pane_current_command` before clearing — garbled/wrapped agent frames that end in a prompt-looking line (bare `>` / `❯`) can no longer wipe the marker off a live agent and resurrect the Fresh/Continue/Resume overlay
 ├─ Status model: periodic status re-evaluation prevents stale "busy" lights after output quiets down
-└─ Uses: node-pty for terminal emulation
+├─ `resizeSession()` re-asserts a same-size resize after `RESIZE_REASSERT_COOLDOWN_MS` (60s) since node-pty's `resize()` can report success while the OS-level resize silently fails (upstream won't-fix) — a TUI mid-redraw at that point can write cursor-addressed output for the wrong width straight into a client's xterm buffer, which no repaint can fix since the buffer itself is wrong, not just the pixels. When that reassert path fires for a tmux-backed session, `resyncSessionBuffer()` also emits `terminal-resync` with a fresh `capture-pane` read so clients replace their buffer wholesale instead of hoping the next redraw fixes it
+└─ `resyncSession(sessionId)` is the on-demand version (socket `resync-session`, client command `resync-terminal`) — forces the resize again regardless of cooldown and always resyncs, for garbled text a user needs fixed right now rather than waiting on the next reassert
 
 server/statusDetector.js           - Claude Code session monitoring
 ├─ Detects: Claude sessions, branch changes, status updates
