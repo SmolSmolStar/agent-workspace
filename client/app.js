@@ -1430,6 +1430,13 @@ class ClaudeOrchestrator {
         this.buildSidebar();
       });
 
+      // A stale resize can leave the client's own buffer garbled, not just
+      // its pixels — the server sends a clean capture-pane read to replace
+      // it wholesale instead of asking us to repaint something already wrong.
+      this.socket.on('terminal-resync', ({ sessionId, buffer }) => {
+        this.terminalManager?.handleResync?.(sessionId, buffer);
+      });
+
       this.socket.on('terminal-output', ({ sessionId, data, workspaceId }) => {
         this.terminalManager.handleOutput(sessionId, data);
 
@@ -8233,6 +8240,13 @@ class ClaudeOrchestrator {
         const sid = String(params?.sessionId || '').trim();
         if (!sid) break;
         this.terminalManager?.clearTerminal?.(sid);
+        break;
+      }
+
+      case 'resync-terminal': {
+        const sid = String(params?.sessionId || '').trim();
+        if (!sid) break;
+        this.socket?.emit('resync-session', { sessionId: sid });
         break;
       }
 
