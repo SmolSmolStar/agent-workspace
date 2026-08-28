@@ -91,17 +91,19 @@
         <div class="chart-wrap">${charts.renderGantt(data.members, data.since, data.generatedAt)}</div>
       </section>
       <section class="block">
-        <h2>Detail</h2>
-        <table>
-          <thead><tr>
-            <th class="date-col">Date</th><th class="member-col">Member</th>
-            <th>PRs opened</th><th>PRs merged</th>
-            <th class="num">Commits</th><th>Repos touched</th><th>Tickets</th>
-          </tr></thead>
-          <tbody>${rows.join('') || '<tr><td colspan="7">No activity in this window.</td></tr>'}</tbody>
-          <thead><tr><th colspan="7">Window totals</th></tr></thead>
-          <tbody>${totals}</tbody>
-        </table>
+        <details>
+          <summary><h2 style="display:inline">Detail — every row, click to expand</h2></summary>
+          <table>
+            <thead><tr>
+              <th class="date-col">Date</th><th class="member-col">Member</th>
+              <th>PRs opened</th><th>PRs merged</th>
+              <th class="num">Commits</th><th>Repos touched</th><th>Tickets</th>
+            </tr></thead>
+            <tbody>${rows.join('') || '<tr><td colspan="7">No activity in this window.</td></tr>'}</tbody>
+            <thead><tr><th colspan="7">Window totals</th></tr></thead>
+            <tbody>${totals}</tbody>
+          </table>
+        </details>
       </section>`;
   };
 
