@@ -2715,6 +2715,9 @@ app.use('/api/atlas', createAtlasRoutes({
 const teamActivityService = TeamActivityService.getInstance({
   settingsProvider: () => userSettingsService.getAllSettings()?.global
 });
+// Pulls run on their own schedule from here on, so a page load reads
+// whatever's already in memory instead of triggering a live gh search call.
+teamActivityService.startBackgroundRefresh();
 app.use('/api/team', createTeamRoutes({
   teamActivityService,
   logger,

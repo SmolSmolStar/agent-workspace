@@ -11,8 +11,18 @@ const searchResponder = ({ prs = [], commits = [] } = {}) => (args) => {
   return Promise.reject(new Error(`unexpected gh args: ${args.join(' ')}`));
 };
 
+// Real Date.now() is used for the anti-mash gap by default, which is exactly
+// right for the app but makes a fast test suite always look "too soon" —
+// so tests that need the gap to have elapsed inject a monotonically
+// advancing nowMs instead of sleeping.
+const advancingClock = (stepMs = 25000) => {
+  let value = 0;
+  return () => { value += stepMs; return value; };
+};
+
 const service = (overrides = {}) => new TeamActivityService({
   now: () => new Date(NOW),
+  nowMs: advancingClock(),
   settingsProvider: () => ({ team: { members: [{ name: 'Ganga', githubUsername: 'gamesganga79-dot' }] } }),
   ghJson: searchResponder(),
   ...overrides
@@ -44,6 +54,7 @@ describe('TeamActivityService', () => {
 
     expect(member.githubUsername).toBe('gamesganga79-dot');
     expect(member.totals).toEqual({ prsOpened: 1, prsMerged: 1, commits: 2, tickets: 1, medianCycleHours: 25 });
+    expect(member.incomplete).toBe(false);
 
     const mergedDay = member.days.find((day) => day.prsMerged.length);
     expect(mergedDay.prsMerged[0].number).toBe(12);
@@ -155,17 +166,55 @@ describe('TeamActivityService', () => {
     });
 
     await Promise.all([subject.activity({ days: 7 }), subject.activity({ days: 7 })]);
-    await subject.activity({ days: 7 });
     expect(calls).toBe(2); // one PR search + one commit search, once
+
+    // A normal (non-forced) request after data already exists must never
+    // fire another live call — the background timer owns freshness now.
+    await subject.activity({ days: 7 });
+    expect(calls).toBe(2);
 
     await subject.activity({ days: 7, refresh: true });
     expect(calls).toBe(4);
+  });
+
+  test('a forced refresh still respects the anti-mash gap', async () => {
+    let calls = 0;
+    const subject = service({
+      nowMs: () => 1000, // frozen clock — every call looks like it happened at the same instant
+      ghJson: (args) => { calls += 1; return searchResponder()(args); }
+    });
+
+    await subject.activity({ days: 7 }); // first-ever fetch, always happens
+    expect(calls).toBe(2);
+
+    await subject.activity({ days: 7, refresh: true }); // clock hasn't moved
+    expect(calls).toBe(2); // throttled, not refetched
+  });
+
+  test('a second pull asks for what changed since the last one, not the full window again', async () => {
+    const queries = [];
+    const subject = service({
+      ghJson: (args) => {
+        queries.push(args.find((arg) => arg.startsWith('q=')));
+        return searchResponder()(args);
+      }
+    });
+    const sinceArg = (query) => query.match(/updated:>=(\S+)/)[1];
+
+    await subject.activity({ days: 7 });
+    expect(sinceArg(queries[0])).not.toContain('T'); // full 31-day backfill, date-only cutoff
+
+    await subject.activity({ days: 7, refresh: true });
+    const secondQuery = queries[queries.length - 2]; // PR query of the second round
+    expect(sinceArg(secondQuery)).toContain('T'); // incremental, full timestamp cutoff
+    expect(secondQuery).not.toBe(queries[0]);
   });
 
   test('clamps the window and scopes queries to configured repos', async () => {
     const queries = [];
     const subject = new TeamActivityService({
       now: () => new Date(NOW),
+      nowMs: advancingClock(),
       settingsProvider: () => ({
         team: {
           members: [{ name: 'Astro', githubUsername: 'astr0x316' }],
@@ -207,6 +256,7 @@ describe('TeamActivityService', () => {
   test('one member failing does not blank out the rest of the team', async () => {
     const subject = new TeamActivityService({
       now: () => new Date(NOW),
+      nowMs: advancingClock(),
       settingsProvider: () => ({
         team: {
           members: [
@@ -233,5 +283,59 @@ describe('TeamActivityService', () => {
     const ganga = result.members.find((member) => member.githubUsername === 'gamesganga79-dot');
     expect(ganga.error).toBeUndefined();
     expect(ganga.totals.commits).toBe(0);
+  });
+
+  test('a member who failed once recovers on the next background pull, not stuck forever', async () => {
+    let shouldFail = true;
+    const subject = new TeamActivityService({
+      now: () => new Date(NOW),
+      nowMs: advancingClock(),
+      settingsProvider: () => ({ team: { members: [{ name: 'Flaky', githubUsername: 'flaky-user' }] } }),
+      ghJson: (args) => (shouldFail ? Promise.reject(new Error('rate limited')) : searchResponder()(args))
+    });
+
+    const first = await subject.activity({ days: 7 });
+    expect(first.members[0].error).toBeTruthy();
+
+    shouldFail = false;
+    const second = await subject.activity({ days: 7, refresh: true });
+    expect(second.members[0].error).toBeUndefined();
+  });
+
+  test('startBackgroundRefresh pulls every configured member on its own schedule, without a real timer', () => {
+    let intervalCallback = null;
+    let intervalMs = null;
+    const fakeTimer = { id: 'fake' };
+    const subject = service({
+      settingsProvider: () => ({
+        team: { members: [{ name: 'Ganga', githubUsername: 'gamesganga79-dot' }, { name: 'Astro', githubUsername: 'astr0x316' }] }
+      }),
+      setIntervalFn: (fn, ms) => { intervalCallback = fn; intervalMs = ms; return fakeTimer; },
+      clearIntervalFn: jest.fn()
+    });
+    const refreshSpy = jest.spyOn(subject, 'refreshMember').mockResolvedValue({});
+
+    subject.startBackgroundRefresh();
+
+    expect(typeof intervalCallback).toBe('function');
+    expect(intervalMs).toBeGreaterThan(0);
+    // Warms immediately on start, doesn't wait a full interval for the first pull.
+    expect(refreshSpy).toHaveBeenCalledTimes(2);
+
+    intervalCallback();
+    expect(refreshSpy).toHaveBeenCalledTimes(4);
+
+    subject.stopBackgroundRefresh();
+    expect(subject.clearIntervalFn).toHaveBeenCalledWith(fakeTimer);
+
+    const beforeRestart = refreshSpy.mock.calls.length;
+    subject.startBackgroundRefresh();
+    expect(refreshSpy.mock.calls.length).toBe(beforeRestart + 2); // warms once on restart
+
+    // Idempotent — calling it again while already running must not start a
+    // second interval or fire a second immediate warm-up.
+    const afterRestart = refreshSpy.mock.calls.length;
+    subject.startBackgroundRefresh();
+    expect(refreshSpy.mock.calls.length).toBe(afterRestart);
   });
 });
