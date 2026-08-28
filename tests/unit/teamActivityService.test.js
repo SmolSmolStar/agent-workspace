@@ -43,7 +43,7 @@ describe('TeamActivityService', () => {
     const member = result.members[0];
 
     expect(member.githubUsername).toBe('gamesganga79-dot');
-    expect(member.totals).toEqual({ prsOpened: 1, prsMerged: 1, commits: 2, tickets: 1 });
+    expect(member.totals).toEqual({ prsOpened: 1, prsMerged: 1, commits: 2, tickets: 1, medianCycleHours: 25 });
 
     const mergedDay = member.days.find((day) => day.prsMerged.length);
     expect(mergedDay.prsMerged[0].number).toBe(12);
@@ -55,6 +55,14 @@ describe('TeamActivityService', () => {
     const openedDay = member.days.find((day) => day.prsOpened.length);
     expect(openedDay.prsOpened[0].tickets).toEqual(['https://trello.com/c/abc123']);
     expect(mergedDay.date > openedDay.date).toBe(true);
+
+    expect(member.timeline).toHaveLength(1);
+    expect(member.timeline[0]).toMatchObject({
+      number: 12,
+      createdAt: '2026-08-26T09:00:00Z',
+      mergedAt: '2026-08-27T10:00:00Z',
+      cycleHours: 25
+    });
   });
 
   test('events before the window never create day rows', async () => {
@@ -76,6 +84,54 @@ describe('TeamActivityService', () => {
     const result = await subject.activity({ days: 7 });
     expect(result.members[0].days).toEqual([]);
     expect(result.members[0].totals.prsOpened).toBe(0);
+    expect(result.members[0].timeline).toEqual([]);
+  });
+
+  test('median cycle time is the middle value, and an open PR carries no cycle time', async () => {
+    const subject = service({
+      ghJson: searchResponder({
+        prs: [
+          {
+            number: 1,
+            title: 'fast one',
+            html_url: 'https://github.com/o/r/pull/1',
+            repository_url: 'https://api.github.com/repos/o/r',
+            state: 'closed',
+            created_at: '2026-08-27T00:00:00Z',
+            body: '',
+            pull_request: { merged_at: '2026-08-27T02:00:00Z' } // 2h
+          },
+          {
+            number: 2,
+            title: 'slow one',
+            html_url: 'https://github.com/o/r/pull/2',
+            repository_url: 'https://api.github.com/repos/o/r',
+            state: 'closed',
+            created_at: '2026-08-26T00:00:00Z',
+            body: '',
+            pull_request: { merged_at: '2026-08-27T00:00:00Z' } // 24h
+          },
+          {
+            number: 3,
+            title: 'still open',
+            html_url: 'https://github.com/o/r/pull/3',
+            repository_url: 'https://api.github.com/repos/o/r',
+            state: 'open',
+            created_at: '2026-08-27T00:00:00Z',
+            body: '',
+            pull_request: {}
+          }
+        ]
+      })
+    });
+
+    const result = await subject.activity({ days: 7 });
+    const member = result.members[0];
+
+    expect(member.totals.medianCycleHours).toBe(2);
+    const openPr = member.timeline.find((pr) => pr.number === 3);
+    expect(openPr.mergedAt).toBeNull();
+    expect(openPr.cycleHours).toBeNull();
   });
 
   test('flags partial results instead of silently truncating', async () => {

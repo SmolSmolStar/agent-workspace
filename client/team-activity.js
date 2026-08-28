@@ -61,18 +61,48 @@
         `(${esc(failed[0].error)}). Their rows below read as zero, not as actually zero activity. Try Refresh again.</div>`
       : '';
 
+    // Every day in the window, not just days with data — a chart that only
+    // plots active days silently hides the quiet ones. Format from local
+    // date parts, not toISOString(): that converts to UTC first, which
+    // shifts the date by a day in any timezone ahead of UTC.
+    const windowDates = Array.from({ length: data.windowDays }, (_, i) => {
+      const d = new Date(`${data.since}T00:00:00`);
+      d.setDate(d.getDate() + i);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    });
+
+    const charts = window.TeamActivityCharts;
     content.innerHTML = `
       ${failureBanner}
-      <table>
-        <thead><tr>
-          <th class="date-col">Date</th><th class="member-col">Member</th>
-          <th>PRs opened</th><th>PRs merged</th>
-          <th class="num">Commits</th><th>Repos touched</th><th>Tickets</th>
-        </tr></thead>
-        <tbody>${rows.join('') || '<tr><td colspan="7">No activity in this window.</td></tr>'}</tbody>
-        <thead><tr><th colspan="7">Window totals</th></tr></thead>
-        <tbody>${totals}</tbody>
-      </table>`;
+      ${charts.renderLegend(data.members)}
+      <section class="block">
+        <h2>Snapshot</h2>
+        ${charts.renderStatCards(data.members)}
+      </section>
+      <section class="block">
+        <h2>Commits per day</h2>
+        <div class="chart-wrap">${charts.renderBarChart(data.members, windowDates)}</div>
+      </section>
+      <section class="block">
+        <h2>PR timeline — opened to merged, dashed bars are still open</h2>
+        <div class="chart-wrap">${charts.renderGantt(data.members, data.since, data.generatedAt)}</div>
+      </section>
+      <section class="block">
+        <h2>Detail</h2>
+        <table>
+          <thead><tr>
+            <th class="date-col">Date</th><th class="member-col">Member</th>
+            <th>PRs opened</th><th>PRs merged</th>
+            <th class="num">Commits</th><th>Repos touched</th><th>Tickets</th>
+          </tr></thead>
+          <tbody>${rows.join('') || '<tr><td colspan="7">No activity in this window.</td></tr>'}</tbody>
+          <thead><tr><th colspan="7">Window totals</th></tr></thead>
+          <tbody>${totals}</tbody>
+        </table>
+      </section>`;
   };
 
   const load = async (refresh) => {

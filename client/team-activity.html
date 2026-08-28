@@ -10,12 +10,19 @@
       --bg: #101418;
       --panel: #1a2027;
       --border: #2c3540;
+      --grid: #384250;
       --text: #ffffff;
+      --text-secondary: #c3c2b7;
       --accent: #a8d8f0;
       --accent-warm: #ffd685;
       --merged: #7ee2a8;
       --link: #8ec9ff;
       --danger: #ff9d9d;
+      /* Categorical series slots — validated dark-mode set, dataviz skill palette.md */
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --series-3: #199e70;
+      --series-4: #c98500;
     }
     * { box-sizing: border-box; }
     body {
@@ -26,6 +33,7 @@
       font: 0.95rem/1.5 system-ui, sans-serif;
     }
     h1 { font-size: 1.3rem; margin: 0 0 0.25rem; }
+    h2 { font-size: 1rem; margin: 0 0 0.75rem; color: var(--text-secondary); }
     .meta { color: var(--accent); margin-bottom: 1rem; }
     .controls { display: flex; gap: 0.75rem; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; }
     .controls label { color: var(--accent); }
@@ -39,6 +47,25 @@
       cursor: pointer;
     }
     button:hover, select:hover { border-color: var(--accent); }
+
+    section.block { margin-bottom: 1.75rem; }
+
+    .legend { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-bottom: 1rem; font-size: 0.85rem; color: var(--text-secondary); }
+    .legend .swatch { display: inline-block; width: 0.7rem; height: 0.7rem; border-radius: 50%; margin-right: 0.4rem; vertical-align: middle; }
+
+    .stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.75rem; }
+    .stat-card { background: var(--panel); border-radius: 0.5rem; padding: 0.9rem 1rem; border-left: 3px solid var(--series-1); }
+    .stat-card .name { font-weight: 600; margin-bottom: 0.5rem; }
+    .stat-card .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem 0.75rem; }
+    .stat-card .value { font-size: 1.2rem; font-variant-numeric: proportional-nums; }
+    .stat-card .label { font-size: 0.75rem; color: var(--text-secondary); }
+
+    .chart-wrap { background: var(--panel); border-radius: 0.5rem; padding: 1rem; overflow-x: auto; }
+    svg text { fill: var(--text-secondary); font-size: 0.7rem; }
+    svg .axis-line { stroke: var(--grid); stroke-width: 1; }
+    svg .bar-label, svg .gantt-label { fill: var(--text); font-size: 0.72rem; }
+    svg a text { fill: var(--link); }
+
     table { width: 100%; border-collapse: collapse; table-layout: fixed; }
     th, td {
       border: 1px solid var(--border);
@@ -60,6 +87,7 @@
     .incomplete { color: var(--accent-warm); }
     .member-error { color: var(--danger); }
     .banner { padding: 1rem; background: var(--panel); border-radius: 0.5rem; color: var(--danger); margin-bottom: 1rem; }
+    .note { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.5rem; }
     code { background: var(--panel); padding: 0.1rem 0.3rem; border-radius: 0.25rem; }
   </style>
 </head>
@@ -78,6 +106,7 @@
     <button id="refresh">Refresh</button>
   </div>
   <div id="content"></div>
+  <script src="team-activity-charts.js"></script>
   <script src="team-activity.js"></script>
 </body>
 </html>
