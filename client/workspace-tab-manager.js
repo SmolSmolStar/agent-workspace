@@ -73,13 +73,25 @@ class WorkspaceTabManager {
    * Create default UI state for a new tab
    */
   createDefaultUIState() {
+    // A new tab starts from the saved filter preference, not a hardcoded
+    // default. If nothing has ever been saved, mobile starts on Agent Only.
+    const persisted = this.orchestrator?.userSettings?.global?.ui?.terminals || {};
+    const rawViewMode = String(persisted.viewMode || '').toLowerCase();
+    const isMobile = !!this.orchestrator?.isMobileLayout?.();
+    const viewMode = ['all', 'claude', 'server'].includes(rawViewMode)
+      ? rawViewMode
+      : (isMobile ? 'claude' : 'all');
+    const tierRaw = String(persisted.tierFilter ?? '').toLowerCase();
+    const tierFilter = tierRaw === 'none' ? 'none'
+      : (Number.isInteger(Number(tierRaw)) && Number(tierRaw) >= 1 && Number(tierRaw) <= 4 ? Number(tierRaw) : 'all');
+
     return {
       // Terminal/grid filters
       visibleTerminals: new Set(),
       sessionActivity: new Map(),
       showActiveOnly: false,
-      viewMode: 'all',
-      tierFilter: 'all',
+      viewMode,
+      tierFilter,
       workflowMode: 'all',
 
       // Per-workspace UI state (must not leak across tabs)
