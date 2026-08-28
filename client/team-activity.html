@@ -79,6 +79,9 @@
     th.date-col { width: 8rem; }
     th.member-col { width: 10rem; }
     .day-first td { border-top: 2px solid var(--accent); }
+    details summary { cursor: pointer; margin-bottom: 0.75rem; color: var(--text-secondary); }
+    details summary::marker { color: var(--accent); }
+    details[open] summary { margin-bottom: 1rem; }
     a { color: var(--link); }
     .pr-state { color: var(--merged); }
     .ticket { color: var(--accent-warm); }
