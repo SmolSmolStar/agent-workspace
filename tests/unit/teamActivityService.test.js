@@ -147,4 +147,35 @@ describe('TeamActivityService', () => {
     expect(result.ok).toBe(true);
     expect(result.members).toEqual([]);
   });
+
+  test('one member failing does not blank out the rest of the team', async () => {
+    const subject = new TeamActivityService({
+      now: () => new Date(NOW),
+      settingsProvider: () => ({
+        team: {
+          members: [
+            { name: 'Broken', githubUsername: 'broken-user' },
+            { name: 'Ganga', githubUsername: 'gamesganga79-dot' }
+          ]
+        }
+      }),
+      ghJson: (args) => {
+        const query = args.find((arg) => arg.startsWith('q='));
+        if (query && query.includes('broken-user')) return Promise.reject(new Error('gh timed out'));
+        return searchResponder()(args);
+      }
+    });
+
+    const result = await subject.activity({ days: 7 });
+    expect(result.ok).toBe(true);
+
+    const broken = result.members.find((member) => member.githubUsername === 'broken-user');
+    expect(broken.incomplete).toBe(true);
+    expect(broken.error).toBeTruthy();
+    expect(broken.days).toEqual([]);
+
+    const ganga = result.members.find((member) => member.githubUsername === 'gamesganga79-dot');
+    expect(ganga.error).toBeUndefined();
+    expect(ganga.totals.commits).toBe(0);
+  });
 });

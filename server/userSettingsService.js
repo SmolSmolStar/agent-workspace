@@ -893,6 +893,10 @@ class UserSettingsService {
           }
         }
       }
+
+      if (userSettings.global.team) {
+        merged.global.team = userSettings.global.team;
+      }
     }
 
     if (userSettings.perTerminal) {
