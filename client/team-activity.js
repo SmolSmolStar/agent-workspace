@@ -51,11 +51,18 @@
     });
 
     const totals = data.members.map((member) =>
-      `<tr><td></td><td>${esc(member.name)}</td>` +
+      `<tr><td></td><td>${esc(member.name)}${member.error ? ` <span class="member-error" title="${esc(member.error)}">⚠ lookup failed</span>` : ''}</td>` +
       `<td class="num">${member.totals.prsOpened}</td><td class="num">${member.totals.prsMerged}</td>` +
       `<td class="num">${member.totals.commits}</td><td></td><td class="num">${member.totals.tickets}</td></tr>`).join('');
 
+    const failed = data.members.filter((member) => member.error);
+    const failureBanner = failed.length
+      ? `<div class="banner">Could not fetch activity for ${failed.map((m) => esc(m.name)).join(', ')} ` +
+        `(${esc(failed[0].error)}). Their rows below read as zero, not as actually zero activity. Try Refresh again.</div>`
+      : '';
+
     content.innerHTML = `
+      ${failureBanner}
       <table>
         <thead><tr>
           <th class="date-col">Date</th><th class="member-col">Member</th>
