@@ -175,6 +175,7 @@ const { normalizeServiceManifest, getWorkspaceServiceManifest } = require('./wor
 const { ServiceStackRuntimeService } = require('./serviceStackRuntimeService');
 const { IntentHaikuService } = require('./intentHaikuService');
 const { AgentModelConfigService } = require('./agentModelConfigService');
+const { AgentModelCatalogService } = require('./agentModelCatalogService');
 const {
   getLifecyclePolicy,
   parseWorktreeKey,
@@ -423,6 +424,8 @@ const pagerService = PagerService.getInstance({ logger });
 const threadService = ThreadService.getInstance({ logger });
 const intentHaikuService = IntentHaikuService.getInstance({ logger });
 const agentModelConfigService = AgentModelConfigService.getInstance({ logger });
+const agentModelCatalogService = AgentModelCatalogService.getInstance({ logger });
+agentModelCatalogService.startBackgroundRefresh();
 const serviceStackRuntimeService = ServiceStackRuntimeService.getInstance({ logger });
 const policyService = PolicyService.getInstance({ logger });
 const auditExportService = AuditExportService.getInstance({ logger });
@@ -2949,6 +2952,29 @@ app.get('/api/sessions/model-config', (req, res) => {
   } catch (error) {
     logger.error('Failed to resolve session model config', { error: error.message, stack: error.stack });
     return res.status(500).json({ ok: false, error: 'Failed to resolve session model config' });
+  }
+});
+
+// Available models + valid efforts per provider, for the model/effort picker
+// dropdown and the Start AI Agent modal. Backed by a curated JSON file
+// (config/agent-model-catalog.json), not a live provider API — no installed
+// CLI here exposes a "list models" command. Cached in memory, refreshed on
+// a background timer (default 12h) and via the manual refresh endpoint below.
+app.get('/api/agents/model-catalog', (req, res) => {
+  try {
+    return res.json({ ok: true, ...agentModelCatalogService.getCatalog() });
+  } catch (error) {
+    logger.error('Failed to read agent model catalog', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to read agent model catalog' });
+  }
+});
+
+app.post('/api/agents/model-catalog/refresh', requirePolicyAction('write'), (req, res) => {
+  try {
+    return res.json({ ok: true, ...agentModelCatalogService.refresh() });
+  } catch (error) {
+    logger.error('Failed to refresh agent model catalog', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to refresh agent model catalog' });
   }
 });
 
