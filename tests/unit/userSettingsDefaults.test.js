@@ -214,4 +214,19 @@ describe('UserSettingsService defaults', () => {
     expect(merged.global.pager.doneCheck.enabled).toBe(true);
     expect(typeof merged.global.pager.doneCheck.token).toBe('string');
   });
+
+  test('mergeSettings keeps global.team across a reload', () => {
+    const defaults = UserSettingsService.prototype.getDefaultSettings.call({});
+    const merged = UserSettingsService.prototype.mergeSettings.call({}, defaults, {
+      global: {
+        team: {
+          members: [{ name: 'Ganga', githubUsername: 'gamesganga79-dot' }],
+          repos: ['web3dev1337/box2d-luau']
+        }
+      }
+    });
+
+    expect(merged.global.team.members).toEqual([{ name: 'Ganga', githubUsername: 'gamesganga79-dot' }]);
+    expect(merged.global.team.repos).toEqual(['web3dev1337/box2d-luau']);
+  });
 });

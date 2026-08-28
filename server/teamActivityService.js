@@ -128,13 +128,23 @@ class TeamActivityService {
   }
 
   async buildActivity({ members, repos, since, windowDays }) {
-    const memberResults = await Promise.all(members.map(async (member) => {
-      const [prs, commits] = await Promise.all([
-        this.searchPullRequests({ username: member.githubUsername, since, repos }),
-        this.searchCommits({ username: member.githubUsername, since, repos })
-      ]);
-      return this.assembleMember({ member, prs, commits, since });
-    }));
+    // One member's flaky/rate-limited `gh` call must not blank out everyone
+    // else's report, so each member is fetched and degraded independently.
+    const memberResults = await Promise.all(members.map((member) =>
+      this.buildMemberActivity({ member, repos, since }).catch((error) => {
+        logger.error('Team activity lookup failed for member', {
+          member: member.githubUsername,
+          error: error.message
+        });
+        return {
+          name: member.name || member.githubUsername,
+          githubUsername: member.githubUsername,
+          incomplete: true,
+          error: 'Lookup failed. Is `gh` authenticated?',
+          totals: { prsOpened: 0, prsMerged: 0, commits: 0, tickets: 0 },
+          days: []
+        };
+      })));
 
     return {
       ok: true,
@@ -143,6 +153,14 @@ class TeamActivityService {
       since,
       members: memberResults
     };
+  }
+
+  async buildMemberActivity({ member, repos, since }) {
+    const [prs, commits] = await Promise.all([
+      this.searchPullRequests({ username: member.githubUsername, since, repos }),
+      this.searchCommits({ username: member.githubUsername, since, repos })
+    ]);
+    return this.assembleMember({ member, prs, commits, since });
   }
 
   repoQualifier(repos) {
@@ -234,14 +252,12 @@ class TeamActivityService {
       }
     });
 
-    const commitRepoCounts = new Map();
     commits.items.forEach((commit) => {
       const dateKey = this.localDateKey(commit.authoredAt);
       if (!inWindow(dateKey)) return;
       const entry = dayEntry(dateKey);
       entry.commitCount += 1;
       if (commit.repo && !entry.commitRepos.includes(commit.repo)) entry.commitRepos.push(commit.repo);
-      if (commit.repo) commitRepoCounts.set(commit.repo, (commitRepoCounts.get(commit.repo) || 0) + 1);
     });
 
     const orderedDays = [...days.values()].sort((a, b) => b.date.localeCompare(a.date));
