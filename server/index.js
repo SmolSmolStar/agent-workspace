@@ -176,6 +176,7 @@ const { ServiceStackRuntimeService } = require('./serviceStackRuntimeService');
 const { IntentHaikuService } = require('./intentHaikuService');
 const { AgentModelConfigService } = require('./agentModelConfigService');
 const { AgentModelCatalogService } = require('./agentModelCatalogService');
+const { AgentModelSwitchService } = require('./agentModelSwitchService');
 const {
   getLifecyclePolicy,
   parseWorktreeKey,
@@ -426,6 +427,7 @@ const intentHaikuService = IntentHaikuService.getInstance({ logger });
 const agentModelConfigService = AgentModelConfigService.getInstance({ logger });
 const agentModelCatalogService = AgentModelCatalogService.getInstance({ logger });
 agentModelCatalogService.startBackgroundRefresh();
+const agentModelSwitchService = AgentModelSwitchService.getInstance({ logger, sessionManager });
 const serviceStackRuntimeService = ServiceStackRuntimeService.getInstance({ logger });
 const policyService = PolicyService.getInstance({ logger });
 const auditExportService = AuditExportService.getInstance({ logger });
@@ -2975,6 +2977,40 @@ app.post('/api/agents/model-catalog/refresh', requirePolicyAction('write'), (req
   } catch (error) {
     logger.error('Failed to refresh agent model catalog', { error: error.message, stack: error.stack });
     return res.status(500).json({ ok: false, error: 'Failed to refresh agent model catalog' });
+  }
+});
+
+// Session-only model/effort switch (header dropdown + Commander). Claude
+// only for now — see AgentModelSwitchService for why persisting the default
+// isn't possible to suppress, only reversible.
+app.post('/api/sessions/:sessionId/switch-model', requirePolicyAction('write'), async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { model, effort } = req.body || {};
+    if (!model && !effort) {
+      return res.status(400).json({ ok: false, error: 'model or effort is required' });
+    }
+
+    const session = sessionManager.getSessionById(sessionId);
+    const type = String(session?.type || '').toLowerCase();
+    if (!session) {
+      return res.status(404).json({ ok: false, error: 'SESSION_NOT_FOUND' });
+    }
+    if (type !== 'claude') {
+      // Codex/Grok session-only switching isn't confirmed to exist as a
+      // mechanism yet — see PLANS/2026-08-29/MODEL_EFFORT_PICKER_PLAN.md.
+      return res.status(501).json({ ok: false, error: 'UNSUPPORTED_SESSION_TYPE', type });
+    }
+
+    const result = await agentModelSwitchService.switchClaudeSession({ sessionId, model, effort });
+    if (!result.ok) {
+      const status = result.error === 'SESSION_NOT_FOUND' ? 404 : result.error === 'SESSION_BUSY' ? 409 : 400;
+      return res.status(status).json(result);
+    }
+    return res.json(result);
+  } catch (error) {
+    logger.error('Failed to switch session model', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to switch session model' });
   }
 });
 
