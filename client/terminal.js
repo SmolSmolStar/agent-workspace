@@ -1344,16 +1344,25 @@ class TerminalManager {
     }
   }
 
-  // Full resync: the buffer itself may be wrong (a TUI mid-redraw writing
-  // cursor-addressed output for the wrong width after a resize that looked
-  // like it succeeded but didn't at the OS level), not just stale pixels —
-  // reset() clears cursor/attribute state too before replaying the server's
-  // authoritative capture-pane snapshot.
+  // Clears cursor/attribute state, replays the server's clean snapshot.
   handleResync(sessionId, buffer) {
     const terminal = this.terminals.get(sessionId);
     if (!terminal) return;
     terminal.reset();
     if (buffer) terminal.write(buffer);
+
+    // Force a real repaint (same nudge trick as fitTerminal) — canvas
+    // dirty-tracking won't reliably clear old pixels on reset() alone.
+    const beforeCols = terminal.cols;
+    const beforeRows = terminal.rows;
+    const nudgedCols = Math.max(beforeCols - 1, 2);
+    terminal.resize(nudgedCols, beforeRows);
+    terminal.resize(beforeCols, beforeRows);
+    requestAnimationFrame(() => {
+      if (terminal && !terminal._core?.disposed) {
+        terminal.refresh(0, Math.max(0, terminal.rows - 1));
+      }
+    });
   }
 
   destroyTerminal(sessionId) {
