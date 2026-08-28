@@ -13,12 +13,20 @@ const logger = winston.createLogger({
   ]
 });
 
-const CACHE_TTL_MS = Number(process.env.ORCHESTRATOR_TEAM_ACTIVITY_CACHE_TTL_MS || 300000);
+// Also doubles as the background-refresh cadence — see startBackgroundRefresh().
+const REFRESH_INTERVAL_MS = Number(process.env.ORCHESTRATOR_TEAM_ACTIVITY_CACHE_TTL_MS || 300000);
 const DEFAULT_WINDOW_DAYS = 7;
 const MAX_WINDOW_DAYS = 31;
 const SEARCH_PAGE_LIMIT = 100; // GitHub search API per_page ceiling
 const GH_TIMEOUT_MS = 20000;
 const TRELLO_CARD_PATTERN = /https?:\/\/trello\.com\/c\/[A-Za-z0-9]+/g;
+// A manual `?refresh=1` click still respects this floor, so mashing Refresh
+// can't re-trigger the same GitHub search rate limit a live-per-request
+// design used to hit.
+const MIN_MANUAL_REFRESH_GAP_MS = 20000;
+// Re-ask for anything touched since the last successful pull, minus this
+// much overlap, as insurance against clock skew between here and GitHub.
+const INCREMENTAL_OVERLAP_MS = 120000;
 
 function defaultGhJson(args) {
   return new Promise((resolve, reject) => {
@@ -37,13 +45,33 @@ function defaultGhJson(args) {
   });
 }
 
+function emptyBucket() {
+  // items: Map<id, item> — the accumulated, deduped result set for one
+  // member's PRs or commits. cursor: Date the next incremental pull should
+  // ask "updated since". floorDateKey: the oldest date we can GUARANTEE is
+  // fully covered — null until the first backfill lands.
+  return { items: new Map(), cursor: null, floorDateKey: null, lastFetchAt: 0 };
+}
+
 class TeamActivityService {
-  constructor({ ghJson = defaultGhJson, settingsProvider = null, now = () => new Date() } = {}) {
+  constructor({
+    ghJson = defaultGhJson,
+    settingsProvider = null,
+    now = () => new Date(),
+    nowMs = () => Date.now(),
+    setIntervalFn = setInterval,
+    clearIntervalFn = clearInterval
+  } = {}) {
     this.ghJson = ghJson;
     this.settingsProvider = settingsProvider;
     this.now = now;
-    this.cache = new Map(); // key -> { at, result }
-    this.inFlight = new Map(); // key -> Promise<result>
+    this.nowMs = nowMs;
+    this.setIntervalFn = setIntervalFn;
+    this.clearIntervalFn = clearIntervalFn;
+    this.prBuckets = new Map(); // key -> bucket
+    this.commitBuckets = new Map();
+    this.fetchInFlight = new Map(); // key -> Promise, coalesces concurrent pulls per member
+    this.backgroundTimer = null;
   }
 
   static getInstance(options) {
@@ -51,6 +79,36 @@ class TeamActivityService {
       TeamActivityService.instance = new TeamActivityService(options);
     }
     return TeamActivityService.instance;
+  }
+
+  // Starts the periodic pull. Idempotent — call it once at server boot.
+  // Never called from tests, so a real setInterval never leaks into a test
+  // run unless a test explicitly asks for it (with injected timer fns).
+  startBackgroundRefresh() {
+    if (this.backgroundTimer) return;
+    const tick = () => {
+      const { members, repos } = this.teamConfig();
+      members.forEach((member) => {
+        this.refreshMember({ member, repos }).catch((error) => {
+          logger.error('Background team activity refresh failed', {
+            member: member.githubUsername,
+            error: error.message
+          });
+        });
+      });
+    };
+    this.backgroundTimer = this.setIntervalFn(tick, REFRESH_INTERVAL_MS);
+    if (this.backgroundTimer && typeof this.backgroundTimer.unref === 'function') {
+      this.backgroundTimer.unref(); // a quiet dashboard poll shouldn't hold the process open
+    }
+    tick();
+  }
+
+  stopBackgroundRefresh() {
+    if (this.backgroundTimer) {
+      this.clearIntervalFn(this.backgroundTimer);
+      this.backgroundTimer = null;
+    }
   }
 
   teamConfig() {
@@ -92,6 +150,10 @@ class TeamActivityService {
     return this.localDateKey(start);
   }
 
+  bucketKey(username, repos) {
+    return JSON.stringify([username, repos]);
+  }
+
   async activity({ days, authors, refresh = false } = {}) {
     const config = this.teamConfig();
     const requestedAuthors = String(authors || '')
@@ -106,46 +168,27 @@ class TeamActivityService {
       : config.members;
     const windowDays = this.clampDays(days ?? DEFAULT_WINDOW_DAYS);
     const since = this.sinceDateKey(windowDays);
-    const key = JSON.stringify([since, windowDays, members.map((member) => member.githubUsername), config.repos]);
 
-    if (!refresh) {
-      const hit = this.cache.get(key);
-      if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.result;
-      const pending = this.inFlight.get(key);
-      if (pending) return pending;
-    }
-
-    const fetchPromise = this.buildActivity({ members, repos: config.repos, since, windowDays })
-      .then((result) => {
-        this.cache.set(key, { at: Date.now(), result });
-        return result;
-      })
-      .finally(() => {
-        if (this.inFlight.get(key) === fetchPromise) this.inFlight.delete(key);
-      });
-    this.inFlight.set(key, fetchPromise);
-    return fetchPromise;
-  }
-
-  async buildActivity({ members, repos, since, windowDays }) {
     // One member's flaky/rate-limited `gh` call must not blank out everyone
-    // else's report, so each member is fetched and degraded independently.
+    // else's report, so each member is refreshed and degraded independently.
     const memberResults = await Promise.all(members.map((member) =>
-      this.buildMemberActivity({ member, repos, since }).catch((error) => {
-        logger.error('Team activity lookup failed for member', {
-          member: member.githubUsername,
-          error: error.message
-        });
-        return {
-          name: member.name || member.githubUsername,
-          githubUsername: member.githubUsername,
-          incomplete: true,
-          error: 'Lookup failed. Is `gh` authenticated?',
-          totals: { prsOpened: 0, prsMerged: 0, commits: 0, tickets: 0, medianCycleHours: null },
-          days: [],
-          timeline: []
-        };
-      })));
+      this.refreshMember({ member, repos: config.repos, force: refresh })
+        .then(({ prBucket, commitBucket }) => this.assembleMember({ member, prBucket, commitBucket, since }))
+        .catch((error) => {
+          logger.error('Team activity lookup failed for member', {
+            member: member.githubUsername,
+            error: error.message
+          });
+          return {
+            name: member.name || member.githubUsername,
+            githubUsername: member.githubUsername,
+            incomplete: true,
+            error: 'Lookup failed. Is `gh` authenticated?',
+            totals: { prsOpened: 0, prsMerged: 0, commits: 0, tickets: 0, medianCycleHours: null },
+            days: [],
+            timeline: []
+          };
+        })));
 
     return {
       ok: true,
@@ -156,12 +199,101 @@ class TeamActivityService {
     };
   }
 
-  async buildMemberActivity({ member, repos, since }) {
-    const [prs, commits] = await Promise.all([
-      this.searchPullRequests({ username: member.githubUsername, since, repos }),
-      this.searchCommits({ username: member.githubUsername, since, repos })
-    ]);
-    return this.assembleMember({ member, prs, commits, since });
+  // Pulls only what changed since the last successful fetch and merges it
+  // into the member's running store, instead of re-asking GitHub for the
+  // full 31-day window on every request. First call for a member does a
+  // one-time full backfill; every call after that is a small delta.
+  async refreshMember({ member, repos, force = false }) {
+    const key = this.bucketKey(member.githubUsername, repos);
+    const pending = this.fetchInFlight.get(key);
+    if (pending) return pending;
+
+    const existingPr = this.prBuckets.get(key);
+    const existingCommit = this.commitBuckets.get(key);
+    const hasData = Boolean(existingPr && existingCommit && existingPr.cursor);
+
+    // Data already exists and nobody asked to force it: the background
+    // timer owns freshness here, so a normal page view reads whatever's
+    // cached instead of firing a live gh call on every request.
+    if (hasData && !force) {
+      return { prBucket: existingPr, commitBucket: existingCommit };
+    }
+    // A forced refresh still respects a minimum gap, so mashing the UI's
+    // Refresh button can't retrigger the same rate limit a live-per-request
+    // design used to hit.
+    if (hasData && force && this.nowMs() - existingPr.lastFetchAt < MIN_MANUAL_REFRESH_GAP_MS) {
+      return { prBucket: existingPr, commitBucket: existingCommit };
+    }
+
+    const fetchPromise = (async () => {
+      const fetchStartedAt = this.now();
+      const [prResult, commitResult] = await Promise.all([
+        this.fetchDelta({ bucket: existingPr, kind: 'pr', member, repos, fetchStartedAt }),
+        this.fetchDelta({ bucket: existingCommit, kind: 'commit', member, repos, fetchStartedAt })
+      ]);
+      this.prBuckets.set(key, prResult);
+      this.commitBuckets.set(key, commitResult);
+      return { prBucket: prResult, commitBucket: commitResult };
+    })();
+    this.fetchInFlight.set(key, fetchPromise);
+
+    try {
+      return await fetchPromise;
+    } finally {
+      if (this.fetchInFlight.get(key) === fetchPromise) this.fetchInFlight.delete(key);
+    }
+  }
+
+  async fetchDelta({ bucket, kind, member, repos, fetchStartedAt }) {
+    const current = bucket || emptyBucket();
+    const isBackfill = !current.cursor;
+    const since = isBackfill
+      ? this.sinceDateKey(MAX_WINDOW_DAYS)
+      : new Date(current.cursor.getTime() - INCREMENTAL_OVERLAP_MS).toISOString();
+
+    const search = kind === 'pr'
+      ? await this.searchPullRequests({ username: member.githubUsername, since, repos })
+      : await this.searchCommits({ username: member.githubUsername, since, repos });
+
+    const nextItems = new Map(current.items);
+    search.items.forEach((item) => nextItems.set(kind === 'pr' ? `${item.repo}#${item.number}` : item.sha, item));
+
+    // Bound memory: nothing older than the max window is ever displayed.
+    const evictBefore = this.sinceDateKey(MAX_WINDOW_DAYS);
+    const relevantDateKey = kind === 'pr'
+      ? (item) => this.localDateKey(item.mergedAt || item.createdAt)
+      : (item) => this.localDateKey(item.authoredAt);
+    [...nextItems.entries()].forEach(([id, item]) => {
+      const dateKey = relevantDateKey(item);
+      if (dateKey && dateKey < evictBefore) nextItems.delete(id);
+    });
+
+    // floorDateKey only ever moves backward on the first backfill — an
+    // incremental pull extends coverage forward in time, it can't fill in a
+    // gap behind the existing floor.
+    let floorDateKey = current.floorDateKey;
+    if (isBackfill) {
+      floorDateKey = search.incomplete
+        ? this.oldestDateKey(search.items, kind)
+        : this.sinceDateKey(MAX_WINDOW_DAYS);
+    } else if (search.incomplete) {
+      logger.error('Incremental team activity pull hit the search page cap — coverage floor unchanged', {
+        member: member.githubUsername,
+        kind
+      });
+    }
+
+    return { items: nextItems, cursor: fetchStartedAt, floorDateKey, lastFetchAt: this.nowMs() };
+  }
+
+  // null means "no guaranteed coverage at all" — a capped fetch that
+  // happened to return zero usable items must not be read as full coverage.
+  oldestDateKey(items, kind) {
+    const dateOf = kind === 'pr'
+      ? (item) => item.mergedAt || item.createdAt
+      : (item) => item.authoredAt;
+    const keys = items.map((item) => this.localDateKey(dateOf(item))).filter(Boolean).sort();
+    return keys.length ? keys[0] : null;
   }
 
   repoQualifier(repos) {
@@ -175,7 +307,11 @@ class TeamActivityService {
     const payload = await this.ghJson([
       'api', 'search/issues', '--method', 'GET',
       '-f', `q=${query}`,
-      '-f', `per_page=${SEARCH_PAGE_LIMIT}`
+      '-f', `per_page=${SEARCH_PAGE_LIMIT}`,
+      // Without an explicit sort, GitHub ranks by relevance, so a capped
+      // page is not reliably "the most recent N" — sorting by update
+      // recency makes the cap predictable and keeps the newest work first.
+      '-f', 'sort=updated'
     ]);
     const items = Array.isArray(payload?.items) ? payload.items : [];
     return {
@@ -229,10 +365,17 @@ class TeamActivityService {
     return [...new Set(matches)];
   }
 
-  assembleMember({ member, prs, commits, since }) {
+  assembleMember({ member, prBucket, commitBucket, since }) {
+    const prItems = [...prBucket.items.values()];
+    const commitItems = [...commitBucket.items.values()];
+    // Coverage, not "this one call got capped": true only when the window
+    // being asked for reaches further back than what the accumulated store
+    // can guarantee is complete. No floor at all (a capped fetch that
+    // returned nothing usable) means no guaranteed coverage, full stop.
+    const incomplete = !prBucket.floorDateKey || !commitBucket.floorDateKey ||
+      since < prBucket.floorDateKey || since < commitBucket.floorDateKey;
+
     const days = new Map();
-    // The search window is updated:>=since, so a PR opened months ago can
-    // arrive here; only events that happened inside the window get a day row.
     const inWindow = (dateKey) => dateKey && dateKey >= since;
     const dayEntry = (dateKey) => {
       if (!days.has(dateKey)) {
@@ -241,7 +384,7 @@ class TeamActivityService {
       return days.get(dateKey);
     };
 
-    prs.items.forEach((pr) => {
+    prItems.forEach((pr) => {
       const openedKey = this.localDateKey(pr.createdAt);
       if (inWindow(openedKey)) dayEntry(openedKey).prsOpened.push(pr);
       const mergedKey = this.localDateKey(pr.mergedAt);
@@ -253,7 +396,7 @@ class TeamActivityService {
       }
     });
 
-    commits.items.forEach((commit) => {
+    commitItems.forEach((commit) => {
       const dateKey = this.localDateKey(commit.authoredAt);
       if (!inWindow(dateKey)) return;
       const entry = dayEntry(dateKey);
@@ -266,7 +409,7 @@ class TeamActivityService {
     // A flat, undated-bucket view of the same PRs for a timeline/Gantt render,
     // where a PR is one bar from createdAt to mergedAt (or to "now" if still
     // open) rather than two separate day-bucket entries.
-    const timeline = prs.items
+    const timeline = prItems
       .filter((pr) => inWindow(this.localDateKey(pr.createdAt)) || inWindow(this.localDateKey(pr.mergedAt)))
       .map((pr) => ({
         number: pr.number,
@@ -291,12 +434,12 @@ class TeamActivityService {
     return {
       name: member.name || member.githubUsername,
       githubUsername: member.githubUsername,
-      incomplete: prs.incomplete || commits.incomplete,
+      incomplete,
       totals: {
-        prsOpened: prs.items.filter((pr) => inWindow(this.localDateKey(pr.createdAt))).length,
-        prsMerged: prs.items.filter((pr) => inWindow(this.localDateKey(pr.mergedAt))).length,
-        commits: commits.items.filter((commit) => inWindow(this.localDateKey(commit.authoredAt))).length,
-        tickets: [...new Set(prs.items.flatMap((pr) => pr.tickets))].length,
+        prsOpened: prItems.filter((pr) => inWindow(this.localDateKey(pr.createdAt))).length,
+        prsMerged: prItems.filter((pr) => inWindow(this.localDateKey(pr.mergedAt))).length,
+        commits: commitItems.filter((commit) => inWindow(this.localDateKey(commit.authoredAt))).length,
+        tickets: [...new Set(prItems.flatMap((pr) => pr.tickets))].length,
         medianCycleHours
       },
       days: orderedDays,

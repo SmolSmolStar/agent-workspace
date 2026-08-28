@@ -143,11 +143,13 @@ server/threadService.js            - Workspace/project thread persistence (`~/.o
 ├─ Project aggregation: `listProjects()` returns repository-level chat rollups across one/many workspaces
 └─ Lifecycle: create/list/close/archive + session association updates
 server/teamActivityService.js      - Per-day, per-teammate GitHub activity digest (PRs opened/merged, commit counts, Trello links found in PR text)
-├─ Data: `gh api search/issues` + `gh api search/commits` per configured member, one bounded window query each
+├─ Data model: one accumulating store per member (PR bucket + commit bucket), not a per-request fetch. `startBackgroundRefresh()` (called once from server/index.js at boot) pulls on a timer (`ORCHESTRATOR_TEAM_ACTIVITY_CACHE_TTL_MS`, default 5min); a page load reads whatever's already in memory
+├─ Incremental: first pull per member is a full 31-day backfill; every pull after that asks GitHub only for `updated:>=<last successful pull, minus a 2min overlap>` and merges into the store — not a full 31-day re-fetch every cycle
+├─ `search/issues` sorts by `updated` explicitly — without a sort, GitHub ranks by relevance, so a capped page isn't reliably "the most recent N"
 ├─ Config: user settings `global.team.members` (`{name, githubUsername}`) + optional `global.team.repos` scope; `?authors=` and `?days=` query overrides
-├─ Cache: TTL cache (default 5min, `ORCHESTRATOR_TEAM_ACTIVITY_CACHE_TTL_MS`) with in-flight coalescing; `?refresh=1` bypasses
-├─ Resilience: one member's failed `gh` call degrades to `{incomplete, error, days:[], timeline:[]}` instead of failing the whole request
-├─ Honesty: rows carry `incomplete: true` when a search hits the per-page cap instead of silently truncating
+├─ A normal request never fires a live `gh` call once a member has data — only the background timer does that. `?refresh=1` forces one, but still respects a 20s anti-mash floor so repeat clicks can't retrigger the search rate limit
+├─ Resilience: one member's failed `gh` call degrades to `{incomplete, error, days:[], timeline:[]}` instead of failing the whole request, and never gets stuck — a failed pull leaves no store entry, so the next pull retries a full backfill
+├─ Honesty: `incomplete` means "the accumulated store's coverage floor doesn't reach back far enough for the requested window," not "this one call got capped" — a member's own history usually deepens past that floor after a few background cycles
 └─ Each member also carries a flat `timeline` (PR list with createdAt/mergedAt/cycleHours, capped 25, newest-sorted) and `totals.medianCycleHours`, for the Gantt view
 server/routes/teamRoutes.js        - `/api/team/*` REST surface (`GET /api/team/activity`, `GET /api/team/config`) with read policy gating
 client/team-activity.html          - Standalone team activity dashboard page (served statically at /team-activity.html)
