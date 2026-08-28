@@ -347,6 +347,7 @@ class ClaudeOrchestrator {
         viewBranchOnGithub: false,
         viewBranchDiff: true,
         viewPrOnGithub: true,
+        viewOpenPRsOnGithub: true,
         advancedDiff: false,
         advancedBranchDiff: false,
         startServerDev: false,
@@ -7054,6 +7055,13 @@ class ClaudeOrchestrator {
 
     // Always show branch button (uses current session's git info)
     const session = this.sessions.get(sessionId);
+
+    // Open-PRs link, always present — the "view PR" button below only
+    // shows once a specific PR is parsed from output, this one never is.
+    if (session && session.remoteUrl && visibility.viewOpenPRsOnGithub !== false) {
+      buttons += `<button class="control-btn" onclick="window.open('${session.remoteUrl}/pulls', '_blank')" title="View open PRs on GitHub">🔀</button>`;
+    }
+
     if (session && session.branch && session.branch !== 'master' && session.branch !== 'main') {
       const worktreeId = sessionId.split('-')[0];
 
