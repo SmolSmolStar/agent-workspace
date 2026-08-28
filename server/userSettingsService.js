@@ -207,6 +207,7 @@ class UserSettingsService {
               viewBranchOnGithub: false,
               viewBranchDiff: true,
               viewPrOnGithub: true,
+              viewOpenPRsOnGithub: true,
               advancedDiff: false,
               advancedBranchDiff: false,
               startServerDev: false,
