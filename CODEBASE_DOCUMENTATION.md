@@ -142,6 +142,14 @@ server/threadService.js            - Workspace/project thread persistence (`~/.o
 ├─ New chat reuse: thread creation prefers an existing repo worktree without an active thread before allocating a new `workN`
 ├─ Project aggregation: `listProjects()` returns repository-level chat rollups across one/many workspaces
 └─ Lifecycle: create/list/close/archive + session association updates
+server/teamActivityService.js      - Per-day, per-teammate GitHub activity digest (PRs opened/merged, commit counts, Trello links found in PR text)
+├─ Data: `gh api search/issues` + `gh api search/commits` per configured member, one bounded window query each
+├─ Config: user settings `global.team.members` (`{name, githubUsername}`) + optional `global.team.repos` scope; `?authors=` and `?days=` query overrides
+├─ Cache: TTL cache (default 5min, `ORCHESTRATOR_TEAM_ACTIVITY_CACHE_TTL_MS`) with in-flight coalescing; `?refresh=1` bypasses
+└─ Honesty: rows carry `incomplete: true` when a search hits the per-page cap instead of silently truncating
+server/routes/teamRoutes.js        - `/api/team/*` REST surface (`GET /api/team/activity`, `GET /api/team/config`) with read policy gating
+client/team-activity.html          - Standalone team activity report page (served statically at /team-activity.html)
+client/team-activity.js            - Fetches /api/team/activity and renders the per-day per-member digest table
 server/projectBoardService.js      - Local projects kanban board persistence (`~/.orchestrator/project-board.json`) + APIs (`GET /api/projects/board`, `POST /api/projects/board/move`, `POST /api/projects/board/patch`)
 server/repoAtlasService.js         - Repo Atlas singleton — registry bootstrap, scan orchestration, alias-aware manifest loading, query/propose/audience/sync facade (data: `~/.agent-workspace/atlas/`, registry synced to a PRIVATE git repo)
 server/atlas/                      - Atlas internals: atlasSchema (validation), atlasStore (one-file-per-repo registry IO under `entries/`, plus `.repo-atlas-key` read/write and the local key cache), atlasIdentity (robust GitHub remote grouping, root-history-aware local grouping, root-commit collision ids, shared-history warnings, deterministic preferred checkouts, local aliases), atlasRegistryIdentity (legacy curation rebinding, exact-file precedence, duplicate and ambiguity warnings), atlasDiscovery (Git common-dir-aware linked-worktree grouping that keeps unrelated conventional-name siblings separate, plus GitHub scan; shallow clones omit unreliable root commits), atlasQuery (find/digest/list), atlasEvidence plus atlasCheckout, atlasCodeEvidence, and atlasEvidenceCoordinator (origin-verified live Git facts, code/test signals, safe file counts, request coalescing), atlasPortfolio (bounded multi-repository reports with path-safe metadata), atlasEncryption (repo-key-gated AES-256-GCM sealing/unsealing, `gh api` remote key fetch), atlasProposals (agent write-back queue, user approves), atlasCompiler (per-audience bundle redaction that keeps private entries on the machine), atlasSync (git pull/rebase/push of the registry)
@@ -712,6 +720,8 @@ POST /api/greenfield/detect-category - Infer category from description (taxonomy
 GET /api/setup-actions            - List Windows dependency-onboarding actions
 GET /api/setup-actions/state      - Read persisted dependency-onboarding state (completed/dismissed/current step)
 PUT /api/setup-actions/state      - Persist dependency-onboarding state into app data for desktop restarts
+GET /api/team/activity            - Per-day per-teammate PR/commit/ticket digest (days/authors/refresh params)
+GET /api/team/config              - Configured team members and repo scope from user settings
 GET /api/usage/limits             - Claude 5h/7d + Codex plan-usage percentages and reset times (refresh=1 bypasses Codex cache)
 GET /api/usage/codex-guard        - Durable Codex monitor/drain state and current observed weekly window
 POST /api/usage/codex-guard/resume - Explicitly reopen new Codex admissions after reviewing a drain event

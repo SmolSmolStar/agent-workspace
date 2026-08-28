@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Team activity</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root {
+      --bg: #101418;
+      --panel: #1a2027;
+      --border: #2c3540;
+      --text: #ffffff;
+      --accent: #a8d8f0;
+      --accent-warm: #ffd685;
+      --merged: #7ee2a8;
+      --link: #8ec9ff;
+      --danger: #ff9d9d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 1.5rem;
+      background: var(--bg);
+      color: var(--text);
+      font: 0.95rem/1.5 system-ui, sans-serif;
+    }
+    h1 { font-size: 1.3rem; margin: 0 0 0.25rem; }
+    .meta { color: var(--accent); margin-bottom: 1rem; }
+    .controls { display: flex; gap: 0.75rem; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; }
+    .controls label { color: var(--accent); }
+    select, button {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 0.4rem;
+      padding: 0.4rem 0.75rem;
+      font-size: 0.95rem;
+      cursor: pointer;
+    }
+    button:hover, select:hover { border-color: var(--accent); }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.5rem 0.7rem;
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: break-word;
+    }
+    th { background: var(--panel); position: sticky; top: 0; }
+    td.num, th.num { text-align: right; width: 7.5rem; }
+    th.date-col { width: 8rem; }
+    th.member-col { width: 10rem; }
+    .day-first td { border-top: 2px solid var(--accent); }
+    a { color: var(--link); }
+    .pr-state { color: var(--merged); }
+    .ticket { color: var(--accent-warm); }
+    .empty, .error { padding: 1.5rem; background: var(--panel); border-radius: 0.5rem; }
+    .error { color: var(--danger); }
+    .incomplete { color: var(--accent-warm); }
+    code { background: var(--panel); padding: 0.1rem 0.3rem; border-radius: 0.25rem; }
+  </style>
+</head>
+<body>
+  <h1>Team activity</h1>
+  <div class="meta" id="meta">Loading…</div>
+  <div class="controls">
+    <label for="days">Window</label>
+    <select id="days">
+      <option value="1">Today</option>
+      <option value="3">3 days</option>
+      <option value="7" selected>7 days</option>
+      <option value="14">14 days</option>
+      <option value="31">31 days</option>
+    </select>
+    <button id="refresh">Refresh</button>
+  </div>
+  <div id="content"></div>
+  <script src="team-activity.js"></script>
+</body>
+</html>
