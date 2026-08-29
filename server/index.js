@@ -191,6 +191,7 @@ const { PolicyService } = require('./policyService');
 const { AuditExportService } = require('./auditExportService');
 const { getInstance: getCommandHistoryService } = require('./commandHistoryService');
 const { evaluateBindSecurity, isLoopbackHost } = require('./networkSecurityPolicy');
+const { isSupportedAudioUpload } = require('./audioUploadPolicy');
 const {
   normalizeRepositoryPath,
   normalizeRepositoryRootForWorktrees,
@@ -204,14 +205,20 @@ const audioUpload = multer({
   dest: path.join(os.tmpdir(), 'orchestrator-audio'),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
   fileFilter: (req, file, cb) => {
-    const allowed = ['audio/webm', 'audio/wav', 'audio/mp3', 'audio/mpeg', 'audio/ogg', 'audio/x-wav'];
-    if (allowed.includes(file.mimetype) || file.originalname.match(/\.(wav|webm|mp3|ogg)$/i)) {
+    if (isSupportedAudioUpload(file)) {
       cb(null, true);
     } else {
       cb(new Error('Invalid audio format'));
     }
   }
 });
+const acceptAudioUpload = (req, res, next) => {
+  audioUpload.single('audio')(req, res, (error) => {
+    if (!error) return next();
+    const status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+    return res.status(status).json({ error: error.message });
+  });
+};
 
 // Configure multer for image uploads (for terminal image paste)
 const imageUploadDir = path.join(os.tmpdir(), 'orchestrator-images');
@@ -8837,7 +8844,7 @@ app.get('/api/whisper/status', (req, res) => {
 });
 
 // Transcribe audio file with Whisper
-app.post('/api/whisper/transcribe', audioUpload.single('audio'), async (req, res) => {
+app.post('/api/whisper/transcribe', acceptAudioUpload, async (req, res) => {
   const fs = require('fs');
   try {
     if (!req.file) {
@@ -8875,7 +8882,7 @@ app.post('/api/whisper/transcribe', audioUpload.single('audio'), async (req, res
 });
 
 // Full voice command with Whisper (transcribe + parse + execute)
-app.post('/api/whisper/command', audioUpload.single('audio'), async (req, res) => {
+app.post('/api/whisper/command', acceptAudioUpload, async (req, res) => {
   const fs = require('fs');
   try {
     if (!req.file) {

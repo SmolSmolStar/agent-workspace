@@ -211,6 +211,7 @@ server/encryptedStore.js           - Reusable AES-256-GCM encrypted JSON store h
 server/serviceStackRuntimeService.js - Workspace service-stack runtime supervisor (start/stop/restart, desired state, auto-restart, health checks)
 server/auditExportService.js       - Redacted audit export across activity + scheduler logs (JSON/CSV)
 server/networkSecurityPolicy.js    - Bind-host/auth safety policy helpers (loopback defaults + LAN auth guardrails)
+server/audioUploadPolicy.js        - Whisper multipart allowlist; explicit MIME types must match their audio extension, generic binary uploads use the extension allowlist, and rejections return JSON
 server/processTelemetryBenchmarkService.js - Release benchmark metrics (onboarding/runtime/review), snapshot comparisons, release-note markdown generation
 server/projectTypeService.js       - Project taxonomy loader/validator for category→framework→template metadata (`config/project-types.json`)
 server/githubCloneWorktreeService.js - GitHub import flow for Quick Work (`owner/repo` parse, category/subfolder placement, clone into `master/`, and mixed-worktree bootstrap)
@@ -361,6 +362,7 @@ client/terminal.js                 - Terminal component implementation
 client/terminal-scroll-keeper.js   - Shared TerminalScrollKeeper (worktree terminals + Commander panel): per-terminal activity tracking (wheel/mousedown/touch + noteActivity for keys), interval tick, snap-back countdown armed from first scrolled-up sighting so programmatic scroll-to-top gets the full grace period; unit-tested in tests/unit/terminalScrollKeeper.test.js
 client/terminal-themes.js          - Single source of truth for terminal visuals: shared light/dark xterm palettes (`TERMINAL_THEMES`), `getTerminalTheme()`, and `getTerminalOptions()` (font/cursor/scrollback base options) used by BOTH worktree terminals and the Commander panel so they cannot drift apart
 client/terminal-manager.js         - Terminal lifecycle management
+client/voice-control.js            - Push-to-talk Google/Whisper client that preserves supported MediaRecorder formats, derives the matching extension, and releases microphone tracks after setup failure
 client/file-watcher-adapter.js     - File watching integration
 client/notifications.js            - Browser notification handling
 
