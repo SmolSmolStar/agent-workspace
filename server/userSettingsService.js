@@ -298,13 +298,7 @@ class UserSettingsService {
             colorize: true,
             showAtInSidebar: false
           },
-          terminals: {
-            // Persist terminal filtering across refreshes.
-            // 'all' | 'claude' | 'server'
-            viewMode: 'all',
-            // 'all' | 'none' | '1' | '2' | '3' | '4'
-            tierFilter: 'all'
-          },
+          terminals: {},
           worktrees: {
             autoCreateExtraWhenBusy: true,
             autoCreateMinNumber: 9,
