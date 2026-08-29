@@ -224,10 +224,7 @@
         "colorize": true,
         "showAtInSidebar": false
       },
-      "terminals": {
-        "viewMode": "all",
-        "tierFilter": "all"
-      },
+      "terminals": {},
       "worktrees": {
         "autoCreateExtraWhenBusy": true,
         "autoCreateMinNumber": 9,
