@@ -940,11 +940,27 @@ class TerminalManager {
     for (let i = 0; i < parts.length; i++) {
       const rawLine = parts[i];
       const hasNewline = i < parts.length - 1;
-      const line = rawLine.replace(/\r/g, '');
 
-      if (this.isEphemeralLine(line)) {
-        output += `\r\x1b[2K${line}`;
-        state.pendingEol = true;
+      // A bare \r inside a line (not the \r of a trailing \r\n pair) is a
+      // spinner/status line redrawing itself in place. Without an explicit
+      // erase, shrinking content (an elapsed-time counter, a changing hint)
+      // leaves old trailing characters on screen — text-matching a fixed
+      // whitelist of known hints missed every other variant, so this
+      // detects the redraw itself instead of guessing from its wording.
+      const trailingCrlf = hasNewline && rawLine.endsWith('\r');
+      const searchLine = trailingCrlf ? rawLine.slice(0, -1) : rawLine;
+      const lastCr = searchLine.lastIndexOf('\r');
+      const isKnownHint = this.isEphemeralLine(rawLine.replace(/\r/g, ''));
+
+      if (lastCr !== -1 || (isKnownHint && !hasNewline)) {
+        const finalSegment = lastCr !== -1 ? searchLine.slice(lastCr + 1) : searchLine;
+        output += `\r\x1b[K${finalSegment}`;
+        if (trailingCrlf) output += '\r';
+        if (hasNewline) {
+          output += '\n'; // already newline-terminated in this chunk — nothing pending
+        } else {
+          state.pendingEol = true; // redraw left open; next real content needs a fresh line first
+        }
         continue;
       }
 
