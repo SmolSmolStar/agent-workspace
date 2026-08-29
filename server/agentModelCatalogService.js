@@ -171,7 +171,10 @@ class AgentModelCatalogService {
         .map((m) => ({
           id: m.id.trim(),
           label: typeof m.label === 'string' && m.label.trim() ? m.label.trim() : m.id.trim(),
-          efforts: Array.isArray(m.efforts) && m.efforts.length ? m.efforts.filter(Boolean) : defaultEfforts,
+          // An explicit [] (no model.efforts key at all falls back to the
+          // provider default) means the model has no effort levels at all -
+          // e.g. Haiku, which doesn't support the reasoning-effort flag.
+          efforts: Array.isArray(m.efforts) ? m.efforts.filter(Boolean) : defaultEfforts,
           // Only Codex's live cache (enrichCodexFromLiveCache) populates
           // this today; every model still gets the field so client code
           // never has to guard against it being undefined.

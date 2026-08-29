@@ -332,29 +332,34 @@ class ModelEffortPicker {
       const model = models.find((m) => m.id === modelId);
       const btn = row.querySelector('.model-effort-picker-model');
 
+      const hasEfforts = !!(model.efforts && model.efforts.length);
+
       btn.addEventListener('click', (e) => {
-        if (e.target.closest('[data-expand-toggle]')) {
+        if (hasEfforts && e.target.closest('[data-expand-toggle]')) {
           e.stopPropagation();
           this.showEffortFlyout(flyout, row, target, harnessId, model, currentProviderId, currentConfig);
           return;
         }
-        const defaultEffort = model.efforts.includes('high') ? 'high' : model.efforts[0];
+        const defaultEffort = hasEfforts ? (model.efforts.includes('high') ? 'high' : model.efforts[0]) : undefined;
         this.handleCommit(target, harnessId, currentProviderId, { model: modelId, effort: defaultEffort });
       });
-      row.addEventListener('mouseenter', () => {
-        if (this.isTouchDevice()) return;
-        this.showEffortFlyout(flyout, row, target, harnessId, model, currentProviderId, currentConfig);
-      });
+      if (hasEfforts) {
+        row.addEventListener('mouseenter', () => {
+          if (this.isTouchDevice()) return;
+          this.showEffortFlyout(flyout, row, target, harnessId, model, currentProviderId, currentConfig);
+        });
+      }
     });
   }
 
   renderModelRow(model, isCurrent) {
+    const hasEfforts = !!(model.efforts && model.efforts.length);
     return `
       <div class="model-effort-picker-row ${isCurrent ? 'is-current' : ''}" data-model-id="${this.escape(model.id)}">
         <button type="button" class="model-effort-picker-model" data-model-id="${this.escape(model.id)}">
           ${isCurrent ? '<span class="model-effort-picker-check">&#10003;</span>' : ''}
           <span class="model-effort-picker-model-label">${this.escape(model.label)}</span>
-          <span class="model-effort-picker-expand" data-expand-toggle title="Effort options">&#9656;</span>
+          ${hasEfforts ? '<span class="model-effort-picker-expand" data-expand-toggle title="Effort options">&#9656;</span>' : ''}
         </button>
       </div>
     `;
