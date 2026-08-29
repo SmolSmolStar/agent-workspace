@@ -349,6 +349,8 @@ describe('AgentModelConfigService', () => {
     // Within the cache TTL the transcript is not re-read, even if it changed on disk.
     fs.writeFileSync(file, JSON.stringify({ type: 'assistant', message: { model: 'claude-sonnet-5' } }) + '\n');
     expect(svc.resolveClaudeConfig(worktreeDir, { agentRunning: true }).model).toBe('claude-opus-4-8');
+  });
+
   test('resolveGrokConfig reads default model and effort from the [models] section', () => {
     writeFileInside(homeDir, ['.grok', 'config.toml'], [
       '[cli]',
