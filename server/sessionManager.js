@@ -3302,7 +3302,7 @@ class SessionManager extends EventEmitter {
     return getShellKind();
   }
 
-  buildClaudeCommand({ shellKind, mode, resumeId, skipPermissions }) {
+  buildClaudeCommand({ shellKind, mode, resumeId, skipPermissions, model, effort }) {
     let cmd = 'claude';
 
     if (mode === 'continue') {
@@ -3316,6 +3316,12 @@ class SessionManager extends EventEmitter {
     if (skipPermissions) {
       cmd += ' --dangerously-skip-permissions';
     }
+
+    // Launch-only flags (confirmed via `claude --help`): apply to this one
+    // session and never touch the persisted default the way the in-session
+    // /model and /effort slash commands do.
+    if (model) cmd += ` --model ${quoteForShell(model, shellKind)}`;
+    if (effort) cmd += ` --effort ${quoteForShell(effort, shellKind)}`;
 
     return cmd;
   }
@@ -3502,7 +3508,9 @@ class SessionManager extends EventEmitter {
           shellKind,
           mode: finalConfig.mode,
           resumeId: finalConfig.resumeId,
-          skipPermissions
+          skipPermissions,
+          model: finalConfig.model,
+          effort: finalConfig.effort
         });
         const resolvedCommand = this.resolveClaudeCommand(claudeCmd, provider);
         if (resolvedCommand.warning) {

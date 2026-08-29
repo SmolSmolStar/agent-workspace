@@ -3991,6 +3991,12 @@ header {
   margin-bottom: var(--space-xs);
 }
 
+.agent-option .agent-logo {
+  display: block;
+  margin: 0 auto var(--space-xs);
+  border-radius: var(--radius-sm);
+}
+
 .agent-option .agent-name {
   font-weight: 500;
   display: block;
@@ -4032,12 +4038,63 @@ header {
   color: white;
 }
 
+.model-selector, .effort-selector {
+  margin-bottom: var(--space-lg);
+}
+
+.model-selector label, .effort-selector label {
+  display: block;
+  font-weight: 500;
+  margin-bottom: var(--space-sm);
+  color: var(--text-primary);
+}
+
+.model-buttons, .effort-buttons {
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.model-btn, .effort-btn {
+  flex: 1;
+  min-width: 6rem;
+  padding: var(--space-sm) var(--space-md);
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: center;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.effort-btn {
+  text-transform: capitalize;
+  min-width: 4.5rem;
+}
+
+.model-btn:hover, .effort-btn:hover {
+  border-color: var(--accent-primary);
+  background: var(--bg-secondary);
+}
+
+.model-btn.selected, .effort-btn.selected {
+  border-color: var(--accent-primary);
+  background: var(--accent-primary);
+  color: white;
+}
+
+/* Fixed floor so switching harness (fewer/more sandbox+approval flags)
+   doesn't visibly yank the modal's height around - model/effort now have
+   their own rows above and no longer contribute to this jank. */
 .flag-configuration {
   margin-bottom: var(--space-lg);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   padding: var(--space-md);
   background: var(--bg-tertiary);
+  min-height: 4.5rem;
 }
 
 .flag-category {
