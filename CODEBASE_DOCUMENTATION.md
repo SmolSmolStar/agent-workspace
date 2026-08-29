@@ -52,12 +52,15 @@ server/sessionManager.js           - Terminal session lifecycle management
 ├─ Workspace cleanup: `cleanupWorkspaceSessions(workspaceId)` tears down active or stashed sessions for a specific workspace before delete/archive flows
 ├─ Workspace switch guard: switching to the already-active workspace short-circuits and reuses the current session map instead of re-initializing PTYs
 ├─ Stale-agent cleanup: when status detection sees an explicit shell/no-agent prompt, recovery `lastAgent` markers are cleared to keep sidebar status accurate (`no-agent` vs `busy/waiting`)
+├─ Marker-clear ground truth: for tmux-backed sessions `paneStillRunsAgent()` checks `pane_current_command` before clearing — garbled/wrapped agent frames that end in a prompt-looking line (bare `>` / `❯`) can no longer wipe the marker off a live agent and resurrect the Fresh/Continue/Resume overlay
 ├─ Status model: periodic status re-evaluation prevents stale "busy" lights after output quiets down
-└─ Uses: node-pty for terminal emulation
+├─ `resizeSession()` re-asserts a same-size resize after `RESIZE_REASSERT_COOLDOWN_MS` (60s) since node-pty's `resize()` can report success while the OS-level resize silently fails (upstream won't-fix) — a TUI mid-redraw at that point can write cursor-addressed output for the wrong width straight into a client's xterm buffer, which no repaint can fix since the buffer itself is wrong, not just the pixels. When that reassert path fires for a tmux-backed session, `resyncSessionBuffer()` also emits `terminal-resync` with a fresh `capture-pane` read so clients replace their buffer wholesale instead of hoping the next redraw fixes it
+└─ `resyncSession(sessionId)` is the on-demand version (socket `resync-session`, client command `resync-terminal`) — forces the resize again regardless of cooldown and always resyncs, for garbled text a user needs fixed right now rather than waiting on the next reassert
 
 server/statusDetector.js           - Claude Code session monitoring
 ├─ Detects: Claude sessions, branch changes, status updates
 ├─ Busy/idle heuristics: tool/typing signals are recency-gated to avoid stale "busy forever" states
+├─ Input-aware gating: `noInputSinceLaunch` option — a freshly launched agent that never received a submitted command (Enter) reports `waiting`, not `busy`, from weak recency/scrollback heuristics; strong markers (esc to interrupt, provider work patterns) still report busy (covers `claude -p`/`codex exec` auto-runs). SessionManager tracks `agentStartedAt`/`agentInputSubmitted` per session (see `isAutoRunAgentCommand`)
 ├─ Events: session-detected, branch-changed, status-updated
 └─ Polling: Configurable intervals for status checks
 
@@ -84,9 +87,49 @@ server/utils/processUtils.js       - Shared spawn/env hardening helpers
 ├─ Windows packaging guardrails: applies `windowsHide`/`CREATE_NO_WINDOW`, augments GUI-app PATH with Git/node/npm/common CLI locations, and builds hidden PowerShell argument lists
 └─ Cross-platform behavior: non-Windows platforms pass through unchanged so Linux/macOS launch behavior stays stable
 server/utils/nodePtyCompat.js      - Runtime compatibility shim for the bundled `node-pty` Windows ConPTY loader
-└─ Windows PTY guard: wraps stale ConPTY calls in memory (`startProcess`, `connect`, `resize`, `clear`, `kill`) via `loadNativeModule` when available or direct `conpty.node` patching when package internals differ, so packaged installs survive read-only app-resource layouts and mixed node-pty variants
+├─ Windows PTY guard: wraps stale ConPTY calls in memory (`startProcess`, `connect`, `resize`, `clear`, `kill`) via `loadNativeModule` when available or direct `conpty.node` patching when package internals differ, so packaged installs survive read-only app-resource layouts and mixed node-pty variants
+└─ Source runtime guard: delegates Node ABI mismatch recovery to `nodePtyRuntimeRepair` before retrying the real module load
+server/utils/nodePtyRuntimeRepair.js - Bounded source-checkout recovery for a `node-pty` native ABI mismatch
+├─ Exact runtime: invokes npm CLI through the active `process.execPath`, preventing a PATH-selected Node version from rebuilding the addon for the wrong ABI
+├─ Scope: only handles Node's explicit `NODE_MODULE_VERSION` mismatch, only once per process, and never writes into packaged `resources/backend`
+└─ Override: `ORCHESTRATOR_NODE_PTY_AUTO_REBUILD=false` disables automatic recovery
+server/utils/tmuxSessionBackend.js - tmux-backed session persistence (terminals survive app-server restarts)
+├─ Model: the orchestrator's pty is only a tmux CLIENT; the real shell/agent runs in a pane under the tmux server on a dedicated per-instance socket (`agent-workspace-<port>`), so nodemon reloads/updates/crashes detach instead of killing sessions, and `new-session -A` re-adopts them on the next createSession()
+├─ Env hygiene: scrubs `CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT`/`TMUX` at the tmux-server choke point so nested-session guards never trip; socket options make panes behave like plain terminals (status off, prefix None, mouse off, window-size latest)
+├─ Lifecycle: explicit close/terminate/workspace-teardown kills the tmux session (never leaks detached panes); server shutdown detaches only; tree-kills + process limits target the PANE pid, not the client
+├─ Fallback: Windows/tmux-less installs fail closed to direct node-pty spawning (`ORCHESTRATOR_SESSION_PERSISTENCE=0` or `config.sessions.persistence.enabled=false` to disable); survives server restarts only — reboots still rely on transcript resume
+└─ Observability: `GET /api/sessions/persistence` reports managed vs orphaned tmux sessions; adopted sessions backfill their buffer from `capture-pane` so the log endpoint/scrollback preload shows pre-restart history
 server/utils/pathUtils.js          - Shared slash-normalization + data-directory compatibility helpers for repo/worktree labels
 └─ Legacy migration: renames `~/.orchestrator` when possible, otherwise merges richer legacy state into `~/.agent-workspace` with conflict backups before falling back to the old directory
+server/pullRequestService.js       - `gh`-backed PR search/view/merge/review wrapper
+├─ Search cache: 30s TTL + in-flight coalescing for `gh search prs` (shared by /api/prs, /api/process/tasks, /api/process/distribution); bypass with `?refresh=1`
+└─ Invalidation: local merge/review actions clear the cache so the UI reflects them immediately
+server/commandRegistry.js          - Canonical Commander/voice/UI command catalog and execution dispatcher
+├─ Aliases: advertised aliases resolve to one canonical command for metadata, policy checks, and execution; registration rejects ambiguous alias/name collisions
+├─ Plugin isolation: plugin command names and aliases share the plugin ID prefix, so plugins cannot reserve global command names
+└─ Discovery: grouped capabilities and the flat catalog expose the same canonical metadata
+server/voiceCommandService.js      - Rules-first natural-language command parser with optional Ollama/Claude fallback
+└─ Dynamic aliases: zero-parameter command names and aliases become exact voice rules, appear in voice help, and are included in LLM grounding prompts; rule caching also tracks required-parameter eligibility across command reloads
+server/usageLimitsService.js       - Plan-usage limits for the header widget
+├─ Claude: reads `~/.local/state/ai-usage-monitor/claude-live.json` (tapped by the user's Claude Code status line)
+├─ Codex: reads official app-server JSON-RPC envelopes through `codexRateLimitsClient`, preserves raw `resetsAt` epochs, and uses a 15min widget cache
+├─ Grok: queries the CLI proxy billing endpoints with the grok CLI's own OAuth token (`~/.grok/auth.json`, NEVER refreshed here — expired token = stale until the grok CLI refreshes it)
+└─ Settings: per-provider toggles in user settings `global.ui.usageLimitsProviders.{claude,codex,grok}` (default on); whole-widget via `ui.visibility.header.usageLimits`
+server/codexUsageGuardService.js   - Durable Codex weekly-limit rollover and exhaustion guard
+├─ Polling: reads the main Codex weekly window directly every 2 minutes by default (configurable, clamped to 2 to 5 minutes) and bypasses the widget cache
+├─ Rollover proof: enters drain mode only when `resetsAt` advances and `usedPercentage` drops; elapsed wall-clock time alone cannot trigger it
+├─ Monitor safety: requires a live successful poll after every process boot, blocks again after repeated read failures, and recovers automatically after a valid poll; other providers remain available
+├─ Admission: blocks new Codex starts and automated Pager, Commander, and command-registry turns while leaving active PTYs running to finish in-flight work; shell command tracking covers direct, environment-prefixed, and package-runner Codex commands
+├─ Persistence: synchronizes every live app instance through `<data-dir>/codex-usage-guard.json`; a persisted drain wins over stale polls, while an explicit durable resume reaches processes that have completed a live poll
+├─ Failure handling: state read or write failures block new Codex work, and failed resume writes preserve the previous drain
+└─ Operations: `GET /api/usage/codex-guard` reports state; `POST /api/usage/codex-guard/resume` explicitly reopens a healthy drained guard; set `ORCHESTRATOR_CODEX_USAGE_GUARD_ENABLED=false` and restart only when app-server monitoring cannot run, which disables this safety gate
+server/codexUsageGuardStateStore.js - Exclusive writer lock and atomic JSON replacement for shared guard state; abandoned locks fail closed instead of risking a concurrent takeover
+server/codexRateLimitsClient.js    - Bounded Codex app-server JSON-RPC client with versioned initialize/read envelopes, bounded owned-child cancellation, and capped stderr diagnostics
+tests/unit/codexRateLimitsClient.test.js - Production envelope, notification filtering, raw reset epoch, bounded child cleanup, and stderr coverage
+tests/unit/codexUsageGuardService.test.js - Pending, startup failure, recovery, rollover, exhaustion, restart persistence, cross-process races, lock cleanup, and shutdown coverage
+tests/unit/sessionManager.codexAdmission.test.js - Central Codex start and automated-turn admission coverage
+tests/unit/batchLaunchService.admission.test.js - Verifies queued Codex cards are rejected before worktree allocation
+tests/e2e/codex-usage-guard.spec.js - Safe-port API coverage for unavailable-monitor fail-closed status
 server/tokenCounter.js             - Token usage tracking (if applicable)
 server/userSettingsService.js      - User preferences and settings management
 server/sessionRecoveryService.js   - Session recovery state persistence (CWD, agents, conversations)
@@ -100,11 +143,63 @@ server/threadService.js            - Workspace/project thread persistence (`~/.o
 ├─ New chat reuse: thread creation prefers an existing repo worktree without an active thread before allocating a new `workN`
 ├─ Project aggregation: `listProjects()` returns repository-level chat rollups across one/many workspaces
 └─ Lifecycle: create/list/close/archive + session association updates
+server/teamActivityService.js      - Per-day, per-teammate GitHub activity digest (PRs opened/merged, commit counts, Trello links found in PR text)
+├─ Data model: one accumulating store per member (PR bucket + commit bucket), not a per-request fetch. `startBackgroundRefresh()` (called once from server/index.js at boot) pulls on a timer (`ORCHESTRATOR_TEAM_ACTIVITY_CACHE_TTL_MS`, default 5min); a page load reads whatever's already in memory
+├─ Incremental: first pull per member is a full 31-day backfill; every pull after that asks GitHub only for `updated:>=<last successful pull, minus a 2min overlap>` and merges into the store — not a full 31-day re-fetch every cycle
+├─ `search/issues` sorts by `updated` explicitly — without a sort, GitHub ranks by relevance, so a capped page isn't reliably "the most recent N"
+├─ Config: user settings `global.team.members` (`{name, githubUsername}`) + optional `global.team.repos` scope; `?authors=` and `?days=` query overrides
+├─ A normal request never fires a live `gh` call once a member has data — only the background timer does that. `?refresh=1` forces one, but still respects a 20s anti-mash floor so repeat clicks can't retrigger the search rate limit
+├─ Resilience: one member's failed `gh` call degrades to `{incomplete, error, days:[], timeline:[]}` instead of failing the whole request, and never gets stuck — a failed pull leaves no store entry, so the next pull retries a full backfill
+├─ Honesty: `incomplete` means "the accumulated store's coverage floor doesn't reach back far enough for the requested window," not "this one call got capped" — a member's own history usually deepens past that floor after a few background cycles
+└─ Each member also carries a flat `timeline` (PR list with createdAt/mergedAt/cycleHours, capped 25, newest-sorted) and `totals.medianCycleHours`, for the Gantt view
+server/routes/teamRoutes.js        - `/api/team/*` REST surface (`GET /api/team/activity`, `GET /api/team/config`) with read policy gating
+client/team-activity.html          - Standalone team activity dashboard page (served statically at /team-activity.html)
+client/team-activity.js            - Fetches /api/team/activity, renders legend/stat-cards/charts via team-activity-charts.js, plus the detail table
+client/team-activity-charts.js     - SVG chart builders (grouped bar chart of commits/day, PR Gantt/timeline with lane-packed overlap handling), dataviz-skill categorical palette + mark specs, no external deps
+server/flowVisibilityService.js    - Work page data: collects local git/gh/session/task-record state for flowMetrics
+├─ Repos come from the workspace terminal list (deduped by path, capped at `ORCHESTRATOR_FLOW_MAX_REPOS`, default 40); a repeated repo name is disambiguated by its parent directory
+├─ Per repo: `git for-each-ref` (branch aging, plus `--no-merged` so a merged-but-undeleted branch is not counted as unfinished), `git log --since` (dated commit subjects), `gh pr list --state all --search updated:>=` (full PR history in the window)
+├─ WIP, neglected work and repo spread are DERIVED. Unplanned work and unknown dependencies are NOT: an interruption leaves no commit and a task discovered at go-live was never tracked, so those tallies come from thiefLogService and a `fix:` prefix is never read as an interruption
+├─ Each thief carries `source` (derived | logged | mixed) so an empty logged thief reads as untracked, never as zero theft
+├─ Honesty: "no PR data", "no git checkout" and "PR history hit the fetch cap" are separate states named in `coverage`, never folded into a zero
+├─ `startBackgroundRefresh()` rebuilds on a timer (`ORCHESTRATOR_FLOW_CACHE_TTL_MS`, default 10min); `?refresh=1` respects a 30s anti-mash floor; `invalidate()` drops the cache when a thief is logged
+└─ Nothing is persisted except the thief log; the report is recomputed from local state
+server/flowMetrics.js             - Pure figure math, no IO, one function per figure from DeGrandis, "Making Work Visible"
+├─ buildWeeklyFlow (Figures 40/42/48): per-week opened/merged/abandoned/openAtEnd/agedAtEnd/reposTouched, last bucket flagged `partial`
+├─ buildBoard (Figure 27): branch → draft → in review → waiting → merged, with the Validate Pit detected only when one unfinished stage outweighs the rest combined; an unknown count cannot win
+├─ buildAgingReport (Figure 42), buildFlowTime (Figures 38/39), buildQueueModel (Figure 41, N = rho²/(1-rho²), undefined past rho 1)
+├─ buildThroughput: merged per week (the honest velocity) plus cumulative net flow; no sprint burndown because nothing commits to a fixed scope
+└─ buildVisibilityGrid (Figure 4): conventional-commit types into feature/architecture/bug/technical-debt; untyped commits are excluded, not guessed
+server/thiefLogService.js         - The capture side for the two invisible thieves (`~/.agent-workspace/flow-thief-log.json`)
+├─ Entry: thief + book-named kind + title + optional repo/minutes/notes; a kind that does not belong to the chosen thief is dropped, a non-positive duration stores as unknown rather than zero
+├─ summary() for the o'gram tally (an untimed entry still counts once), weeklyCounts() on the same week keys as the derived series (Figure 47)
+└─ Atomic write via temp file + rename; a corrupt log reads as empty instead of taking the page down
+server/routes/flowRoutes.js       - `/api/flow/*`: `GET report`, `GET/POST/DELETE thieves`, `GET thieves/catalog`; read-gated except the log writes
+client/work.html                  - Standalone Work page at /work.html
+client/work-page.js               - The renderer, shared by the standalone page and the in-app panel: o'gram, board, throughput, CFD, aging report, visibility grid, thief capture form
+client/work-charts.js             - Dependency-free SVG builders (o'gram, balanced scorecard, CFD, WIP report, throughput, net flow, queuing curve)
+client/work-panel.js              - Full-screen in-app shell around WorkPage, matching how Tasks opens; header 🕵️ Work button, `header.work` flag, OFF by default
+client/styles/work-panel.css      - Work page styling (one scroll container, white on dark, no truncated labels)
 server/projectBoardService.js      - Local projects kanban board persistence (`~/.orchestrator/project-board.json`) + APIs (`GET /api/projects/board`, `POST /api/projects/board/move`, `POST /api/projects/board/patch`)
+server/repoAtlasService.js         - Repo Atlas singleton — registry bootstrap, scan orchestration, alias-aware manifest loading, query/propose/audience/sync facade (data: `~/.agent-workspace/atlas/`, registry synced to a PRIVATE git repo)
+server/atlas/                      - Atlas internals: atlasSchema (validation), atlasStore (one-file-per-repo registry IO under `entries/`, plus `.repo-atlas-key` read/write and the local key cache), atlasIdentity (robust GitHub remote grouping, root-history-aware local grouping, root-commit collision ids, shared-history warnings, deterministic preferred checkouts, local aliases), atlasRegistryIdentity (legacy curation rebinding, exact-file precedence, duplicate and ambiguity warnings), atlasDiscovery (Git common-dir-aware linked-worktree grouping that keeps unrelated conventional-name siblings separate, plus GitHub scan; shallow clones omit unreliable root commits), atlasQuery (find/digest/list), atlasEvidence plus atlasCheckout, atlasCodeEvidence, and atlasEvidenceCoordinator (origin-verified live Git facts, code/test signals, safe file counts, request coalescing), atlasPortfolio (bounded multi-repository reports with path-safe metadata), atlasEncryption (repo-key-gated AES-256-GCM sealing/unsealing, `gh api` remote key fetch), atlasProposals (agent write-back queue, user approves), atlasCompiler (per-audience bundle redaction that keeps private entries on the machine), atlasSync (git pull/rebase/push of the registry)
+server/atlas/atlasLocalMetadata.js - Bounded package and README summary extraction for local repositories; rejects binary files, symlinks, markup blocks, setup boilerplate, and placeholder descriptions
+server/routes/atlasRoutes.js       - `/api/atlas/*` REST surface (status/entries/evidence/portfolio/find/digest/topics/refresh/proposals/audiences/subscriptions) with read/write policy gating
+scripts/atlas.js                   - `atlas` CLI (scan/status/list/show/evidence/report/find/digest/note/avoid/set/audience/compile/propose/proposals/remote/sync/publish/subscribe/key/doctor/init)
+├─ `atlas key generate <id> [--rotate]` - create/rotate a repo's `.repo-atlas-key` (commit it — that's what gates decryption to repo collaborators)
+├─ `atlas key sync`                     - resolve keys (cache → local clone → `gh api`) for anything currently locked; `getEntries()` itself never touches the network, only cache/local-clone
+config/repo-atlas-topics.json      - Canonical topic vocabulary for atlas highlights
+config/repo-atlas.example.json     - Annotated `.repo-atlas.json` per-repo manifest example
+skills/public/repo-atlas/SKILL.md  - Agent-facing skill doc for querying/proposing to the atlas
+tests/unit/repoAtlas*.test.js      - Atlas coverage: discovery identity/path aliases, schema/store/query/evidence/proposals/compiler/sync/service
 server/discordIntegrationService.js - Discord queue orchestration bridge (Services workspace ensure/start, signed queue verification, invocation idempotency, JSONL audit log for processing dispatch/replay/fail paths)
 server/intentHaikuService.js       - Session intent summarizer for context-switch hints (optional Anthropic Haiku model, heuristic fallback)
-server/agentModelConfigService.js  - Resolves the model + reasoning effort agent launches will use per worktree (Claude `.claude/settings*.json` cascade: local > project > user; Codex `~/.codex/config.toml`)
+server/agentModelConfigService.js  - Resolves the model + reasoning effort agent launches will use per worktree (Claude `.claude/settings*.json` cascade: local > project > user; Codex `~/.codex/config.toml`; Grok `~/.grok/config.toml` [models] section)
 tests/unit/agentModelConfigService.test.js - Coverage for settings-cascade precedence, malformed/missing files, short-lived file cache, and Codex config parsing
+server/agentModelCatalogService.js - Per-harness catalog of available models/efforts/tiers (`config/agent-model-catalog.json`, curated; Codex overridden live from `~/.codex/models_cache.json`)
+tests/unit/agentModelCatalogService.test.js - Coverage for provider normalization, malformed/missing catalog file, and the Codex live-cache enrichment (replace/fallback/hidden-model filtering)
+server/agentModelSwitchService.js  - Session-only model/effort switch for a running Claude session or Commander instance (snapshot/restore `~/.claude/settings.json` around the `/model`/`/effort` commands)
+tests/unit/agentModelSwitchService.test.js - Coverage for both switch paths: snapshot/restore correctness, field-absent-before-switch handling, busy/not-found/unsupported-type rejections, timeout without throwing
 server/threadWorktreeSelection.js  - Repository/worktree normalization + reuse-first candidate selection for thread creation
 server/policyService.js            - Role/action policy checks (viewer/operator/admin) for sensitive APIs + command execution
 server/policyBundleService.js      - Policy template catalog + bundle export/import for team governance profiles
@@ -116,15 +211,20 @@ server/encryptedStore.js           - Reusable AES-256-GCM encrypted JSON store h
 server/serviceStackRuntimeService.js - Workspace service-stack runtime supervisor (start/stop/restart, desired state, auto-restart, health checks)
 server/auditExportService.js       - Redacted audit export across activity + scheduler logs (JSON/CSV)
 server/networkSecurityPolicy.js    - Bind-host/auth safety policy helpers (loopback defaults + LAN auth guardrails)
+server/audioUploadPolicy.js        - Whisper multipart allowlist; explicit MIME types must match their audio extension, generic binary uploads use the extension allowlist, and rejections return JSON
 server/processTelemetryBenchmarkService.js - Release benchmark metrics (onboarding/runtime/review), snapshot comparisons, release-note markdown generation
 server/projectTypeService.js       - Project taxonomy loader/validator for category→framework→template metadata (`config/project-types.json`)
 server/githubCloneWorktreeService.js - GitHub import flow for Quick Work (`owner/repo` parse, category/subfolder placement, clone into `master/`, and mixed-worktree bootstrap)
 server/portRegistry.js             - Port assignment + live service scanner (`/api/ports/scan`)
 ├─ Windows scan path: uses hidden `netstat`/`tasklist` probes so packaged Tauri builds do not flash console windows when Ports/Dashboard panels refresh
 └─ UI metadata: labels orchestrator-assigned ports, known dev servers, and custom user labels
-server/commanderService.js         - Top-level Commander PTY (Claude/Codex) + launch buffering
+server/commanderService.js         - Top-level Commander PTY (Claude/Codex/Grok) + launch buffering
+├─ Multi-instance: panel tabs (`main` + `cmd-2..cmd-6`, cap 6) via static registry; `GET/POST /api/commander/instances`, `PATCH/DELETE /api/commander/instances/:id`; PTY routes take `?instance=`
+├─ Identity env: each PTY gets COMMANDER_INSTANCE_ID / COMMANDER_INSTANCE_LABEL so a Commander can find + rename itself
 ├─ Packaged CWD: uses `ORCHESTRATOR_DATA_DIR/commander` so desktop users can edit `CLAUDE.md` / `AGENTS.md` safely
+├─ Multi-provider launch: `startAgent()` generalizes the Claude-only `startClaude()`; Codex/Grok (`startNonClaudeAgent()`) skip Claude's trust-prompt/ready-detection machinery (their TUI banner text isn't verified)
 └─ First-run seed: copies the packaged `docs/COMMANDER_CLAUDE.md` into the Commander data directory when missing
+server/agentManager.js             - Per-agent launch config (Claude/Codex/Grok): modes, flags, logos, `buildCommand()` (`--model`/`--effort` for Claude/Grok, `-m`/`-c` for Codex including `service_tier`)
 scripts/tauri/prepare-backend-resources.js - Tauri backend packager
 ├─ Bundles: server/client/config/templates/scripts + optional Node runtime into `src-tauri/resources/backend`
 ├─ Commander instructions: copies `docs/COMMANDER_CLAUDE.md` into `resources/backend/{COMMANDER_CLAUDE.md,CLAUDE.md,AGENTS.md}` for desktop builds
@@ -237,7 +337,7 @@ client/app.js                      - Main client application
 ├─ Features: 16-terminal layout, real-time updates, session switching
 ├─ Command Palette: header `⌘ Commands` button + `Ctrl/Cmd+K` searchable command launcher for command-catalog actions
 ├─ Intent hints: compact "intent haiku" strip above each agent terminal, refreshed from `POST /api/sessions/intent-haiku`
-├─ Model badge: terminal-header chip showing the model + reasoning effort each worktree's agent launches use (`GET /api/sessions/model-config`, toggle via `ui.visibility.terminal.modelBadge`)
+├─ Model badge: terminal-header chip showing the model + reasoning effort each worktree's agent launches use (`GET /api/sessions/model-config`, toggle via `ui.visibility.terminal.modelBadge`), doubles as a `model-effort-picker.js` dropdown trigger for a session-only swap
 ├─ Projects + Chats automation: `project-chats-new` Commander/voice action supports explicit workspace + repository targeting
 ├─ Projects + Chats list: repository-first aggregation (project-centric view) while preserving workspace context for mixed workspaces
 ├─ Projects + Chats data source: prefers server-aggregated repository projects from `GET /api/thread-projects` with client fallback aggregation
@@ -245,12 +345,24 @@ client/app.js                      - Main client application
 ├─ Quick Work GitHub import: “GitHub — Not Cloned” rows can clone directly or open a placement modal (category/framework/parent folders) before auto-starting `work1`
 ├─ Quick Work onboarding: first-run hint card + “Folder map” modal explain category→folder mapping (`game -> games`, `website -> websites`, etc.) for fresh installs
 ├─ Status UI: visual state mapping for `busy`, `waiting`, `ready-new`, and `no-agent`
+├─ Sidebar ordering: repo groups sort by manual drag order (persisted per workspace at `ui.worktrees.repoOrder.<workspaceKey>`), then alphabetically; worktrees numeric-aware (work2 < work10). Drag any worktree row to move its repo group
+├─ Quick Work "✨ New repo": `showQuickNewRepoModal()` → POST /api/github/create-repo-worktree (private GitHub repo by default); placement modal supports inline "+ New framework" (POST /api/project-types/frameworks) and explicit "(none)" framework selection
 └─ Dependencies: Socket.IO client, terminal emulation
 
 client/assets/agent-workspace-logo.png - Shared circular brand mark used by the app favicon, sidebar/dashboard title logo, and as the source for bundled desktop icons
+client/assets/providers/            - Provider marks (claude.svg, codex.png, grok.svg) for the Start AI Agent modal and any other harness-picker UI
+client/model-effort-picker.js      - ModelEffortPicker: Harness -> Model -> Effort -> Tier hover/click dropdown, same-harness swaps in place, different-harness fresh-starts (only when idle)
+client/agent-modal.js              - AgentModalManager: Start AI Agent modal, cascading button rows (harness/model/effort/tier) with provider logos, replaces the old flags-based model/reasoning hack
+client/commander-panel.js          - CommanderPanel: Commander's terminal UI, harness select feeds `startAgent()`, model badge shares the same ModelEffortPicker as worktree terminals
 
 client/terminal.js                 - Terminal component implementation
+├─ Fit ratchet escape: a down-fit below 60% of lastGoodPtyDimensions is accepted once the same dimensions repeat `stableSmallFitConfirmations` times (settled layout), so one oversized mid-layout fit can't wedge a terminal at a huge PTY size (the stacked-duplicate-frames bug)
+├─ Scroll policy: output follows only when the viewport is already at the bottom (sampled pre-write); a user reading scrollback keeps their position
+└─ Scroll snap-back: TerminalScrollKeeper returns a terminal left scrolled up to the bottom after `settings.scrollSnapBackSeconds` (default 60, 0 disables) of no wheel/drag/touch/key activity
+client/terminal-scroll-keeper.js   - Shared TerminalScrollKeeper (worktree terminals + Commander panel): per-terminal activity tracking (wheel/mousedown/touch + noteActivity for keys), interval tick, snap-back countdown armed from first scrolled-up sighting so programmatic scroll-to-top gets the full grace period; unit-tested in tests/unit/terminalScrollKeeper.test.js
+client/terminal-themes.js          - Single source of truth for terminal visuals: shared light/dark xterm palettes (`TERMINAL_THEMES`), `getTerminalTheme()`, and `getTerminalOptions()` (font/cursor/scrollback base options) used by BOTH worktree terminals and the Commander panel so they cannot drift apart
 client/terminal-manager.js         - Terminal lifecycle management
+client/voice-control.js            - Push-to-talk Google/Whisper client that preserves supported MediaRecorder formats, derives the matching extension, and releases microphone tracks after setup failure
 client/file-watcher-adapter.js     - File watching integration
 client/notifications.js            - Browser notification handling
 
@@ -272,7 +384,9 @@ client/greenfield-framework-modal.js - Framework creation modal for the greenfie
 ├─ Workspace-context suggestion (repo type -> recommended template/framework defaults)
 └─ Full-screen wizard UI for project scaffolding + workspace creation
 
-client/projects-board.js           - Projects kanban board modal (Archive/Maybe One Day/Backlog/Active/Ship Next/Done; drag/drop + re-order; collapsible columns; live tag; hide forks; persists via `/api/projects/board`)
+client/projects-board.js           - Projects kanban board modal (Archive/Maybe One Day/Backlog/Active/Ship Next/Done; drag/drop + re-order; collapsible columns; live tag; hide forks; "Edited" recency radio filter All/30d/7d/1d from cached GitHub `pushedAt` — no extra API calls, local-only repos stay visible; card push-age hints; persists via `/api/projects/board`)
+client/atlas-portfolio.js          - Filterable Repo Atlas evidence report modal with local/remote scope, bounded repository counts, code/history metrics, practice signals, and escaped representative paths
+client/atlas-portfolio-renderer.js - Pure escaped HTML renderer for Repo Atlas portfolio summaries, repository metrics, practice signals, and representative paths
 
 client/workspace-tab-manager.js    - Multi-workspace tab management (NEW)
 ├─ Features: Browser-like tabs for multiple workspaces
@@ -287,6 +401,13 @@ client/styles/tabs.css             - Tab bar styling
 └─ Responsive: Mobile and desktop layouts
 
 client/styles/projects-board.css   - Projects Board modal styling
+client/styles/atlas-portfolio.css  - High-contrast responsive layout for the Repo Atlas evidence report
+tests/e2e/atlas-portfolio-mobile.spec.js - 390x667 browser regression for Projects Board entry visibility, portfolio action bounds, and Back navigation
+
+client/usage-limits-widget.js      - Header chip (right of Ports) showing Claude/Codex/Grok plan usage + reset countdowns from `/api/usage/limits`
+├─ Generic Claude buckets: renders any extra rate-limit bucket Claude Code reports (e.g. `seven_day_fable` → "Fable 7d") via usageLimitsService `extraBuckets`; tooltip shows the live model name
+├─ Usage severity colors: % turns yellow ≥70 / orange ≥85 / red ≥95
+└─ Weekly use-it-or-lose-it pace: countdown highlighted when usage is far behind the pace needed to spend the weekly quota (models the ~20%-per-5h-window cap with a realism factor)
 
 client/plugin-host.js              - Client plugin runtime for UI slots/actions
 ├─ Loads: `/api/plugins/client-surface` slot actions with cache/refresh support
@@ -376,6 +497,7 @@ src-tauri/Cargo.toml               - Rust dependencies + build profiles (release
 └─ profile.fast: lto=false, codegen-units=256, incremental — ~3-5x faster compile (local dev/testing)
 config.json                        - Shared application configuration
 config/project-types.json          - Greenfield category/framework/template taxonomy (supports framework pathSuffix defaults)
+config/agent-model-catalog.json    - Curated per-provider model + effort catalog (Claude/Codex/Grok); Codex is overridden live from `~/.codex/models_cache.json` when present
 package.json                       - Node.js dependencies and scripts
 
 user-settings.json                 - User preferences and workspace settings
@@ -397,6 +519,8 @@ scripts/public-release-audit.js    - Public-release safety audit automation
 ├─ Checks: tracked cache/DB artifacts, public-doc path hygiene, loopback/auth defaults
 └─ Optional: full-history gitleaks scan (`--history-secrets`)
 scripts/render-legal-pages.js      - Generates `site/terms.html` and `site/privacy.html` from canonical markdown in `docs/legal/`
+scripts/run-e2e-safe.js             - Runs Playwright on an isolated port, HOME, and one deterministic worker; `scripts/e2eHome.js` seeds test workspace state and test-only legal acceptance
+tests/e2e/_workspace.js             - Shared race-safe workspace readiness and focus-overlay helpers for Playwright specs
 
 scripts/create-project.js          - Taxonomy-driven project scaffold generator (template/project-kit source resolution, optional post-create hooks, git init, optional GitHub remote, worktree bootstrap via WorktreeHelper)
 scripts/preview-site.js            - Tiny local preview server for the standalone `site/` showcase
@@ -466,6 +590,8 @@ git-change: {branch, status, commits}          - Git repository changes
 notification: {type, message, level}           - System notifications
 workspace-changed: {workspaceId, sessions}     - Workspace switch completed
 workspace-list: {workspaces}                   - Available workspaces update
+codex-usage-guard: {mode, admittingCodex, ...} - Persisted monitor/drain state after each direct poll or resume
+agent-start-blocked: {sessionId, agentId, ...} - A new agent start rejected by the admission controller
 ```
 
 ### Client → Server Events
@@ -517,6 +643,9 @@ LOG_LEVEL=info
 NODE_ENV=development
 ENABLE_FILE_WATCHING=true
 WORKSPACE_SCAN_MAX_DEPTH=6        # optional, clamp 1-12 for /api/workspaces/scan-repos depth
+ORCHESTRATOR_CODEX_USAGE_GUARD_ENABLED=true  # optional, set false to disable polling and gating
+ORCHESTRATOR_CODEX_USAGE_GUARD_POLL_MS=120000 # optional, clamped to 120000-300000
+ORCHESTRATOR_CODEX_USAGE_GUARD_STATE_PATH=... # optional state-file override
 ```
 
 ## Development Workflow
@@ -622,17 +751,29 @@ POST /api/project-types/frameworks - Add a framework to the project taxonomy
 GET /api/project-types/templates?frameworkId=...&categoryId=... - Template catalog (optionally scoped)
 GET /api/github/repos             - List GitHub repositories via `gh` (owner/limit/force supported)
 POST /api/github/clone-and-add-worktree - Clone `owner/repo` into taxonomy-guided folder placement (`<repo>/master`) and attach/start a mixed worktree (default `work1`)
+POST /api/github/create-repo-worktree - Create a brand-new repo: local `<repo>/master` (git init, seed commit), GitHub repo (PRIVATE by default) + push, then attach/start `work1` in the workspace (Quick Work "✨ New repo" button)
 POST /api/projects/create-workspace - Create project scaffold + matching workspace in one request
 GET /api/discord/status            - Discord queue + services health/status (counts + signature status); endpoint can be gated by `DISCORD_API_TOKEN`
 POST /api/discord/ensure-services  - Ensure Services workspace/session bootstrap; accepts optional `dangerousModeOverride` (gated by `DISCORD_ALLOW_DANGEROUS_OVERRIDE`)
 POST /api/discord/process-queue    - Dispatch queue processing prompt with optional `Idempotency-Key`/`idempotencyKey`, queue signature verification, idempotent replay, audit logging, and per-endpoint rate limiting
 POST /api/sessions/intent-haiku   - Generate <=200 char intent summary for an active Claude/Codex session
 GET /api/sessions/model-config    - Model + reasoning-effort config per active agent session (Claude settings cascade per worktree, global Codex config)
+GET /api/agents/model-catalog     - Cached per-provider model/effort/tier catalog, refreshed on a 12h timer
+POST /api/agents/model-catalog/refresh - Force-reload the catalog (dropdown/modal Refresh button)
+POST /api/sessions/:sessionId/switch-model - Session-only model/effort swap for a running Claude session; body `{model, effort}` (Codex/Grok return 501)
+GET /api/commander/model-config   - Current model/effort for a Commander instance (`?instance=`)
+POST /api/commander/switch-model  - Session-only model/effort swap for a running Commander instance
+POST /api/commander/start-agent   - Provider-agnostic Commander launch (Claude/Codex/Grok); body `{model, effort, tier}`
 GET /api/greenfield/categories    - Greenfield category list (taxonomy-backed)
 POST /api/greenfield/detect-category - Infer category from description (taxonomy keyword matching)
 GET /api/setup-actions            - List Windows dependency-onboarding actions
 GET /api/setup-actions/state      - Read persisted dependency-onboarding state (completed/dismissed/current step)
 PUT /api/setup-actions/state      - Persist dependency-onboarding state into app data for desktop restarts
+GET /api/team/activity            - Per-day per-teammate PR/commit/ticket digest (days/authors/refresh params)
+GET /api/team/config              - Configured team members and repo scope from user settings
+GET /api/usage/limits             - Claude 5h/7d + Codex plan-usage percentages and reset times (refresh=1 bypasses Codex cache)
+GET /api/usage/codex-guard        - Durable Codex monitor/drain state and current observed weekly window
+POST /api/usage/codex-guard/resume - Explicitly reopen new Codex admissions after reviewing a drain event
 GET /api/user-settings            - Get user preferences
 PUT /api/user-settings            - Update user preferences
 

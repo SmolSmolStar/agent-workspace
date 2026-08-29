@@ -17,6 +17,11 @@ const {
 } = require('./utils/shellCommand');
 const { augmentProcessEnv, buildPowerShellArgs } = require('./utils/processUtils');
 const { loadNodePty } = require('./utils/nodePtyCompat');
+const { TmuxSessionBackend, stripDeviceReports } = require('./utils/tmuxSessionBackend');
+
+// Foreground pane commands that mean "back at a plain shell". Anything else in
+// the pane (claude, codex, node, ...) means an agent/process is still running.
+const SHELL_FOREGROUND_COMMANDS = new Set(['bash', 'zsh', 'sh', 'fish', 'dash', 'ksh', 'tcsh', 'csh']);
 
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
@@ -84,6 +89,7 @@ class SessionManager extends EventEmitter {
     super();
     this.io = io;
     this.agentManager = agentManager;
+    this.agentAdmissionController = null;
     this.sessions = new Map();
     // Keep inactive workspaces' sessions alive (PTYs keep running), keyed by workspace id.
     // The active workspace is always `this.workspace`, and its sessions live in `this.sessions`.
@@ -116,8 +122,103 @@ class SessionManager extends EventEmitter {
     this.conversationSnapshotTtlMs = parseInt(process.env.CONVERSATION_SNAPSHOT_TTL_MS || '5000');
     this.conversationSnapshotCache = { timestamp: 0, files: null };
 
+    // Session persistence: terminals live inside tmux sessions on a dedicated
+    // per-instance socket, so they survive app-server restarts and are
+    // re-adopted on the next createSession() for the same id (issue #1025).
+    // ORCHESTRATOR_SESSION_PERSISTENCE=0 disables; unavailable tmux (Windows,
+    // minimal installs) falls back to direct node-pty spawning automatically.
+    const persistenceConfig = this.config.sessions?.persistence || {};
+    const persistenceEnvOverride = String(process.env.ORCHESTRATOR_SESSION_PERSISTENCE || '').trim();
+    const persistenceWanted = persistenceEnvOverride
+      ? persistenceEnvOverride !== '0'
+      : persistenceConfig.enabled !== false;
+    const instancePort = process.env.ORCHESTRATOR_PORT || this.config.server?.port || 'default';
+    this.sessionPersistence = new TmuxSessionBackend({
+      socketName: persistenceConfig.socketName || `agent-workspace-${instancePort}`,
+      logger
+    });
+    this.sessionPersistenceEnabled = persistenceWanted && this.sessionPersistence.isAvailable();
+    logger.info('Session persistence', {
+      enabled: this.sessionPersistenceEnabled,
+      wanted: persistenceWanted,
+      socket: this.sessionPersistence.socketName
+    });
+
     // Worktrees will be built when workspace is set
     this.worktrees = [];
+  }
+
+  setAgentAdmissionController(controller) {
+    this.agentAdmissionController = controller || null;
+  }
+
+  getAgentAdmissionDecision({ agentId, sessionId = null, config = null } = {}) {
+    if (!this.agentAdmissionController?.getAdmissionDecision) return { allowed: true };
+    try {
+      const decision = this.agentAdmissionController.getAdmissionDecision({
+        agentId,
+        sessionId,
+        config
+      });
+      if (!decision || decision.allowed !== false) return { allowed: true };
+      return decision;
+    } catch (error) {
+      const normalizedAgent = String(agentId || '').trim().toLowerCase();
+      logger.error('Agent admission check failed', {
+        agentId,
+        sessionId,
+        error: error.message
+      });
+      return normalizedAgent === 'codex'
+        ? {
+            allowed: false,
+            code: 'codex-usage-monitor-error',
+            reason: 'admission-check-failed'
+          }
+        : { allowed: true };
+    }
+  }
+
+  getSessionAgentId(sessionId) {
+    const session = this.getSessionById(sessionId);
+    if (!session) return null;
+    if (session.activeAgentId) return String(session.activeAgentId).trim().toLowerCase() || null;
+    const workspaceId = String(session.workspace || this.workspace?.id || '').trim();
+    const recovery = workspaceId ? sessionRecoveryService.getSession(workspaceId, sessionId) : null;
+    if (recovery?.lastAgentActive !== false && recovery?.lastAgent) {
+      return String(recovery.lastAgent).trim().toLowerCase() || null;
+    }
+    const type = String(session.type || '').trim().toLowerCase();
+    return ['claude', 'codex', 'opencode'].includes(type) ? type : null;
+  }
+
+  getNewTurnAdmissionDecision(sessionId, { source = 'automation' } = {}) {
+    const agentId = this.getSessionAgentId(sessionId);
+    const decision = this.getAgentAdmissionDecision({ agentId, sessionId, config: { source } });
+    return { ...decision, agentId };
+  }
+
+  writeNewTurnToSession(sessionId, data, { source = 'automation' } = {}) {
+    const decision = this.getNewTurnAdmissionDecision(sessionId, { source });
+    if (decision.allowed === false) {
+      logger.warn('Automated session input blocked by admission controller', {
+        sessionId,
+        agentId: decision.agentId,
+        source,
+        code: decision.code,
+        reason: decision.reason
+      });
+      this.io?.emit?.('agent-turn-blocked', {
+        sessionId,
+        agentId: decision.agentId,
+        source,
+        code: decision.code || 'agent-admission-blocked',
+        reason: decision.reason || null,
+        triggeredAt: decision.triggeredAt || null
+      });
+      return false;
+    }
+    return this.writeToSession(sessionId, data);
   }
 
   getRecoveryHydrationKey(sessionId, { workspaceId = null, session = null } = {}) {
@@ -146,6 +247,22 @@ class SessionManager extends EventEmitter {
     const key = this.getRecoveryHydrationKey(sessionId, { workspaceId, session });
     if (!key) return false;
     return this.recoveryHydratedSessions.has(key);
+  }
+
+  // True signal for "is this session's process actually still alive" —
+  // independent of whether THIS server process has gotten around to calling
+  // createSession() for it yet. hasSessionHydrated() only tracks in-memory
+  // state for the current process, so right after a server restart it's
+  // false for every session even though a tmux-persisted one never died —
+  // that gap is what let the recovery flow re-type a `claude --resume`
+  // command into an already-running Claude session on every reconnect.
+  isSessionAliveInTmux(sessionId) {
+    if (!this.sessionPersistenceEnabled) return false;
+    try {
+      return this.sessionPersistence.hasSession(sessionId);
+    } catch {
+      return false;
+    }
   }
 
   // Determine effective inactivity timeout per session (ms)
@@ -824,17 +941,42 @@ class SessionManager extends EventEmitter {
 
       const effectiveEnv = augmentProcessEnv(env);
 
-      const ptyProcess = pty.spawn(
-        config.command,
-        config.args,
-        this.buildPtyOptions(config, effectiveEnv)
-      );
+      // Persistence path: spawn a tmux CLIENT instead of the shell directly.
+      // The pane (real shell/agent) lives under the tmux server and survives
+      // app-server restarts; `new-session -A` re-attaches to a surviving
+      // session, which is how sessions are adopted after a restart.
+      let spawnCommand = config.command;
+      let spawnArgs = config.args;
+      let persistence = null;
+      const ptyOptions = this.buildPtyOptions(config, effectiveEnv);
+      if (this.sessionPersistenceEnabled) {
+        // A leaked TMUX var would make the client refuse to start ("nested").
+        delete effectiveEnv.TMUX;
+        delete effectiveEnv.TMUX_PANE;
+        // The outer client terminal must advertise 256-color support or tmux
+        // degrades every pane's rendering.
+        ptyOptions.name = 'xterm-256color';
+        const resolved = this.sessionPersistence.resolveSpawn({
+          sessionId,
+          command: config.command,
+          args: config.args,
+          cwd: config.cwd,
+          ptyOptions,
+          logger,
+          logLabel: 'persistent session'
+        });
+        spawnCommand = resolved.command;
+        spawnArgs = resolved.args;
+        persistence = resolved.persistence;
+      }
+      const ptyProcess = pty.spawn(spawnCommand, spawnArgs, ptyOptions);
 
       const initialCwd = config.cwd || process.cwd();
-      
+
       const session = {
         id: sessionId,
         pty: ptyProcess,
+        persistence,
         type: config.type,
         worktreeId: config.worktreeId,
         repositoryName: config.repositoryName,  // For mixed-repo workspaces
@@ -857,7 +999,21 @@ class SessionManager extends EventEmitter {
         autoStarted: false,  // Track if auto-start has been triggered
         claudeLaunchState: null
       };
-      
+
+      // Adopted sessions re-attach mid-flight, so the fresh client only sees a
+      // screen redraw. Backfill the buffer from tmux scrollback so the log
+      // endpoint / client history preload can show what happened before the
+      // restart. Mark it delivered: history is served via the log endpoint,
+      // not re-streamed as live output.
+      if (persistence?.adopted) {
+        const history = this.sessionPersistence.capturePane(sessionId, 2000);
+        if (history) {
+          session.buffer = history.endsWith('\n') ? history : `${history}\n`;
+          session.deliveredBufferLength = session.buffer.length;
+        }
+      }
+
+
       // Set up inactivity timer (respect per-type timeout; 0 disables)
       const effectiveTimeout = this.getSessionTimeout(session);
       if (effectiveTimeout > 0) {
@@ -995,8 +1151,31 @@ class SessionManager extends EventEmitter {
       
       // Add workspace ID to session
       session.workspace = this.workspace?.id || null;
+
+      // An adopted pane may still be running its agent from before the
+      // restart, but the in-memory launch/input markers died with the old
+      // process. Restore a conservative state: agent present, no input
+      // observed yet — weak busy heuristics stay gated (no post-restart
+      // orange flash from backfill output) until real evidence (esc to
+      // interrupt) or actual user input arrives.
+      if (persistence?.adopted && session.type === 'claude') {
+        session.agentStartedAt = Date.now();
+        session.agentInputSubmitted = false;
+      }
       this.sessions.set(sessionId, session);
-      this.clearSessionHydrated(sessionId, { workspaceId: session.workspace, session });
+      if (persistence?.adopted && session.type === 'claude') {
+        // The tmux pane survived untouched — this is a server-process restart,
+        // not a real machine restart, and whatever agent was running is still
+        // running. Mark it hydrated so /api/recovery treats it exactly like a
+        // session the user already interacted with this boot: recovery would
+        // be redundant, and typing `claude --resume` into an already-live
+        // REPL just corrupts its input. A genuinely dead session (no tmux
+        // socket to adopt, e.g. after a computer restart) still spawns fresh
+        // and hits the clearSessionHydrated() branch below as before.
+        this.markSessionHydrated(sessionId, { workspaceId: session.workspace, session });
+      } else {
+        this.clearSessionHydrated(sessionId, { workspaceId: session.workspace, session });
+      }
 
       if (session.workspace) {
         sessionRecoveryService.updateSession(session.workspace, sessionId, {
@@ -1045,6 +1224,15 @@ class SessionManager extends EventEmitter {
     if (agent) {
       const mode = this.detectAgentMode(agent, commandName, commandArgs, command);
       logger.info('Detected agent command', { sessionId, agent, cwd, mode });
+
+      // Input-aware status gating: a freshly launched agent has done no work
+      // until a command is actually submitted to it (Enter written after
+      // launch). Auto-run launches (`claude -p "..."`, `codex exec`, or a
+      // positional prompt argument) start working immediately, so they count
+      // as already-submitted.
+      session.agentStartedAt = Date.now();
+      session.activeAgentId = agent;
+      session.agentInputSubmitted = this.isAutoRunAgentCommand(commandName, commandArgs);
 
       sessionRecoveryService.updateAgent(workspaceId, sessionId, agent, mode);
 
@@ -1488,6 +1676,7 @@ class SessionManager extends EventEmitter {
     }
 
     knownAgents.set('opencode', 'opencode');
+    knownAgents.set('grok', 'grok');
     knownAgents.set('gemini', 'gemini');
     knownAgents.set('aider', 'aider');
 
@@ -1514,6 +1703,32 @@ class SessionManager extends EventEmitter {
     }
 
     return null;
+  }
+
+  // True when the launch command itself carries a task, so the agent starts
+  // working with no further input: -p/--print flags, `codex exec`, or a
+  // positional prompt argument. Flags that take a value (e.g. `-m <model>`)
+  // must not have their value mistaken for a prompt.
+  isAutoRunAgentCommand(commandName, commandArgs = []) {
+    const args = (commandArgs || []).map((arg) => String(arg || ''));
+    if (args.some((arg) => arg === '-p' || arg === '--print')) return true;
+    const idleSubcommands = new Set(['resume', 'continue', 'login', 'logout', 'config', 'fork', 'apply', 'debug', 'review']);
+    const valueFlags = new Set([
+      '-m', '--model', '-c', '--config', '-C', '--cd', '--profile', '-s', '--sandbox',
+      '-a', '--ask-for-approval', '--effort', '--agent', '--session-id', '--add-dir',
+      '--permission-mode', '--append-system-prompt', '--mcp-config'
+    ]);
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      if (arg.startsWith('-')) {
+        if (valueFlags.has(arg) && !arg.includes('=')) i++; // skip the flag's value
+        continue;
+      }
+      if (idleSubcommands.has(arg.toLowerCase())) return false;
+      // `codex exec`, or a positional prompt like `claude "do the thing"`.
+      return true;
+    }
+    return false;
   }
 
   detectAgentMode(agent, commandName, commandArgs = [], fullCommand = '') {
@@ -1778,21 +1993,37 @@ class SessionManager extends EventEmitter {
     
     try {
       let payload = data;
-      // PowerShell terminals need CRLF to reliably execute commands written programmatically.
       if (typeof payload === 'string') {
+        // Under tmux, drop echoed device-attribute reports so they can't land
+        // on the active pane as "1;2c0;276;0c" junk (see stripDeviceReports).
+        if (this.sessionPersistenceEnabled && session.persistence) {
+          payload = stripDeviceReports(payload);
+        }
+        // PowerShell terminals need CRLF to reliably execute commands written programmatically.
         const shellKind = this.getShellKindForSession(sessionId);
         if (shellKind === 'powershell') {
           payload = payload.replace(/\r?\n/g, '\r\n');
         }
       }
+      // Whether an agent was already running BEFORE this write. The Enter that
+      // launches the agent flows through this same call, so submission marking
+      // must only count Enters written while the agent was already up.
+      const agentWasActive = !!session.agentStartedAt;
+      const inputHasEnter = typeof data === 'string' && /[\r\n]/.test(data);
+
       session.pty.write(payload);
       session.lastActivity = Date.now();
-      
+
       // Reset inactivity timer on any user input to keep the session alive
       this.resetInactivityTimer(session);
-      
-      // If was waiting and user provided input, mark as busy
-      if (session.status === 'waiting' && session.type === 'claude') {
+
+      if (agentWasActive && inputHasEnter) {
+        session.agentInputSubmitted = true;
+      }
+
+      // If waiting and the user actually submitted (Enter) — typing characters
+      // without sending them is not work — mark as busy.
+      if (session.status === 'waiting' && session.type === 'claude' && inputHasEnter) {
         // Cancel any pending status flip (prevents "busy→waiting" flicker after input)
         if (session.pendingStatusTimer) {
           clearTimeout(session.pendingStatusTimer);
@@ -1923,9 +2154,9 @@ class SessionManager extends EventEmitter {
       // then block the auto-heal for good. Re-apply after a cooldown even when
       // the sizes match.
       const now = Date.now();
-      const withinReassertCooldown =
-        (now - (session.lastResizeAppliedAt || 0)) < SessionManager.RESIZE_REASSERT_COOLDOWN_MS;
-      if (session.lastAppliedCols === cols && session.lastAppliedRows === rows && withinReassertCooldown) {
+      const isSameSize = session.lastAppliedCols === cols && session.lastAppliedRows === rows;
+      const withinReassertCooldown = (now - (session.lastResizeAppliedAt || 0)) < SessionManager.RESIZE_REASSERT_COOLDOWN_MS;
+      if (isSameSize && withinReassertCooldown) {
         return true;
       }
 
@@ -1933,6 +2164,18 @@ class SessionManager extends EventEmitter {
       session.lastAppliedCols = cols;
       session.lastAppliedRows = rows;
       session.lastResizeAppliedAt = now;
+
+      // A same-size call that made it past the cooldown exists ONLY because we
+      // don't trust the last resize actually took at the OS level. If it
+      // really did silently fail, a TUI mid-redraw could have written
+      // cursor-addressed output for the wrong width straight into the
+      // client's xterm buffer — garbled text no repaint can fix, since the
+      // buffer itself, not just the pixels, is wrong. Replace it with a
+      // clean read of the pane's true current content instead of hoping the
+      // next natural redraw happens to fix it.
+      if (isSameSize) {
+        this.resyncSessionBuffer(sessionId, session);
+      }
       return true;
     } catch (error) {
       // Handle ENOTTY/EBADF errors gracefully - these mean the PTY is dead
@@ -1960,7 +2203,43 @@ class SessionManager extends EventEmitter {
       return false;
     }
   }
-  
+
+  // Pulls the pane's true current content straight from tmux and hands it to
+  // clients to replace their own (possibly corrupted) buffer wholesale. Only
+  // meaningful for a tmux-backed session — a plain node-pty session has no
+  // independent authoritative copy to read back.
+  resyncSessionBuffer(sessionId, session) {
+    if (!session?.persistence || typeof this.sessionPersistence?.capturePane !== 'function') {
+      return false;
+    }
+    const fresh = this.sessionPersistence.capturePane(sessionId, 2000);
+    if (!fresh) return false;
+    this.io.emit('terminal-resync', {
+      sessionId,
+      buffer: fresh.endsWith('\n') ? fresh : `${fresh}\n`,
+      workspaceId: session.workspace || this.workspace?.id || null
+    });
+    return true;
+  }
+
+  // Manual, on-demand version of the same recovery the reassert path above
+  // does automatically: force the OS-level resize again (bypassing the
+  // cooldown deliberately — this is explicit user intent, not a passive
+  // heal-sweep tick) and replace the client's buffer with a clean read.
+  resyncSession(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.pty || session.pty.killed) return false;
+    if (session.lastAppliedCols && session.lastAppliedRows) {
+      try {
+        session.pty.resize(session.lastAppliedCols, session.lastAppliedRows);
+        session.lastResizeAppliedAt = Date.now();
+      } catch (error) {
+        logger.warn('Manual terminal resync resize failed', { sessionId, error: error.message });
+      }
+    }
+    return this.resyncSessionBuffer(sessionId, session);
+  }
+
   normalizeCwdPath(cwdPath) {
     if (typeof cwdPath !== 'string' || cwdPath.length === 0) {
       return cwdPath;
@@ -2101,13 +2380,20 @@ class SessionManager extends EventEmitter {
       ? (recovery?.lastAgent || (type === 'codex' ? 'codex' : null))
       : null;
 
-    const newStatus = this.statusDetector.detectStatus(sessionId, session.buffer || '', { agent });
+    const noInputSinceLaunch = !!(session.agentStartedAt && !session.agentInputSubmitted);
+    const newStatus = this.statusDetector.detectStatus(sessionId, session.buffer || '', { agent, noInputSinceLaunch });
     if (newStatus === 'idle' && workspaceId && recovery?.lastAgent) {
       const recentOutput = this.statusDetector.stripControlSequences((session.buffer || '').slice(-2000));
       const recentLines = recentOutput.split('\n');
       const lastNonEmptyLine = this.statusDetector.getLastNonEmptyLine(recentLines).trim();
       const recentAll = this.statusDetector.getLastNonEmptyLines(recentLines, 6).join('\n');
-      if (this.statusDetector.hasExplicitShellIndicator(recentAll, lastNonEmptyLine)) {
+      if (this.statusDetector.hasExplicitShellIndicator(recentAll, lastNonEmptyLine)
+          && !this.paneStillRunsAgent(sessionId, session)) {
+        // Agent exited back to a shell — clear launch/input markers so the
+        // next launch starts a fresh no-input-yet window.
+        session.agentStartedAt = null;
+        session.activeAgentId = null;
+        session.agentInputSubmitted = false;
         try {
           sessionRecoveryService.markAgentInactive(workspaceId, sessionId);
         } catch {
@@ -2127,6 +2413,20 @@ class SessionManager extends EventEmitter {
       session.pendingStatus = null;
       session.pendingStatusDueAt = null;
     }
+  }
+
+  // Ground-truth check before trusting a shell-prompt heuristic: wrapped or
+  // garbled agent frames can end in a line that LOOKS like a shell prompt
+  // (a bare ">" or "❯" matches), and clearing the agent marker off that false
+  // positive resurrects the Fresh/Continue/Resume overlay over a live agent.
+  // For tmux-backed sessions the pane's foreground command settles it.
+  paneStillRunsAgent(sessionId, session) {
+    if (session?.persistence?.backend !== 'tmux' || !this.sessionPersistenceEnabled) {
+      return false; // no ground truth available — keep the heuristic's verdict
+    }
+    const command = this.sessionPersistence.paneCurrentCommand(sessionId);
+    if (!command) return false;
+    return !SHELL_FOREGROUND_COMMANDS.has(command.toLowerCase());
   }
   
   maybeApplyStatusUpdate(sessionId, session, newStatus) {
@@ -2472,10 +2772,68 @@ class SessionManager extends EventEmitter {
     return true;
   }
   
+  // Pid owning the session's REAL process tree. For persistent sessions the
+  // pane process is a child of the tmux server, not of the client pty the
+  // orchestrator holds — tree-kills and child counting must target the pane.
+  getSessionProcessPid(session) {
+    if (session?.persistence?.backend === 'tmux' && this.sessionPersistenceEnabled) {
+      const panePid = this.sessionPersistence.panePid(session.id);
+      if (panePid) return panePid;
+    }
+    const pid = Number(session?.pty?.pid);
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
+  }
+
+  // Explicit destruction of a persistent session. Killing only the client pty
+  // would DETACH the pane, leaking it as an orphaned tmux session — surviving
+  // is only for server restarts, never for user-initiated close/terminate.
+  destroyPersistentSession(session) {
+    if (session?.persistence?.backend !== 'tmux') return;
+    try {
+      this.sessionPersistence.killSession(session.id);
+    } catch (error) {
+      logger.warn('Failed to kill persistent tmux session', { sessionId: session.id, error: error.message });
+    }
+  }
+
+  // Observability for the persistence layer: what tmux knows vs what the
+  // orchestrator manages. "Orphaned" sessions survived a restart but were not
+  // re-adopted (e.g. their worktree was removed from the workspace meanwhile);
+  // they can be inspected via `tmux -L <socket> attach -t <name>` or killed.
+  getPersistenceStatus() {
+    const status = {
+      enabled: !!this.sessionPersistenceEnabled,
+      backend: 'tmux',
+      socketName: this.sessionPersistence?.socketName || null,
+      managed: [],
+      orphaned: []
+    };
+    if (!status.enabled) return status;
+
+    const known = new Map();
+    const collect = (map) => {
+      for (const session of map.values()) {
+        if (session?.persistence?.name) known.set(session.persistence.name, session.id);
+      }
+    };
+    collect(this.sessions);
+    for (const map of this.workspaceSessionMaps.values()) collect(map);
+
+    const live = this.sessionPersistence.listSessionNames();
+    for (const name of live) {
+      if (known.has(name)) {
+        status.managed.push({ name, sessionId: known.get(name) });
+      } else {
+        status.orphaned.push({ name });
+      }
+    }
+    return status;
+  }
+
   checkProcessLimit(session) {
     if (!session.pty || !session.pty.pid) return;
 
-    const pid = Number(session.pty.pid);
+    const pid = this.getSessionProcessPid(session);
     if (!Number.isFinite(pid) || pid <= 0) return;
 
     const { spawn } = require('child_process');
@@ -2600,7 +2958,11 @@ class SessionManager extends EventEmitter {
       session.pendingStatusTimer = null;
     }
 
-    const ptyPid = Number(session?.pty?.pid);
+    // Resolve the real process-tree pid BEFORE tearing anything down: for
+    // persistent sessions it comes from a tmux query that fails once the
+    // session is killed.
+    const processPid = this.getSessionProcessPid(session);
+    this.destroyPersistentSession(session);
 
     // Kill the PTY process if it exists
     if (session.pty) {
@@ -2616,7 +2978,7 @@ class SessionManager extends EventEmitter {
 
     // Best-effort process tree cleanup to avoid orphaned agent subprocesses
     // after terminals are closed/removed.
-    this.bestEffortKillProcessTree(ptyPid, { sessionId: sid });
+    this.bestEffortKillProcessTree(processPid, { sessionId: sid });
 
     // Remove from sessions map
     sessionMap.delete(sid);
@@ -2792,13 +3154,18 @@ class SessionManager extends EventEmitter {
     if (!session) return [sid];
 
     const ws = String(workspaceId || session?.workspace || '').trim() || null;
-    const worktreeId = String(session?.worktreeId || '').trim().toLowerCase();
-    const repositoryName = String(session?.repositoryName || '').trim().toLowerCase();
-    const parsedWorktreeId = worktreeId || String(sid).replace(/-(claude|codex|server)$/i, '').split('-').pop()?.toLowerCase() || '';
-    const composedKey = repositoryName && parsedWorktreeId ? `${repositoryName}-${parsedWorktreeId}` : '';
+    const parsedFromSid = parseWorktreeKey(sid);
+    const worktreeId = String(session?.worktreeId || '').trim().toLowerCase()
+      || String(parsedFromSid?.worktreeId || '').trim().toLowerCase();
+    const repositoryName = String(session?.repositoryName || '').trim().toLowerCase()
+      || String(parsedFromSid?.repositoryName || '').trim().toLowerCase();
+    const composedKey = repositoryName && worktreeId ? `${repositoryName}-${worktreeId}` : '';
 
     const group = new Set([sid]);
-    const keys = [composedKey, parsedWorktreeId].filter(Boolean);
+    // Fall back to the bare worktree id only when the repository is unknown:
+    // mixed-repo workspaces reuse worktree names like "work1", so a bare-key
+    // lookup would group (and close) every repo's work1 sessions together.
+    const keys = [composedKey || worktreeId].filter(Boolean);
     for (const key of keys) {
       const ids = this.getSessionIdsForWorktree({
         workspaceId: ws,
@@ -2940,7 +3307,7 @@ class SessionManager extends EventEmitter {
     return getShellKind();
   }
 
-  buildClaudeCommand({ shellKind, mode, resumeId, skipPermissions }) {
+  buildClaudeCommand({ shellKind, mode, resumeId, skipPermissions, model, effort }) {
     let cmd = 'claude';
 
     if (mode === 'continue') {
@@ -2954,6 +3321,12 @@ class SessionManager extends EventEmitter {
     if (skipPermissions) {
       cmd += ' --dangerously-skip-permissions';
     }
+
+    // Launch-only flags (confirmed via `claude --help`): apply to this one
+    // session and never touch the persisted default the way the in-session
+    // /model and /effort slash commands do.
+    if (model) cmd += ` --model ${quoteForShell(model, shellKind)}`;
+    if (effort) cmd += ` --effort ${quoteForShell(effort, shellKind)}`;
 
     return cmd;
   }
@@ -3096,6 +3469,28 @@ class SessionManager extends EventEmitter {
     const adjustedFlags = this.agentManager.validateAndAdjustFlags(config.agentId, config.flags);
     const finalConfig = { ...config, flags: adjustedFlags };
 
+    const admission = this.getAgentAdmissionDecision({
+      agentId: finalConfig.agentId,
+      sessionId,
+      config: finalConfig
+    });
+    if (!admission.allowed) {
+      logger.warn('Agent start blocked by admission controller', {
+        sessionId,
+        agentId: finalConfig.agentId,
+        code: admission.code,
+        reason: admission.reason
+      });
+      this.io?.emit?.('agent-start-blocked', {
+        sessionId,
+        agentId: finalConfig.agentId,
+        code: admission.code || 'agent-admission-blocked',
+        reason: admission.reason || null,
+        triggeredAt: admission.triggeredAt || null
+      });
+      return false;
+    }
+
     logger.info('Starting agent with configuration', {
       sessionId,
       originalConfig: config,
@@ -3118,7 +3513,9 @@ class SessionManager extends EventEmitter {
           shellKind,
           mode: finalConfig.mode,
           resumeId: finalConfig.resumeId,
-          skipPermissions
+          skipPermissions,
+          model: finalConfig.model,
+          effort: finalConfig.effort
         });
         const resolvedCommand = this.resolveClaudeCommand(claudeCmd, provider);
         if (resolvedCommand.warning) {
@@ -3143,6 +3540,8 @@ class SessionManager extends EventEmitter {
       } else {
         this.resetClaudeLaunch(session);
       }
+
+      session.activeAgentId = finalConfig.agentId;
 
       // Send the command to the terminal
       const commandToRun = buildShellCommand({
@@ -3209,6 +3608,9 @@ class SessionManager extends EventEmitter {
     // Kill all PTY processes
     for (const [sessionId, session] of this.sessions) {
       try {
+        // Destructive path (workspace teardown): persistent panes must die
+        // with their sessions, not linger detached on the tmux socket.
+        this.destroyPersistentSession(session);
         if (session.pty) {
           session.pty.kill();
           logger.debug(`Killed session: ${sessionId}`);
@@ -3291,12 +3693,14 @@ class SessionManager extends EventEmitter {
   }
 
   matchesClaudeTrustPrompt(text) {
-    const normalized = String(text || '').toLowerCase();
-    if (!normalized.includes('quick safety check')) return false;
-    return normalized.includes('trust this folder')
-      || normalized.includes('trust this directory')
-      || normalized.includes('trust this workspace')
-      || normalized.includes('trust this project');
+    // Whitespace-collapsed: positioned TUI text loses its spaces when control
+    // sequences are stripped (same failure mode as the ready-prompt matcher).
+    const compact = String(text || '').toLowerCase().replace(/\s+/g, '');
+    if (!compact.includes('quicksafetycheck')) return false;
+    return compact.includes('trustthisfolder')
+      || compact.includes('trustthisdirectory')
+      || compact.includes('trustthisworkspace')
+      || compact.includes('trustthisproject');
   }
 }
 

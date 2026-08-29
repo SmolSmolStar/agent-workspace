@@ -1,0 +1,298 @@
+'use strict';
+
+const { execFileSync } = require('child_process');
+
+// tmux-backed session persistence (issue #1025).
+//
+// Terminals run inside per-session tmux sessions on a dedicated socket, so the
+// PTY the orchestrator owns is only a tmux CLIENT. When the app server restarts
+// (nodemon reload, version update, crash) the panes keep running under the tmux
+// server, and the next createSession() for the same id re-attaches via
+// `new-session -A` — live agents survive the restart.
+//
+// Boundaries, on purpose:
+// - Survives app-server restarts only; a reboot/`wsl --shutdown` still ends the
+//   tmux server (transcript resume is the recovery path for that).
+// - Windows and tmux-less installs fail closed via isAvailable(); the session
+//   manager falls back to direct node-pty spawning (previous behavior).
+// - Each orchestrator instance uses its own socket (name includes the server
+//   port) so dev/prod instances can never collide on session names.
+
+const SESSION_NAME_UNSAFE = /[^A-Za-z0-9_-]/g;
+
+// Bump when the ensureConfigured option list changes so already-running tmux
+// servers (marker holds the old version) get reconfigured on the next spawn.
+const CONFIG_MARKER_VERSION = '4';
+
+// Device-attribute REPORT sequences: DA1 `ESC [ ? … c` and DA2 `ESC [ > … c`.
+// These are terminal auto-RESPONSES, never something a user types. They only
+// appear on the input stream as an echo of the browser terminal answering a
+// probe. Under tmux the outer-terminal (xterm.js) probe response can arrive on
+// the client's stdin after tmux's read window has closed — tmux then routes the
+// stray bytes to the active pane, where they surface as "1;2c0;276;0c" junk at
+// the shell prompt. Stripping them from inbound input is safe: tmux answers
+// inner-app DA queries itself, and capability detection is pinned via
+// terminal-features below, so nothing legitimate depends on this echo.
+// Cursor-position (…R) and DSR (…n) reports are deliberately NOT stripped —
+// some apps legitimately read those back as input.
+const DEVICE_REPORT_RE = /\x1b\[[?>][0-9;]*c/g;
+
+const stripDeviceReports = (input) => {
+  if (typeof input !== 'string' || input.indexOf('\x1b[') === -1) return input;
+  return input.replace(DEVICE_REPORT_RE, '');
+};
+
+// Quote a value for the shell-command string tmux hands to `$SHELL -c`.
+const shellQuote = (value) => {
+  const s = String(value ?? '');
+  if (s === '') return "''";
+  if (/^[A-Za-z0-9_\/.:=,+@%-]+$/.test(s)) return s;
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+};
+
+class TmuxSessionBackend {
+  constructor({ socketName, logger = console, execImpl = execFileSync, platform = process.platform, baseEnv = process.env } = {}) {
+    if (!socketName) throw new Error('TmuxSessionBackend requires a socketName');
+    this.socketName = socketName;
+    this.logger = logger;
+    this.exec = execImpl;
+    this.platform = platform;
+    this.baseEnv = baseEnv;
+    this._available = null;
+    this._configured = false;
+  }
+
+  // Environment for every tmux invocation. The tmux SERVER inherits the env of
+  // the command that first starts it, and every pane inherits from the server —
+  // this is the one choke point where nested-session markers must be scrubbed.
+  // Without it, an orchestrator launched from inside a Claude session would
+  // leak CLAUDECODE into every terminal and trip the CLI's nesting guard; a
+  // leaked TMUX var would make the client refuse to start at all.
+  buildTmuxEnv() {
+    const env = { ...this.baseEnv };
+    delete env.CLAUDECODE;
+    delete env.CLAUDE_CODE_ENTRYPOINT;
+    delete env.TMUX;
+    delete env.TMUX_PANE;
+    return env;
+  }
+
+  run(args, opts = {}) {
+    return this.exec('tmux', ['-L', this.socketName, ...args], {
+      env: this.buildTmuxEnv(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 5000,
+      ...opts
+    });
+  }
+
+  isAvailable() {
+    if (this.platform === 'win32') return false;
+    if (this._available !== null) return this._available;
+    try {
+      this.exec('tmux', ['-V'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 3000 });
+      this._available = true;
+    } catch (error) {
+      this._available = false;
+      this.logger.info?.('tmux not available — session persistence disabled', { error: error.message });
+    }
+    return this._available;
+  }
+
+  // One-time per-socket server config. The options make embedded panes behave
+  // like plain terminals. Mouse stays OFF so xterm.js keeps browser-native
+  // text selection (tmux mouse mode eats drags — selection instantly cleared).
+  // The outer alternate screen is disabled (smcup@/rmcup@) so pane output
+  // scrolls through the browser terminal's own buffer: native wheel scrolling,
+  // scrollbar, and selection — no wheel→arrow-key translation, no copy-mode
+  // snap-back. PgUp copy-mode (styled below) remains for pre-attach history.
+  ensureConfigured() {
+    try {
+      this.run(['start-server']);
+    } catch (error) {
+      this.logger.error?.('Failed to start tmux server for session persistence', { socket: this.socketName, error: error.message });
+      return false;
+    }
+    // Trust the SERVER, not a process-local flag: an empty tmux server exits
+    // (exit-empty) and a later `new-session` silently spawns a fresh one with
+    // default options — status bar back on, prefix key active. The marker
+    // option lives on the server, so a fresh server always gets reconfigured.
+    try {
+      const marker = this.run(['show', '-gv', '@aw_configured']);
+      if (String(marker || '').trim() === CONFIG_MARKER_VERSION) {
+        this._configured = true;
+        return true;
+      }
+    } catch {
+      // marker unset — fall through and configure
+    }
+    const options = [
+      // First: keep the server alive while it has no sessions, closing the
+      // configure→first-attach gap that loses these options entirely.
+      ['set', '-g', 'exit-empty', 'off'],
+      ['set', '-g', 'status', 'off'],
+      ['set', '-g', 'prefix', 'None'],
+      ['set', '-g', 'mouse', 'off'],
+      ['set', '-g', 'history-limit', '20000'],
+      ['set', '-g', 'default-terminal', 'xterm-256color'],
+      // Pin the outer terminal's capabilities so tmux never has to depend on a
+      // (slow, round-tripped over the browser socket) probe response to detect
+      // truecolor/clipboard — which is what races and leaks DA reports.
+      ['set', '-ga', 'terminal-features', 'xterm-256color:RGB:clipboard'],
+      // Never switch the OUTER terminal to the alternate screen — that is what
+      // made xterm.js translate wheel scrolling into arrow keys.
+      ['set', '-ga', 'terminal-overrides', '*:smcup@:rmcup@'],
+      // Readable copy-mode selection (default is a jarring orange).
+      ['set', '-g', 'mode-style', 'bg=#264f78,fg=terminal'],
+      // Raw-pty parity: forward FocusIn/FocusOut to inner apps (Claude Code
+      // uses them) and let deliberate escaped passthrough sequences flow.
+      ['set', '-g', 'focus-events', 'on'],
+      ['set', '-g', 'allow-passthrough', 'on'],
+      // Hide tmux from inner apps' UI heuristics (e.g. Claude Code renders
+      // diffs differently when TERM_PROGRAM=tmux).
+      ['set-environment', '-g', '-r', 'TERM_PROGRAM'],
+      ['set', '-g', 'escape-time', '25'],
+      ['set', '-g', 'window-size', 'latest'],
+      ['set', '-g', 'allow-rename', 'off'],
+      ['set', '-g', 'set-titles', 'off'],
+      // Belt-and-braces on top of buildTmuxEnv: never hand these to panes.
+      ['set-environment', '-g', '-r', 'CLAUDECODE'],
+      ['set-environment', '-g', '-r', 'CLAUDE_CODE_ENTRYPOINT'],
+      // Last: the on-server marker the check above looks for. Set only after
+      // the real options so a partially-configured server is retried.
+      ['set', '-g', '@aw_configured', CONFIG_MARKER_VERSION]
+    ];
+    for (const args of options) {
+      try {
+        this.run(args);
+      } catch {
+        // e.g. set-environment -r on a variable that was never set — harmless
+      }
+    }
+    this._configured = true;
+    return true;
+  }
+
+  sessionName(sessionId) {
+    return String(sessionId || '').replace(SESSION_NAME_UNSAFE, '_') || 'session';
+  }
+
+  // "=" forces an exact-name match; without it tmux prefix-matches targets,
+  // which would make "work1" resolve to "work1-claude".
+  target(sessionId) {
+    return `=${this.sessionName(sessionId)}`;
+  }
+
+  hasSession(sessionId) {
+    try {
+      this.run(['has-session', '-t', this.target(sessionId)]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  listSessionNames() {
+    try {
+      const out = this.run(['list-sessions', '-F', '#{session_name}']);
+      return String(out || '').split('\n').map((s) => s.trim()).filter(Boolean);
+    } catch {
+      return []; // no server running / no sessions
+    }
+  }
+
+  // Argv for node-pty. `new-session -A` attaches when the session already
+  // exists (server restart) and creates it otherwise; on attach the trailing
+  // shell-command is ignored — exactly the adoption semantic we want.
+  buildSpawnCommand({ sessionId, command, args = [], cwd }) {
+    const name = this.sessionName(sessionId);
+    const shellCommand = [command, ...args].map(shellQuote).join(' ');
+    const tmuxArgs = ['-L', this.socketName, 'new-session', '-A', '-s', name];
+    if (cwd) tmuxArgs.push('-c', cwd);
+    tmuxArgs.push(shellCommand);
+    return { command: 'tmux', args: tmuxArgs, name };
+  }
+
+  // Shared by sessionManager.js and commanderService.js. Sizes ptyOptions to
+  // the surviving pane on adopt (see getPaneSize). Callers still delete
+  // TMUX/TMUX_PANE from their own env before calling this.
+  resolveSpawn({ sessionId, command, args = [], cwd, ptyOptions, logger = this.logger, logLabel = 'session' } = {}) {
+    this.ensureConfigured();
+    const adopted = this.hasSession(sessionId);
+    const spec = this.buildSpawnCommand({ sessionId, command, args, cwd });
+    const persistence = { backend: 'tmux', sessionId, name: spec.name, adopted };
+    if (adopted) {
+      logger?.info?.(`Adopting surviving ${logLabel}`, { sessionId });
+      const paneSize = this.getPaneSize(sessionId);
+      if (paneSize && ptyOptions) {
+        ptyOptions.cols = paneSize.cols;
+        ptyOptions.rows = paneSize.rows;
+      }
+    }
+    return { command: spec.command, args: spec.args, persistence };
+  }
+
+  killSession(sessionId) {
+    try {
+      this.run(['kill-session', '-t', this.target(sessionId)]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Pid of the process actually running inside the session's pane (a child of
+  // the tmux server, NOT of the client pty the orchestrator holds).
+  panePid(sessionId) {
+    try {
+      const out = this.run(['list-panes', '-t', this.target(sessionId), '-F', '#{pane_pid}']);
+      const pid = parseInt(String(out || '').trim().split('\n')[0], 10);
+      return Number.isFinite(pid) && pid > 0 ? pid : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Name of the foreground process in the pane ('claude', 'codex', 'bash', ...).
+  // Ground truth for "is an agent still running here" — output heuristics can be
+  // fooled by wrapped/garbled frames that happen to look like a shell prompt.
+  paneCurrentCommand(sessionId) {
+    try {
+      const out = this.run(['list-panes', '-t', this.target(sessionId), '-F', '#{pane_current_command}']);
+      const command = String(out || '').trim().split('\n')[0].trim();
+      return command || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Current pane geometry, so a re-attaching client can adopt at the real size
+  // instead of a hardcoded default (avoids a resize-down-then-up on attach).
+  getPaneSize(sessionId) {
+    try {
+      const out = this.run(['list-panes', '-t', this.target(sessionId), '-F', '#{pane_width}x#{pane_height}']);
+      const [w, h] = String(out || '').trim().split('\n')[0].split('x').map((n) => parseInt(n, 10));
+      if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) return { cols: w, rows: h };
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Scrollback (with escape sequences, joined wrapped lines) for buffer
+  // backfill when adopting a surviving session after a server restart.
+  capturePane(sessionId, lines = 2000) {
+    try {
+      return String(this.run([
+        'capture-pane', '-p', '-e', '-J',
+        '-t', this.target(sessionId),
+        '-S', `-${Math.max(1, Math.floor(lines))}`
+      ]) || '');
+    } catch {
+      return '';
+    }
+  }
+}
+
+module.exports = { TmuxSessionBackend, shellQuote, stripDeviceReports };

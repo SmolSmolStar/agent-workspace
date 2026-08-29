@@ -13,6 +13,8 @@
     <link rel="stylesheet" href="styles.css">
     <link rel="stylesheet" href="styles/tabs.css">
     <link rel="stylesheet" href="styles/projects-board.css">
+    <link rel="stylesheet" href="styles/atlas-portfolio.css">
+    <link rel="stylesheet" href="styles/work-panel.css">
     
     <!-- Favicon -->
     <link rel="icon" type="image/png" href="assets/agent-workspace-logo.png?v=circle">
@@ -65,9 +67,16 @@
             <button id="tasks-btn" class="header-btn header-nav-btn" title="Browse tasks (Trello)" data-ui-visibility="header.tasks">
                 <span class="header-nav-icon">✅</span> Tasks
             </button>
+            <button id="work-btn" class="header-btn header-nav-btn" title="Work: where time is going across every repo in flight" data-ui-visibility="header.work">
+                <span class="header-nav-icon">🕵️</span> Work
+            </button>
             <button id="ports-btn" class="header-btn header-nav-btn" title="View running services" data-ui-visibility="header.ports">
                 <span class="header-nav-icon">🔌</span> Ports
             </button>
+            <button id="system-stats-btn" class="header-btn header-nav-btn" title="CPU / RAM / VRAM usage" data-ui-visibility="header.systemStats" style="display: none;">
+                <span class="header-nav-icon">📊</span><span id="system-stats-summary"></span>
+            </button>
+            <span id="usage-limits-widget" class="usage-limits-widget" style="display: none;" data-ui-visibility="header.usageLimits"></span>
             <div class="header-actions">
                 <button id="greenfield-btn" class="header-btn" title="Create new project" data-ui-visibility="header.newProject">
                     ➕ New Project
@@ -159,11 +168,37 @@
         <div class="modal-content agent-startup-dynamic">
             <h3>Start AI Agent - <span id="startup-session-id"></span></h3>
 
-            <!-- Agent Selection -->
+            <!-- Agent (harness) Selection -->
             <div class="agent-selector">
-                <label>Select AI Agent:</label>
+                <label>Harness:</label>
                 <div class="agent-options" id="agent-options">
                     <!-- Dynamically populated -->
+                </div>
+            </div>
+
+            <!-- Model Selection (cascades from harness) -->
+            <div class="model-selector" id="model-selector">
+                <label>Model:</label>
+                <div class="model-buttons" id="model-buttons">
+                    <!-- Dynamically populated from /api/agents/model-catalog -->
+                </div>
+            </div>
+
+            <!-- Effort Selection (cascades from model) -->
+            <div class="effort-selector" id="effort-selector">
+                <label>Effort:</label>
+                <div class="effort-buttons" id="effort-buttons">
+                    <!-- Dynamically populated from /api/agents/model-catalog -->
+                </div>
+            </div>
+
+            <!-- Tier Selection (cascades from model; only some Codex models
+                 offer one, e.g. the "priority" 1.5x-speed tier - hidden for
+                 everything else) -->
+            <div class="tier-selector" id="tier-selector" style="display: none;">
+                <label>Tier:</label>
+                <div class="tier-buttons" id="tier-buttons">
+                    <!-- Dynamically populated from /api/agents/model-catalog -->
                 </div>
             </div>
 
@@ -175,7 +210,9 @@
                 </div>
             </div>
 
-            <!-- Flag Configuration -->
+            <!-- Flag Configuration (permissions/sandbox only - model & effort
+                 have their own rows above, so this no longer grows/shifts
+                 the modal when switching harness) -->
             <div class="flag-configuration" id="flag-configuration">
                 <!-- Dynamically populated based on selected agent -->
             </div>
@@ -538,9 +575,13 @@
     <script src="logger.js"></script>
     <script src="plugin-host.js"></script>
     <script src="quick-links.js"></script>
+    <script src="terminal-themes.js"></script>
+    <script src="terminal-scroll-keeper.js"></script>
     <script src="commander-panel.js"></script>
     <script src="recommendations.js"></script>
     <script src="dashboard.js"></script>
+    <script src="atlas-portfolio-renderer.js"></script>
+    <script src="atlas-portfolio.js"></script>
     <script src="projects-board.js"></script>
     <script src="workspace-switcher.js"></script>
     <script src="workspace-wizard.js"></script>
@@ -550,6 +591,9 @@
     <script src="voice-control.js"></script>
     <script src="conversation-browser.js"></script>
     <script src="activity-feed.js"></script>
+    <script src="work-charts.js"></script>
+    <script src="work-page.js"></script>
+    <script src="work-panel.js"></script>
     <script src="/bootstrap/setup-state.js"></script>
     <script src="app.js"></script>
     <!-- Focus Overlay -->
@@ -579,6 +623,9 @@
     <script src="terminal.js"></script>
     <script src="notifications.js"></script>
     <script src="agent-modal.js"></script>
+    <script src="model-effort-picker.js"></script>
+    <script src="usage-limits-widget.js"></script>
+    <script src="system-stats-widget.js"></script>
 </body>
 
 </html>

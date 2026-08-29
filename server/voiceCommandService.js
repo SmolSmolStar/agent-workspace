@@ -1247,6 +1247,7 @@ class VoiceCommandService {
             out.push({
               name: String(c?.name || '').trim(),
               params: Array.isArray(c?.params) ? c.params : [],
+              aliases: Array.isArray(c?.aliases) ? c.aliases : [],
               surfaces: Array.isArray(c?.surfaces) ? c.surfaces : ['voice']
             });
           }
@@ -1265,25 +1266,38 @@ class VoiceCommandService {
       if (surfaces.length > 0 && !surfaces.includes('voice')) continue;
       flat.push({
         name,
-        params: Array.isArray(c?.params) ? c.params : []
+        aliases: Array.isArray(c?.aliases)
+          ? c.aliases.map((alias) => String(alias || '').trim().toLowerCase()).filter(Boolean)
+          : [],
+        hasRequiredParams: Array.isArray(c?.params) && c.params.some((param) => param && param.required)
       });
     }
 
-    const signature = flat.map((c) => c.name).sort().join('|');
+    const signature = JSON.stringify(flat
+      .map((command) => ({
+        name: command.name,
+        aliases: command.aliases.slice().sort(),
+        hasRequiredParams: command.hasRequiredParams
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name)));
     if (signature === this.autoPatternSignature) return;
     this.autoPatternSignature = signature;
 
     const auto = [];
     for (const c of flat) {
-      const required = c.params.some((p) => p && p.required);
-      if (required) continue;
+      if (c.hasRequiredParams) continue;
 
       const tokens = c.name.split('-').map((t) => t.trim()).filter(Boolean);
       if (tokens.length === 0) continue;
 
-      const re = new RegExp(`^${tokens.map(escapeRegex).join('(?:\\s|-)+')}$`, 'i');
+      const spokenNames = Array.from(new Set([c.name, ...c.aliases]));
+      const patterns = spokenNames.map((spokenName) => {
+        const spokenTokens = spokenName.split('-').map((token) => token.trim()).filter(Boolean);
+        return new RegExp(`^${spokenTokens.map(escapeRegex).join('(?:\\s|-)+')}$`, 'i');
+      });
       auto.push({
-        patterns: [re],
+        patterns,
+        examples: spokenNames,
         command: c.name,
         extractParams: () => ({})
       });
@@ -1361,8 +1375,12 @@ class VoiceCommandService {
           const required = params.filter(p => p && p.required).map(p => p.name).filter(Boolean);
           const example = Array.isArray(c?.examples) && c.examples.length ? c.examples[0] : null;
           const exampleLine = example?.params ? ` e.g. ${JSON.stringify(example.params)}` : '';
+          const aliases = Array.isArray(c?.aliases)
+            ? c.aliases.map((alias) => String(alias || '').trim()).filter(Boolean)
+            : [];
+          const aliasLine = aliases.length ? ` (aliases: ${aliases.join(', ')})` : '';
           const safety = String(c?.safetyLevel || 'safe').trim().toLowerCase();
-          return `${c.name}${required.length ? ` (required: ${required.join(', ')})` : ''}: ${c.description || ''} [${safety}]${exampleLine}`;
+          return `${c.name}${aliasLine}${required.length ? ` (required: ${required.join(', ')})` : ''}: ${c.description || ''} [${safety}]${exampleLine}`;
         });
         return lines.length ? [`[${category}]`, ...lines].join('\n') : '';
       })
@@ -1563,18 +1581,27 @@ JSON:`;
    * Get available voice commands for help
    */
   getVoiceCommands() {
-    return this.patterns.map(p => ({
-      command: p.command,
-      examples: p.patterns.map(pat =>
-        pat.source
-          .replace(/\\s\+/g, ' ')
-          .replace(/\\d\+/g, 'N')
-          .replace(/\(\?:.*?\)/g, '')
-          .replace(/[\\^$.*+?()[\]{}|]/g, '')
-          .replace(/i$/, '')
-          .trim()
-      ).slice(0, 2)
-    }));
+    this.ensureAutoCommandNamePatterns();
+    const commands = new Map();
+    for (const pattern of this.patterns) {
+      const examples = Array.isArray(pattern.examples)
+        ? pattern.examples
+        : pattern.patterns.map((regex) =>
+            regex.source
+              .replace(/\\s\+/g, ' ')
+              .replace(/\\d\+/g, 'N')
+              .replace(/\(\?:.*?\)/g, '')
+              .replace(/[\\^$.*+?()[\]{}|]/g, '')
+              .replace(/i$/, '')
+              .trim()
+          ).slice(0, 2);
+      const current = commands.get(pattern.command) || [];
+      for (const example of examples) {
+        if (example && !current.includes(example)) current.push(example);
+      }
+      commands.set(pattern.command, current);
+    }
+    return Array.from(commands, ([command, examples]) => ({ command, examples }));
   }
 
   /**

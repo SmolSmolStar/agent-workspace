@@ -450,6 +450,68 @@ describe('nodePtyCompat', () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
+  test('loadNodePty repairs an ABI mismatch and retries the production module load', () => {
+    const pty = { spawn: jest.fn() };
+    let loadAttempts = 0;
+    const requireModule = jest.fn((specifier) => {
+      if (specifier !== 'node-pty') {
+        throw new Error(`unexpected module: ${specifier}`);
+      }
+      loadAttempts += 1;
+      if (loadAttempts === 1) {
+        throw new Error(
+          "The module '/repo/node_modules/node-pty/build/Release/pty.node' was compiled against a different Node.js version using NODE_MODULE_VERSION 115. This version of Node.js requires NODE_MODULE_VERSION 141."
+        );
+      }
+      return pty;
+    });
+    const runtimeRepair = {
+      tryRepair: jest.fn(() => ({
+        attempted: true,
+        repaired: true,
+        builtAbi: 115,
+        runtimeAbi: 141
+      }))
+    };
+
+    expect(loadNodePty({
+      platform: 'linux',
+      requireModule,
+      runtimeRepair,
+      rootDir: '/repo'
+    })).toBe(pty);
+
+    expect(runtimeRepair.tryRepair).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ rootDir: '/repo' })
+    );
+    expect(requireModule).toHaveBeenCalledTimes(2);
+  });
+
+  test('loadNodePty reports a bounded automatic rebuild failure', () => {
+    const abiError = new Error(
+      'compiled against a different Node.js version using NODE_MODULE_VERSION 115; requires NODE_MODULE_VERSION 141'
+    );
+    const requireModule = jest.fn(() => {
+      throw abiError;
+    });
+    const runtimeRepair = {
+      tryRepair: jest.fn(() => ({
+        attempted: true,
+        repaired: false,
+        error: new Error('rebuild timed out')
+      }))
+    };
+
+    expect(() => loadNodePty({
+      platform: 'linux',
+      requireModule,
+      runtimeRepair,
+      rootDir: '/repo'
+    })).toThrow('Automatic node-pty rebuild failed: rebuild timed out');
+    expect(requireModule).toHaveBeenCalledTimes(1);
+  });
+
   test('isStartProcessUsageError only matches the native usage message', () => {
     expect(isStartProcessUsageError(new Error('Usage: pty.startProcess(file, cols, rows, debug, pipeName, inheritCursor)'))).toBe(true);
     expect(isStartProcessUsageError(new Error('other failure'))).toBe(false);

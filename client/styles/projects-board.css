@@ -74,6 +74,56 @@
   margin: 0;
 }
 
+.projects-board-recency {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  user-select: none;
+  white-space: nowrap;
+}
+
+.projects-board-recency-title {
+  margin-right: 2px;
+}
+
+.projects-board-recency-option {
+  display: inline-flex;
+  cursor: pointer;
+}
+
+.projects-board-recency-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.projects-board-recency-option span {
+  padding: 3px 9px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  line-height: 1.2;
+}
+
+.projects-board-recency-option:hover span {
+  color: var(--text-primary);
+}
+
+.projects-board-recency-option input:checked + span {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+.projects-board-recency-option input:focus-visible + span {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 1px;
+}
+
 .projects-board-meta {
   font-size: 12px;
   color: var(--text-secondary);
@@ -345,3 +395,28 @@
 .projects-board-card[data-project-type="website"] { border-left-color: #3b82f6; }
 .projects-board-card[data-project-type="writing"] { border-left-color: #a3a3a3; }
 .projects-board-card[data-project-type="tool-project"] { border-left-color: #a855f7; }
+
+@media (max-width: 700px) {
+  .projects-board-toolbar {
+    flex-wrap: wrap;
+    align-items: stretch;
+  }
+
+  .projects-board-toolbar .search-input,
+  .projects-board-toggle,
+  .projects-board-recency {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .projects-board-recency {
+    flex-wrap: wrap;
+  }
+
+  .projects-board-portfolio-button,
+  .projects-board-toolbar #projects-board-refresh {
+    flex: 1 1 calc(50% - 5px);
+    min-width: 0;
+    min-height: 38px;
+  }
+}

@@ -11,10 +11,22 @@
 class CommandRegistry {
   constructor() {
     this.commands = new Map();
+    this.commandAliases = new Map();
     this.io = null;
     this.sessionManager = null;
     this.workspaceManager = null;
     this.pagerService = null;
+  }
+
+  normalizeCommandName(value) {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  resolveCommandName(name) {
+    const normalized = this.normalizeCommandName(name);
+    if (!normalized) return null;
+    if (this.commands.has(normalized)) return normalized;
+    return this.commandAliases.get(normalized) || null;
   }
 
   /**
@@ -34,6 +46,9 @@ class CommandRegistry {
    * @param {object} config - Command configuration
    */
   register(name, config) {
+    const commandName = this.normalizeCommandName(name);
+    if (!commandName) throw new Error('Command name is required');
+
     const normalizeSafetyLevel = (value) => {
       const candidate = String(value || '').trim().toLowerCase();
       if (candidate === 'caution' || candidate === 'dangerous') return candidate;
@@ -51,10 +66,30 @@ class CommandRegistry {
     };
 
     const surfaces = normalizeList(config.surfaces);
-    const aliases = normalizeList(config.aliases);
+    const aliases = normalizeList(config.aliases).filter((alias) => alias !== commandName);
+    const commandNameOwner = this.commandAliases.get(commandName);
+    if (commandNameOwner && commandNameOwner !== commandName) {
+      throw new Error(`Command name already registered as alias: ${commandName}`);
+    }
+    for (const alias of aliases) {
+      if (this.commands.has(alias) && alias !== commandName) {
+        throw new Error(`Alias conflicts with command name: ${alias}`);
+      }
+      const owner = this.commandAliases.get(alias);
+      if (owner && owner !== commandName) {
+        throw new Error(`Alias already registered: ${alias}`);
+      }
+    }
 
-    this.commands.set(name, {
-      name,
+    const previous = this.commands.get(commandName);
+    for (const alias of (previous?.aliases || [])) {
+      if (this.commandAliases.get(alias) === commandName) {
+        this.commandAliases.delete(alias);
+      }
+    }
+
+    this.commands.set(commandName, {
+      name: commandName,
       category: config.category || 'general',
       description: config.description,
       params: config.params || [],
@@ -67,6 +102,9 @@ class CommandRegistry {
       hidden: config.hidden === true,
       handler: config.handler
     });
+    for (const alias of aliases) {
+      this.commandAliases.set(alias, commandName);
+    }
   }
 
   /**
@@ -129,7 +167,8 @@ class CommandRegistry {
    * @returns {object|null}
    */
   getCommand(name) {
-    const cmd = this.commands.get(name);
+    const resolvedName = this.resolveCommandName(name);
+    const cmd = resolvedName ? this.commands.get(resolvedName) : null;
     if (!cmd) return null;
     return {
       name: cmd.name,
@@ -168,7 +207,8 @@ class CommandRegistry {
    * @param {object} params - Command parameters
    */
   async execute(name, params = {}) {
-    const cmd = this.commands.get(name);
+    const resolvedName = this.resolveCommandName(name);
+    const cmd = resolvedName ? this.commands.get(resolvedName) : null;
     if (!cmd) {
       return {
         success: false,
@@ -237,7 +277,9 @@ class CommandRegistry {
         if (!session) {
           throw new Error(`Session not found: ${params.sessionId}`);
         }
-        const ok = sessionManager.writeToSession(params.sessionId, params.input);
+        const writer = sessionManager.writeNewTurnToSession?.bind(sessionManager)
+          || sessionManager.writeToSession.bind(sessionManager);
+        const ok = writer(params.sessionId, params.input, { source: 'command-registry' });
         if (!ok) throw new Error(`Failed to write to session: ${params.sessionId}`);
         return { message: `Sent to ${params.sessionId}` };
       }
@@ -1413,7 +1455,9 @@ class CommandRegistry {
         if (!session) {
           throw new Error(`Session not found: ${params.sessionId}`);
         }
-        const ok = sessionManager.writeToSession(params.sessionId, params.command + '\n');
+        const writer = sessionManager.writeNewTurnToSession?.bind(sessionManager)
+          || sessionManager.writeToSession.bind(sessionManager);
+        const ok = writer(params.sessionId, params.command + '\n', { source: 'command-registry' });
         if (!ok) throw new Error(`Failed to write to session: ${params.sessionId}`);
         return { message: `Running: ${params.command}` };
       }
@@ -1459,7 +1503,9 @@ class CommandRegistry {
         for (const sessionId of params.sessionIds) {
           const session = sessionManager.getSessionById(sessionId);
           if (session) {
-            const ok = sessionManager.writeToSession(sessionId, params.input);
+            const writer = sessionManager.writeNewTurnToSession?.bind(sessionManager)
+              || sessionManager.writeToSession.bind(sessionManager);
+            const ok = writer(sessionId, params.input, { source: 'command-registry-broadcast' });
             if (!ok) {
               results.push({ sessionId, sent: false, error: 'Write failed' });
               continue;

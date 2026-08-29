@@ -15,6 +15,7 @@ class AgentManager {
       id: 'claude',
       name: 'Claude',
       icon: '🤖',
+      logo: 'assets/providers/claude.svg',
       description: 'Anthropic Claude Code',
       baseCommand: 'claude',
       modes: {
@@ -71,6 +72,7 @@ class AgentManager {
       id: 'codex',
       name: 'Codex',
       icon: '⚡',
+      logo: 'assets/providers/codex.png',
       description: 'OpenAI Codex CLI',
       baseCommand: 'codex',
 	      modes: {
@@ -153,6 +155,45 @@ class AgentManager {
 	        approvals: { name: 'Approval Policy', mutuallyExclusive: true }
 	      }
 	    });
+
+    // Grok Configuration
+    this.agentConfigs.set('grok', {
+      id: 'grok',
+      name: 'Grok',
+      icon: '✳️',
+      logo: 'assets/providers/grok.svg',
+      description: 'xAI Grok CLI',
+      baseCommand: 'grok',
+      modes: {
+        fresh: {
+          command: 'grok',
+          description: 'Start new session'
+        },
+        continue: {
+          command: 'grok --continue',
+          description: 'Continue the most recent session'
+        },
+        resume: {
+          command: 'grok --resume',
+          description: 'Resume a session by id'
+        }
+      },
+      flags: {
+        alwaysApprove: {
+          flag: '--always-approve',
+          description: 'Auto-approve all tool executions',
+          label: '🚀 YOLO Mode',
+          category: 'permissions',
+          default: true
+        }
+      },
+      defaultMode: 'fresh',
+      defaultFlags: ['alwaysApprove'],
+      availableFlags: ['alwaysApprove'],
+      flagCategories: {
+        permissions: { name: 'Permissions', mutuallyExclusive: false }
+      }
+    });
   }
 
   /**
@@ -198,6 +239,17 @@ class AgentManager {
 	        }
 	      }
 
+	      // Claude and Grok both take --model/--effort as plain launch flags
+	      // (verified against each CLI's own --help), and neither flag
+	      // persists as a saved default the way the in-session /model and
+	      // /effort commands do.
+	      if ((agentId === 'claude' || agentId === 'grok') && config.model) {
+	        command += ` --model ${config.model}`;
+	      }
+	      if ((agentId === 'claude' || agentId === 'grok') && config.effort) {
+	        command += ` --effort ${config.effort}`;
+	      }
+
 	      // Add model if specified (Codex)
 	      if (config.model && agent.models) {
 	        command += ` -m ${config.model}`;
@@ -206,6 +258,14 @@ class AgentManager {
       // Add reasoning level if specified (Codex)
       if (config.reasoning) {
         command += ` -c model_reasoning_effort="${config.reasoning}"`;
+      }
+
+      // Service tier (Codex) - "default" is the model's own normal tier and
+      // needs no override; only a non-default tier (e.g. "priority", the
+      // 1.5x-speed "Fast" tier) is worth an explicit -c, matching the
+      // service_tier key already in ~/.codex/config.toml on this machine.
+      if (config.tier && config.tier !== 'default') {
+        command += ` -c service_tier="${config.tier}"`;
       }
 
       // Add verbosity level if specified (Codex)
@@ -350,6 +410,7 @@ class AgentManager {
       id: agent.id,
       name: agent.name,
       icon: agent.icon,
+      logo: agent.logo || null,
       description: agent.description,
       modes: Object.entries(agent.modes).map(([key, mode]) => ({
         id: key,

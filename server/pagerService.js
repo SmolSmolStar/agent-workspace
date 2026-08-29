@@ -299,11 +299,16 @@ class PagerService {
   }
 
   async writeTwoStep(sessionId, text, enterDelayMs) {
+    const admission = this.sessionManager?.getNewTurnAdmissionDecision?.(sessionId, { source: 'pager' })
+      || { allowed: true };
+    if (admission.allowed === false) {
+      return { sent: false, blocked: true, decision: admission };
+    }
     const first = this.sessionManager?.writeToSession?.(sessionId, text);
-    if (!first) return false;
+    if (!first) return { sent: false, blocked: false, decision: null };
     await this.sleep(enterDelayMs);
     const second = this.sessionManager?.writeToSession?.(sessionId, '\r');
-    return !!second;
+    return { sent: !!second, blocked: false, decision: null };
   }
 
   stopJob(id, { reason = 'manual', doneSessionId = null, doneToken = null } = {}) {
@@ -399,12 +404,16 @@ class PagerService {
 
     const message = this.composeNudgeText(job.profile);
     let successCount = 0;
+    let blockedCount = 0;
     const errors = [];
     for (const row of live) {
       try {
-        const ok = await this.writeTwoStep(row.sessionId, message, job.profile.enterDelayMs);
-        if (ok) {
+        const result = await this.writeTwoStep(row.sessionId, message, job.profile.enterDelayMs);
+        if (result.sent) {
           successCount += 1;
+        } else if (result.blocked) {
+          blockedCount += 1;
+          errors.push(`${row.sessionId}:${result.decision.code || 'admission-blocked'}`);
         } else {
           errors.push(`${row.sessionId}:write-failed`);
         }
@@ -428,9 +437,15 @@ class PagerService {
       kind: 'pager.tick',
       jobId,
       successCount,
+      blockedCount,
       targetCount: live.length,
       errors: errors.slice(0, 10)
     });
+
+    if (blockedCount === live.length) {
+      this.stopJob(jobId, { reason: 'codex-usage-admission-blocked' });
+      return;
+    }
 
     if (job.consecutiveFailures >= 3) {
       this.stopJob(jobId, { reason: 'consecutive-write-failures' });

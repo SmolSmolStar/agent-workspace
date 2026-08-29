@@ -118,12 +118,14 @@
           "focusSwap": false,
           "tasks": true,
           "ports": true,
+          "work": false,
           "voice": false,
           "notifications": false,
           "commander": true,
           "recommendations": false,
           "settings": true,
-          "connectionStatus": true
+          "connectionStatus": true,
+          "usageLimits": true
         },
         "sidebar": {
           "viewPresets": false,
@@ -151,6 +153,7 @@
           "viewBranchOnGithub": false,
           "viewBranchDiff": true,
           "viewPrOnGithub": true,
+          "viewOpenPRsOnGithub": true,
           "advancedDiff": false,
           "advancedBranchDiff": false,
           "startServerDev": false,
@@ -222,10 +225,7 @@
         "colorize": true,
         "showAtInSidebar": false
       },
-      "terminals": {
-        "viewMode": "all",
-        "tierFilter": "all"
-      },
+      "terminals": {},
       "worktrees": {
         "autoCreateExtraWhenBusy": true,
         "autoCreateMinNumber": 9,
@@ -284,6 +284,11 @@
       },
       "diffViewer": {
         "theme": "dark"
+      },
+      "usageLimitsProviders": {
+        "claude": true,
+        "codex": true,
+        "grok": true
       }
     }
   },

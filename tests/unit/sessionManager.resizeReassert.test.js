@@ -102,4 +102,100 @@ describe('SessionManager.resizeSession re-assert cooldown', () => {
   it('returns false for an unknown session', () => {
     expect(sessionManager.resizeSession('does-not-exist', 120, 40)).toBe(false);
   });
+
+  describe('resync on same-size reassert', () => {
+    beforeEach(() => {
+      sessionManager.io = { emit: jest.fn() };
+      sessionManager.sessionPersistence = { capturePane: jest.fn().mockReturnValue('clean pane content\n') };
+    });
+
+    it('does not resync a genuinely new resize, only a same-size reassert', () => {
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+      session.persistence = { adopted: true };
+
+      // First-ever resize for this session: not a reassert of anything.
+      sessionManager.resizeSession(sessionId, 120, 40);
+      expect(sessionManager.sessionPersistence.capturePane).not.toHaveBeenCalled();
+
+      // A genuinely different size: still not a reassert.
+      nowSpy.mockReturnValue(1_000_100);
+      sessionManager.resizeSession(sessionId, 160, 50);
+      expect(sessionManager.sessionPersistence.capturePane).not.toHaveBeenCalled();
+
+      nowSpy.mockRestore();
+    });
+
+    it('resyncs the buffer when a same-size call makes it past the cooldown', () => {
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+      session.persistence = { adopted: true };
+
+      sessionManager.resizeSession(sessionId, 120, 40);
+      expect(sessionManager.sessionPersistence.capturePane).not.toHaveBeenCalled();
+
+      // Same size, cooldown not yet elapsed: no reassert, no resync.
+      nowSpy.mockReturnValue(1_000_000 + SessionManager.RESIZE_REASSERT_COOLDOWN_MS - 1);
+      sessionManager.resizeSession(sessionId, 120, 40);
+      expect(sessionManager.sessionPersistence.capturePane).not.toHaveBeenCalled();
+
+      // Same size, cooldown elapsed: this is exactly the "don't trust the
+      // last resize" case — resync the buffer.
+      nowSpy.mockReturnValue(1_000_000 + SessionManager.RESIZE_REASSERT_COOLDOWN_MS);
+      sessionManager.resizeSession(sessionId, 120, 40);
+      expect(sessionManager.sessionPersistence.capturePane).toHaveBeenCalledWith(sessionId, 2000);
+      expect(sessionManager.io.emit).toHaveBeenCalledWith('terminal-resync', {
+        sessionId,
+        buffer: 'clean pane content\n',
+        workspaceId: null
+      });
+
+      nowSpy.mockRestore();
+    });
+
+    it('never resyncs a plain (non-tmux-backed) session — there is no authoritative copy to read', () => {
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+      // session.persistence left unset, matching a plain node-pty session.
+
+      sessionManager.resizeSession(sessionId, 120, 40);
+      nowSpy.mockReturnValue(1_000_000 + SessionManager.RESIZE_REASSERT_COOLDOWN_MS);
+      sessionManager.resizeSession(sessionId, 120, 40);
+
+      expect(sessionManager.sessionPersistence.capturePane).not.toHaveBeenCalled();
+      expect(sessionManager.io.emit).not.toHaveBeenCalledWith('terminal-resync', expect.anything());
+
+      nowSpy.mockRestore();
+    });
+  });
+
+  describe('resyncSession (manual, on-demand recovery)', () => {
+    beforeEach(() => {
+      sessionManager.io = { emit: jest.fn() };
+      sessionManager.sessionPersistence = { capturePane: jest.fn().mockReturnValue('clean pane content\n') };
+    });
+
+    it('forces the resize again and emits a resync regardless of the cooldown', () => {
+      session.persistence = { adopted: true };
+      session.lastAppliedCols = 120;
+      session.lastAppliedRows = 40;
+
+      const result = sessionManager.resyncSession(sessionId);
+
+      expect(result).toBe(true);
+      expect(resize).toHaveBeenCalledWith(120, 40);
+      expect(sessionManager.io.emit).toHaveBeenCalledWith('terminal-resync', {
+        sessionId,
+        buffer: 'clean pane content\n',
+        workspaceId: null
+      });
+    });
+
+    it('returns false for a dead pty', () => {
+      session.pty.killed = true;
+      expect(sessionManager.resyncSession(sessionId)).toBe(false);
+      expect(sessionManager.sessionPersistence.capturePane).not.toHaveBeenCalled();
+    });
+
+    it('returns false for an unknown session', () => {
+      expect(sessionManager.resyncSession('does-not-exist')).toBe(false);
+    });
+  });
 });

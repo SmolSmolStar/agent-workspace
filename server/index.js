@@ -105,11 +105,21 @@ const { WorkspaceManager } = require('./workspaceManager');
 const { WorktreeHelper } = require('./worktreeHelper');
 const AgentManager = require('./agentManager');
 const { PortRegistry } = require('./portRegistry');
+const { UsageLimitsService } = require('./usageLimitsService');
+const { CodexUsageGuardService } = require('./codexUsageGuardService');
+const { SystemStatsService } = require('./systemStatsService');
 const { GreenfieldService } = require('./greenfieldService');
 const { ProjectTypeService } = require('./projectTypeService');
 const { ContinuityService } = require('./continuityService');
 const { QuickLinksService } = require('./quickLinksService');
 const { RecommendationsService } = require('./recommendationsService');
+const { RepoAtlasService } = require('./repoAtlasService');
+const { createAtlasRoutes } = require('./routes/atlasRoutes');
+const { TeamActivityService } = require('./teamActivityService');
+const { createTeamRoutes } = require('./routes/teamRoutes');
+const { FlowVisibilityService } = require('./flowVisibilityService');
+const { ThiefLogService } = require('./thiefLogService');
+const { createFlowRoutes } = require('./routes/flowRoutes');
 const { ProductLauncherService } = require('./productLauncherService');
 const { CommanderService } = require('./commanderService');
 const { ConversationService } = require('./conversationService');
@@ -168,6 +178,8 @@ const { normalizeServiceManifest, getWorkspaceServiceManifest } = require('./wor
 const { ServiceStackRuntimeService } = require('./serviceStackRuntimeService');
 const { IntentHaikuService } = require('./intentHaikuService');
 const { AgentModelConfigService } = require('./agentModelConfigService');
+const { AgentModelCatalogService } = require('./agentModelCatalogService');
+const { AgentModelSwitchService } = require('./agentModelSwitchService');
 const {
   getLifecyclePolicy,
   parseWorktreeKey,
@@ -179,6 +191,7 @@ const { PolicyService } = require('./policyService');
 const { AuditExportService } = require('./auditExportService');
 const { getInstance: getCommandHistoryService } = require('./commandHistoryService');
 const { evaluateBindSecurity, isLoopbackHost } = require('./networkSecurityPolicy');
+const { isSupportedAudioUpload } = require('./audioUploadPolicy');
 const {
   normalizeRepositoryPath,
   normalizeRepositoryRootForWorktrees,
@@ -192,14 +205,20 @@ const audioUpload = multer({
   dest: path.join(os.tmpdir(), 'orchestrator-audio'),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
   fileFilter: (req, file, cb) => {
-    const allowed = ['audio/webm', 'audio/wav', 'audio/mp3', 'audio/mpeg', 'audio/ogg', 'audio/x-wav'];
-    if (allowed.includes(file.mimetype) || file.originalname.match(/\.(wav|webm|mp3|ogg)$/i)) {
+    if (isSupportedAudioUpload(file)) {
       cb(null, true);
     } else {
       cb(new Error('Invalid audio format'));
     }
   }
 });
+const acceptAudioUpload = (req, res, next) => {
+  audioUpload.single('audio')(req, res, (error) => {
+    if (!error) return next();
+    const status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+    return res.status(status).json({ error: error.message });
+  });
+};
 
 // Configure multer for image uploads (for terminal image paste)
 const imageUploadDir = path.join(os.tmpdir(), 'orchestrator-images');
@@ -239,7 +258,15 @@ const io = new Server(httpServer, {
         origin.startsWith('http://localhost:') ||
         origin.startsWith('http://127.0.0.1:') ||
         origin.startsWith('http://[::1]:') ||
-        origin.startsWith('http://100.');
+        origin.startsWith('http://100.') ||
+        // Private (RFC1918) ranges only — home/office LAN devices reaching the
+        // orchestrator via the Windows portproxy (phone, second PC) present
+        // origins like http://192.168.1.23:2080. A bare "172." prefix would
+        // also whitelist public internet space (e.g. Cloudflare/Google ranges
+        // in 172/8), so the 172 block is matched exactly (172.16-172.31).
+        /^http:\/\/172\.(1[6-9]|2\d|3[01])\./.test(origin) ||
+        origin.startsWith('http://192.168.') ||
+        origin.startsWith('http://10.');
 
       if (allowed) {
         callback(null, true);
@@ -341,6 +368,16 @@ const gitHelper = new GitHelper();
 const notificationService = new NotificationService(io);
 const worktreeHelper = new WorktreeHelper();
 const portRegistry = PortRegistry.getInstance();
+const usageLimitsService = UsageLimitsService.getInstance();
+const codexUsageGuardService = CodexUsageGuardService.getInstance({
+  usageLimitsService,
+  logger
+});
+sessionManager.setAgentAdmissionController(codexUsageGuardService);
+codexUsageGuardService.on('state-changed', (status) => {
+  io.emit('codex-usage-guard', status);
+});
+codexUsageGuardService.start();
 const greenfieldService = GreenfieldService.getInstance();
 const projectTypeService = ProjectTypeService.getInstance({ logger });
 greenfieldService.setSessionManager(sessionManager);
@@ -349,6 +386,7 @@ greenfieldService.setProjectTypeService(projectTypeService);
 const continuityService = ContinuityService.getInstance();
 const quickLinksService = QuickLinksService.getInstance();
 const recommendationsService = RecommendationsService.getInstance();
+const repoAtlasService = RepoAtlasService.getInstance({ logger });
 const activityFeed = ActivityFeedService.getInstance();
 activityFeed.setIO(io);
 activityFeed.track('server.started', { port: Number(process.env.ORCHESTRATOR_PORT || 9460) });
@@ -397,6 +435,9 @@ const pagerService = PagerService.getInstance({ logger });
 const threadService = ThreadService.getInstance({ logger });
 const intentHaikuService = IntentHaikuService.getInstance({ logger });
 const agentModelConfigService = AgentModelConfigService.getInstance({ logger });
+const agentModelCatalogService = AgentModelCatalogService.getInstance({ logger });
+agentModelCatalogService.startBackgroundRefresh();
+const agentModelSwitchService = AgentModelSwitchService.getInstance({ logger, sessionManager });
 const serviceStackRuntimeService = ServiceStackRuntimeService.getInstance({ logger });
 const policyService = PolicyService.getInstance({ logger });
 const auditExportService = AuditExportService.getInstance({ logger });
@@ -408,6 +449,9 @@ const commanderService = CommanderService.getInstance({
   sessionManager,
   io
 });
+
+// Re-attach Commander tabs whose tmux panes survived the last restart.
+CommanderService.adoptOrphanInstances({ sessionManager, io });
 
 // Initialize Command Registry for Commander UI control
 commandRegistry.init({
@@ -557,6 +601,7 @@ io.on('connection', (socket) => {
     frameworks: workspaceManager.discoveredWorkspaceTypes?.frameworks || {},
     cascadedConfigs: cascadedConfigs  // Pre-computed cascaded configs
   });
+  socket.emit('codex-usage-guard', codexUsageGuardService.getStatus());
 
   // Send initial session states
   socket.emit('sessions', sessionManager.getSessionStates());
@@ -611,6 +656,14 @@ io.on('connection', (socket) => {
   socket.on('terminal-resize', ({ sessionId, cols, rows }) => {
     logger.debug('Terminal resize', { sessionId, cols, rows });
     sessionManager.resizeSession(sessionId, cols, rows);
+  });
+
+  // On-demand recovery for a garbled terminal: force a fresh OS-level resize
+  // and replace the client's buffer with a clean read of the pane's true
+  // current content, rather than waiting on the passive heal sweep.
+  socket.on('resync-session', ({ sessionId }) => {
+    logger.info('Terminal resync requested', { sessionId });
+    sessionManager.resyncSession(sessionId);
   });
   
   // Handle session restart
@@ -1348,6 +1401,30 @@ app.get('/api/workspaces', (req, res) => {
   } catch (error) {
     logger.error('Failed to list workspaces', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Failed to list workspaces' });
+  }
+});
+
+// Activate a workspace over plain HTTP — the socket 'switch-workspace' handler is the
+// only other path that sets workspaceManager's in-memory active workspace, so a restart
+// with no browser connected (or one whose reconnect handshake didn't re-request it) left
+// the in-memory pointer null: `isActiveWorkspace` checks elsewhere (e.g. add-mixed-worktree)
+// then silently skip session (re)creation even though the workspace config and the
+// underlying tmux panes are both still fine. This lets any HTTP caller (agents included)
+// re-activate a workspace and repopulate its sessions without needing a live socket.
+app.post('/api/workspaces/activate', async (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || '').trim();
+    if (!workspaceId) return res.status(400).json({ error: 'workspaceId is required' });
+
+    const newWorkspace = await workspaceManager.switchWorkspace(workspaceId);
+    await worktreeHelper.ensureWorktreesExist(newWorkspace);
+    const { sessions } = await sessionManager.switchWorkspacePreservingSessions(newWorkspace);
+
+    io.emit('workspace-changed', { workspace: newWorkspace, sessions });
+    res.json({ success: true, workspaceId: newWorkspace.id, sessionIds: Object.keys(sessions || {}) });
+  } catch (error) {
+    logger.error('Failed to activate workspace over HTTP', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -2651,6 +2728,43 @@ app.get('/api/policy/status', (req, res) => {
   }
 });
 
+app.use('/api/atlas', createAtlasRoutes({
+  repoAtlasService,
+  logger,
+  requireRead: requirePolicyAction('read'),
+  requireWrite: requirePolicyAction('write')
+}));
+
+const teamActivityService = TeamActivityService.getInstance({
+  settingsProvider: () => userSettingsService.getAllSettings()?.global
+});
+// Pulls run on their own schedule from here on, so a page load reads
+// whatever's already in memory instead of triggering a live gh search call.
+teamActivityService.startBackgroundRefresh();
+app.use('/api/team', createTeamRoutes({
+  teamActivityService,
+  logger,
+  requireRead: requirePolicyAction('read')
+}));
+
+const thiefLogService = ThiefLogService.getInstance();
+const flowVisibilityService = FlowVisibilityService.getInstance({
+  workspaceProvider: () => workspaceManager.listWorkspaces(),
+  sessionProvider: () => commanderService.listSessions(),
+  taskRecordProvider: () => taskRecordService.list(),
+  thiefLog: thiefLogService
+});
+// Same deal as team activity: git and gh calls run on a schedule so opening
+// the panel reads memory instead of firing dozens of subprocesses.
+flowVisibilityService.startBackgroundRefresh();
+app.use('/api/flow', createFlowRoutes({
+  flowVisibilityService,
+  thiefLogService,
+  logger,
+  requireRead: requirePolicyAction('read'),
+  requireWrite: requirePolicyAction('write')
+}));
+
 app.get('/api/policy/templates', requirePolicyAction('read'), (req, res) => {
   try {
     const templates = policyBundleService.listTemplates();
@@ -2776,6 +2890,17 @@ app.get('/api/audit/export', requirePolicyAction('audit_export'), proOnly, async
   }
 });
 
+// Session-persistence observability: whether terminals run inside tmux (and
+// survive server restarts), which live tmux sessions are managed vs orphaned.
+app.get('/api/sessions/persistence', (req, res) => {
+  try {
+    return res.json({ ok: true, ...sessionManager.getPersistenceStatus() });
+  } catch (error) {
+    logger.error('Failed to resolve session persistence status', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to resolve session persistence status' });
+  }
+});
+
 app.get('/api/sessions/:sessionId/log', (req, res) => {
   try {
     const sessionId = String(req.params.sessionId || '').trim();
@@ -2856,6 +2981,7 @@ app.get('/api/sessions/model-config', (req, res) => {
     return res.json({
       ok: true,
       codex: agentModelConfigService.resolveCodexConfig(),
+      grok: agentModelConfigService.resolveGrokConfig(),
       sessions
     });
   } catch (error) {
@@ -2864,6 +2990,90 @@ app.get('/api/sessions/model-config', (req, res) => {
   }
 });
 
+// Available models + valid efforts per provider, for the model/effort picker
+// dropdown and the Start AI Agent modal. Backed by a curated JSON file
+// (config/agent-model-catalog.json), not a live provider API — no installed
+// CLI here exposes a "list models" command. Cached in memory, refreshed on
+// a background timer (default 12h) and via the manual refresh endpoint below.
+app.get('/api/agents/model-catalog', (req, res) => {
+  try {
+    return res.json({ ok: true, ...agentModelCatalogService.getCatalog() });
+  } catch (error) {
+    logger.error('Failed to read agent model catalog', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to read agent model catalog' });
+  }
+});
+
+app.post('/api/agents/model-catalog/refresh', requirePolicyAction('write'), (req, res) => {
+  try {
+    return res.json({ ok: true, ...agentModelCatalogService.refresh() });
+  } catch (error) {
+    logger.error('Failed to refresh agent model catalog', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to refresh agent model catalog' });
+  }
+});
+
+// Session-only model/effort switch (header dropdown + Commander). Claude
+// only for now — see AgentModelSwitchService for why persisting the default
+// isn't possible to suppress, only reversible.
+app.post('/api/sessions/:sessionId/switch-model', requirePolicyAction('write'), async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { model, effort } = req.body || {};
+    if (!model && !effort) {
+      return res.status(400).json({ ok: false, error: 'model or effort is required' });
+    }
+
+    const session = sessionManager.getSessionById(sessionId);
+    const type = String(session?.type || '').toLowerCase();
+    if (!session) {
+      return res.status(404).json({ ok: false, error: 'SESSION_NOT_FOUND' });
+    }
+    if (type !== 'claude') {
+      // Codex/Grok session-only switching isn't confirmed to exist as a
+      // mechanism yet — see PLANS/2026-08-29/MODEL_EFFORT_PICKER_PLAN.md.
+      return res.status(501).json({ ok: false, error: 'UNSUPPORTED_SESSION_TYPE', type });
+    }
+
+    const result = await agentModelSwitchService.switchClaudeSession({ sessionId, model, effort });
+    if (!result.ok) {
+      const status = result.error === 'SESSION_NOT_FOUND' ? 404 : result.error === 'SESSION_BUSY' ? 409 : 400;
+      return res.status(status).json(result);
+    }
+    return res.json(result);
+  } catch (error) {
+    logger.error('Failed to switch session model', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to switch session model' });
+  }
+});
+
+function collectWorktreeSlotsUsedByRepoAcrossWorkspaces(repoPathNorm, { excludeWorkspaceId } = {}) {
+  // Mirrors the client's getWorkspaceUsageForWorktree: a slot already wired to this
+  // repo in ANY workspace is not free, even if the current workspace has never seen it.
+  const used = new Set();
+  if (!repoPathNorm) return used;
+  let allWorkspaces = [];
+  try {
+    allWorkspaces = workspaceManager.listWorkspaces() || [];
+  } catch (_) {
+    return used;
+  }
+  for (const ws of allWorkspaces) {
+    if (excludeWorkspaceId && ws?.id === excludeWorkspaceId) continue;
+    const terminals = Array.isArray(ws?.terminals) ? ws.terminals : [];
+    for (const terminal of terminals) {
+      const terminalRepoPath = normalizeRepositoryPath(terminal?.repository?.path);
+      if (terminalRepoPath !== repoPathNorm) continue;
+      const id = normalizeThreadWorktreeId(terminal?.worktree || terminal?.worktreeId || '');
+      const match = String(id || '').match(/^work(\d+)$/);
+      if (!match) continue;
+      const n = Number(match[1]);
+      if (Number.isFinite(n)) used.add(`work${n}`);
+    }
+  }
+  return used;
+}
+
 function pickNextWorktreeIdForWorkspace(workspace, { repositoryPath } = {}) {
   const repoPathNorm = normalizeRepositoryPath(repositoryPath);
   const primarySlotLimit = 8;
@@ -2871,7 +3081,7 @@ function pickNextWorktreeIdForWorkspace(workspace, { repositoryPath } = {}) {
   if (workspace?.workspaceType === 'mixed-repo') {
     const terminals = Array.isArray(workspace?.terminals) ? workspace.terminals : [];
     let max = 0;
-    const used = new Set();
+    const used = collectWorktreeSlotsUsedByRepoAcrossWorkspaces(repoPathNorm, { excludeWorkspaceId: workspace?.id });
     for (const terminal of terminals) {
       const terminalRepoPath = normalizeRepositoryPath(terminal?.repository?.path);
       if (repoPathNorm && terminalRepoPath && terminalRepoPath !== repoPathNorm) continue;
@@ -2982,6 +3192,15 @@ async function ensureWorkspaceMixedWorktree({
   let masterPath = path.join(repoPath, 'master');
   if (!fs.existsSync(masterPath)) {
     masterPath = path.join(repoPath, 'main');
+  }
+  if (!fs.existsSync(masterPath)) {
+    // repoPath itself may be a flat clone (no master/main subdir) — restructure
+    // it in place to match convention instead of failing. Falls through to the
+    // error below if it's not actually a git repo either.
+    const restructured = await worktreeHelper.restructureFlatCloneToMasterConvention(repoPath);
+    if (restructured) {
+      masterPath = path.join(repoPath, 'master');
+    }
   }
   if (!fs.existsSync(masterPath)) {
     const error = new Error(`Repository root is missing master/main directory: ${repoPath}. Clone your repo into a master/ or main/ subdirectory first.`);
@@ -4580,6 +4799,68 @@ app.post('/api/setup-actions/open-url', requirePolicyAction('write'), express.js
 });
 
 // Port registry API endpoints
+// Plan-usage limits for the header widget (Claude 5h/7d from the status-line
+// tap file, Codex windows from the official app-server JSON-RPC endpoint).
+app.get('/api/usage/limits', async (req, res) => {
+  try {
+    const providers = userSettingsService.getAllSettings()?.global?.ui?.usageLimitsProviders || {};
+    const result = await usageLimitsService.getLimits({ refresh: req.query.refresh === '1', providers });
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/usage/codex-guard', (req, res) => {
+  res.json(codexUsageGuardService.getStatus());
+});
+
+app.post('/api/usage/codex-guard/resume', requirePolicyAction('write'), (req, res) => {
+  const acknowledgedBy = String(req.body?.acknowledgedBy || 'api').trim().slice(0, 100);
+  const wasDraining = codexUsageGuardService.getStatus().mode === 'draining';
+  const status = codexUsageGuardService.resumeAdmissions({ acknowledgedBy });
+  if (wasDraining && status.mode === 'monitoring') {
+    activityFeed.track('codex.usage_guard.resumed', { acknowledgedBy });
+  }
+  res.json(status);
+});
+
+// CPU/RAM/VRAM for the header stats button. `processes=1` pulls the
+// (slower) per-process VRAM breakdown for the modal; the header pill polls
+// without it. `refresh=1` bypasses the cache.
+app.get('/api/system/stats', async (req, res) => {
+  try {
+    const systemStatsService = SystemStatsService.getInstance();
+    const stats = await systemStatsService.getStats({
+      includeProcesses: req.query.processes === '1',
+      refresh: req.query.refresh === '1'
+    });
+    res.json(stats);
+  } catch (error) {
+    logger.error('Failed to get system stats', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Failed to get system stats' });
+  }
+});
+
+// Unload a locally-loaded LLM to free VRAM: `ollama stop` for Ollama models,
+// SIGTERM for a standalone llama.cpp `llama-server` process (identity
+// re-verified server-side before the kill — see systemStatsService.unloadModel).
+app.post('/api/system/models/unload', async (req, res) => {
+  try {
+    const { source, name, pid } = req.body || {};
+    const systemStatsService = SystemStatsService.getInstance();
+    const result = await systemStatsService.unloadModel({ source, name, pid });
+    if (!result.ok) {
+      res.status(400).json(result);
+      return;
+    }
+    res.json(result);
+  } catch (error) {
+    logger.error('Failed to unload model', { error: error.message, stack: error.stack });
+    res.status(500).json({ ok: false, reason: 'Failed to unload model' });
+  }
+});
+
 app.get('/api/ports', (req, res) => {
   try {
     const assignments = portRegistry.getAllAssignments();
@@ -4745,7 +5026,14 @@ app.get('/api/recovery/:workspaceId', async (req, res) => {
       ? recoveryInfo.sessions.filter((entry) => {
           const sessionId = String(entry?.sessionId || '').trim();
           if (!sessionId) return false;
-          return !sessionManager.hasSessionHydrated(sessionId, { workspaceId });
+          if (sessionManager.hasSessionHydrated(sessionId, { workspaceId })) return false;
+          // A tmux-persisted pane surviving a server restart means the real
+          // process (Claude included) never stopped — opening the terminal
+          // just reattaches to it as-is. Recovery has nothing to do here, so
+          // don't offer/auto-run a `claude --resume` into an already-live
+          // session (see sessionManager.isSessionAliveInTmux).
+          if (sessionManager.isSessionAliveInTmux(sessionId)) return false;
+          return true;
         })
       : [];
 
@@ -5544,6 +5832,56 @@ app.post('/api/github/clone-and-add-worktree', express.json(), async (req, res) 
   }
 });
 
+// Create a brand-new repo (local master/ + GitHub remote, private by default)
+// and attach a worktree to the workspace. Greenfield twin of clone-and-add-worktree.
+app.post('/api/github/create-repo-worktree', express.json(), async (req, res) => {
+  try {
+    const {
+      workspaceId,
+      name,
+      categoryId,
+      frameworkId,
+      parentPath,
+      repositoryType,
+      worktreeId,
+      socketId,
+      startTier,
+      isPrivate,
+      createGithub,
+      createFolders
+    } = req.body || {};
+
+    const result = await githubCloneWorktreeService.createRepoAndAddWorktree({
+      workspaceId: String(workspaceId || '').trim(),
+      name: String(name || '').trim(),
+      categoryId: String(categoryId || '').trim(),
+      frameworkId: String(frameworkId || '').trim(),
+      parentPath: String(parentPath || '').trim(),
+      repositoryType: String(repositoryType || '').trim(),
+      worktreeId: String(worktreeId || 'work1').trim(),
+      socketId: String(socketId || '').trim(),
+      startTier,
+      isPrivate: isPrivate !== false,
+      createGithub: createGithub !== false,
+      createFolders: createFolders !== false,
+      ensureWorkspaceMixedWorktree
+    });
+
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    const statusCode = Number(error?.statusCode) || 500;
+    logger.error('Failed to create repo and add worktree', {
+      error: error.message,
+      stack: error.stack,
+      statusCode
+    });
+    res.status(statusCode).json({
+      ok: false,
+      error: String(error?.message || 'Failed to create repo and add worktree')
+    });
+  }
+});
+
 // ============================================
 // Pull Requests API
 // ============================================
@@ -5564,7 +5902,8 @@ app.get('/api/prs', async (req, res) => {
       limit: req.query.limit || '50',
       query,
       repos,
-      owners
+      owners,
+      refresh: req.query.refresh
     });
 
     res.json(result);
@@ -5662,7 +6001,8 @@ app.get('/api/process/tasks', async (req, res) => {
         limit: req.query.limit || '50',
         query,
         repos,
-        owners
+        owners,
+        refresh: req.query.refresh
       }
     });
 
@@ -5763,7 +6103,8 @@ app.get('/api/process/distribution', async (req, res) => {
         limit: req.query.limit || '50',
         query,
         repos,
-        owners
+        owners,
+        refresh: req.query.refresh
       }
     });
 
@@ -7773,10 +8114,52 @@ app.post('/api/pager/jobs/:id/stop', express.json(), (req, res) => {
 // Commander Service API (Claude Code Terminal)
 // ============================================
 
+// Resolve which Commander instance a request targets (panel tabs).
+// No/unknown instance -> the main singleton, so existing callers are untouched.
+const resolveCommander = (req) => {
+  const id = String(req.query.instance || req.body?.instance || 'main').trim() || 'main';
+  if (id === 'main') return commanderService;
+  return CommanderService.forInstance(id);
+};
+
+// List Commander instances (panel tabs)
+app.get('/api/commander/instances', (req, res) => {
+  try {
+    commanderService; // ensure main is registered
+    res.json({ instances: CommanderService.listInstances() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create an additional Commander instance
+app.post('/api/commander/instances', (req, res) => {
+  try {
+    const result = CommanderService.createInstance({ io, sessionManager });
+    if (result.error) return res.status(409).json({ error: result.error });
+    res.json({ id: result.id });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Stop and remove an additional Commander instance
+app.delete('/api/commander/instances/:id', async (req, res) => {
+  try {
+    const result = await CommanderService.removeInstance(req.params.id);
+    if (result.error) return res.status(400).json({ error: result.error });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get Commander status
 app.get('/api/commander/status', (req, res) => {
   try {
-    const status = commanderService.getStatus();
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+    const status = target.getStatus();
     res.json(status);
   } catch (error) {
     logger.error('Failed to get commander status', { error: error.message });
@@ -7787,7 +8170,9 @@ app.get('/api/commander/status', (req, res) => {
 // Start Commander terminal
 app.post('/api/commander/start', async (req, res) => {
   try {
-    const result = await commanderService.start();
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+    const result = await target.start();
     res.json(result);
   } catch (error) {
     logger.error('Failed to start commander', { error: error.message });
@@ -7799,12 +8184,87 @@ app.post('/api/commander/start', async (req, res) => {
 app.post('/api/commander/start-claude', async (req, res) => {
   try {
     const { mode, yolo } = req.body;
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
     // yolo defaults to true for Commander (YOLO mode enabled by default)
-    const result = await commanderService.startClaude(mode || 'fresh', yolo !== false);
+    const result = await target.startClaude(mode || 'fresh', yolo !== false);
     res.json(result);
   } catch (error) {
     logger.error('Failed to start Claude in commander', { error: error.message });
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Provider-agnostic Commander launch (Claude/Codex/Grok), with optional
+// session-only model/effort launch flags. start-claude above stays as the
+// narrower, longer-tested Claude-only path.
+app.post('/api/commander/start-agent', async (req, res) => {
+  try {
+    const { provider, mode, yolo, model, effort, tier } = req.body || {};
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+    const result = await target.startAgent({
+      provider: provider || 'claude',
+      mode: mode || 'fresh',
+      yolo: yolo !== false,
+      model: model || null,
+      effort: effort || null,
+      tier: tier || null
+    });
+    res.json(result);
+  } catch (error) {
+    logger.error('Failed to start agent in commander', { error: error.message });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Current model/effort for a Commander instance, for the header dropdown.
+// Falls back to 'claude' when nothing has launched yet so the picker has
+// something meaningful to show before Start is ever clicked.
+app.get('/api/commander/model-config', (req, res) => {
+  try {
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+    const status = target.getStatus();
+    const provider = status.provider || 'claude';
+    const config = provider === 'codex'
+      ? agentModelConfigService.resolveCodexConfig()
+      : provider === 'grok'
+        ? agentModelConfigService.resolveGrokConfig()
+        : agentModelConfigService.resolveClaudeConfig(status.cwd);
+    return res.json({ ok: true, provider, ...config });
+  } catch (error) {
+    logger.error('Failed to resolve commander model config', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to resolve commander model config' });
+  }
+});
+
+// Session-only model/effort switch for a Commander instance - same
+// mechanism as POST /api/sessions/:sessionId/switch-model (see
+// AgentModelSwitchService), just targeting Commander's own PTY instead of
+// a worktree session's.
+app.post('/api/commander/switch-model', requirePolicyAction('write'), async (req, res) => {
+  try {
+    const { model, effort } = req.body || {};
+    if (!model && !effort) {
+      return res.status(400).json({ ok: false, error: 'model or effort is required' });
+    }
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+
+    const result = await agentModelSwitchService.switchCommanderSession({
+      commanderService: target,
+      model,
+      effort
+    });
+    if (!result.ok) {
+      const status = result.error === 'SESSION_NOT_FOUND' ? 404 : result.error === 'SESSION_BUSY' ? 409 : 400;
+      return res.status(status).json(result);
+    }
+    return res.json(result);
+  } catch (error) {
+    logger.error('Failed to switch commander model', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to switch commander model' });
   }
 });
 
@@ -7816,7 +8276,9 @@ app.post('/api/commander/input', (req, res) => {
       return res.status(400).json({ error: 'Input is required' });
     }
 
-    const success = commanderService.sendInput(input);
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+    const success = target.sendInput(input);
     res.json({ success });
   } catch (error) {
     logger.error('Commander input failed', { error: error.message });
@@ -7840,7 +8302,9 @@ app.post('/api/commander/resize', (req, res) => {
       });
     }
 
-    const success = commanderService.resize(cols, rows);
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+    const success = target.resize(cols, rows);
     res.json({ success, cols, rows });
   } catch (error) {
     logger.error('Commander resize failed', { error: error.message });
@@ -7851,7 +8315,9 @@ app.post('/api/commander/resize', (req, res) => {
 // Stop Commander terminal
 app.post('/api/commander/stop', (req, res) => {
   try {
-    const result = commanderService.stop();
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+    const result = target.stop();
     res.json(result);
   } catch (error) {
     logger.error('Failed to stop commander', { error: error.message });
@@ -7862,7 +8328,9 @@ app.post('/api/commander/stop', (req, res) => {
 // Restart Commander terminal
 app.post('/api/commander/restart', async (req, res) => {
   try {
-    const result = await commanderService.restart();
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+    const result = await target.restart();
     res.json(result);
   } catch (error) {
     logger.error('Failed to restart commander', { error: error.message });
@@ -7874,7 +8342,9 @@ app.post('/api/commander/restart', async (req, res) => {
 app.get('/api/commander/output', (req, res) => {
   try {
     const { lines } = req.query;
-    const output = commanderService.getRecentOutput(lines ? parseInt(lines) : 50);
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+    const output = target.getRecentOutput(lines ? parseInt(lines) : 50);
     res.json({ output });
   } catch (error) {
     logger.error('Failed to get commander output', { error: error.message });
@@ -7883,9 +8353,25 @@ app.get('/api/commander/output', (req, res) => {
 });
 
 // Clear Commander buffer
+// Rename a Commander instance tab
+app.patch('/api/commander/instances/:id', express.json(), (req, res) => {
+  try {
+    const target = CommanderService.forInstance(req.params.id);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+    const label = String(req.body?.label || '').trim().slice(0, 40);
+    if (!label) return res.status(400).json({ error: 'label is required' });
+    target.label = label;
+    res.json({ ok: true, id: target.instanceId, label });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/commander/clear', (req, res) => {
   try {
-    commanderService.clearBuffer();
+    const clearTarget = resolveCommander(req);
+    if (!clearTarget) return res.status(404).json({ error: 'Unknown commander instance' });
+    clearTarget.clearBuffer();
     res.json({ success: true });
   } catch (error) {
     logger.error('Failed to clear commander buffer', { error: error.message });
@@ -8363,7 +8849,7 @@ app.get('/api/whisper/status', (req, res) => {
 });
 
 // Transcribe audio file with Whisper
-app.post('/api/whisper/transcribe', audioUpload.single('audio'), async (req, res) => {
+app.post('/api/whisper/transcribe', acceptAudioUpload, async (req, res) => {
   const fs = require('fs');
   try {
     if (!req.file) {
@@ -8401,7 +8887,7 @@ app.post('/api/whisper/transcribe', audioUpload.single('audio'), async (req, res
 });
 
 // Full voice command with Whisper (transcribe + parse + execute)
-app.post('/api/whisper/command', audioUpload.single('audio'), async (req, res) => {
+app.post('/api/whisper/command', acceptAudioUpload, async (req, res) => {
   const fs = require('fs');
   try {
     if (!req.file) {
@@ -8625,7 +9111,7 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 let isShuttingDown = false;
 let forcedExitTimer = null;
 
-function shutdown(signal = 'unknown') {
+async function shutdown(signal = 'unknown') {
   if (isShuttingDown) {
     logger.warn('Shutdown already in progress', { signal });
     return;
@@ -8633,6 +9119,18 @@ function shutdown(signal = 'unknown') {
 
   isShuttingDown = true;
   logger.info('Shutting down server...', { signal });
+
+  // Bound every shutdown step, including an active Codex app-server read.
+  forcedExitTimer = setTimeout(() => {
+    logger.error('Forced shutdown after timeout');
+    process.exit(1);
+  }, 10000);
+
+  try {
+    await codexUsageGuardService.stop();
+  } catch (error) {
+    logger.warn('Codex usage guard shutdown failed', { error: error.message });
+  }
   
   // Clean up sessions first
   sessionManager.cleanup();
@@ -8652,11 +9150,6 @@ function shutdown(signal = 'unknown') {
     process.exit(0);
   });
   
-  // Force shutdown after 10 seconds
-  forcedExitTimer = setTimeout(() => {
-    logger.error('Forced shutdown after timeout');
-    process.exit(1);
-  }, 10000);
 }
 
 // Handle uncaught errors

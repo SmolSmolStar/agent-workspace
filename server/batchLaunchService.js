@@ -143,6 +143,14 @@ class BatchLaunchService {
     const cardUrl = card.url || card.shortUrl || '';
     const cardShortId = card.shortLink || card.id;
 
+    const admission = this.sessionManager.getAgentAdmissionDecision?.({ agentId }) || { allowed: true };
+    if (!admission.allowed) {
+      const error = new Error('Codex launches are paused while the usage guard drains active work');
+      error.phase = 'admission';
+      error.code = admission.code;
+      throw error;
+    }
+
     // 1. Create worktree
     let worktreeResult;
     try {

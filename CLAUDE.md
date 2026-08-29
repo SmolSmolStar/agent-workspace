@@ -74,6 +74,8 @@ curl -sS "https://api.trello.com/1/cards/CARD_ID/customFieldItems?key=$KEY&token
 7. Send `\r` to submit
 7. Move Trello card to Doing list
 
+**Default: no tier, no explicit worktreeId.** Omit `startTier` unless the user actually asked for one — don't copy the `3` below reflexively, that's an example for Trello batch launches, not a default. Same for `worktreeId`: omit it and the server auto-picks the next free `workN` slot for that repo — checking across every workspace, not just the current one, same logic the "+ Add worktree" UI button uses — so you never collide with a slot already open elsewhere. Only pass an explicit `worktreeId` when the user names a specific number.
+
 **Add worktree with tier:**
 ```bash
 curl -sS -X POST http://localhost:$PORT/api/workspaces/add-mixed-worktree \
@@ -301,6 +303,22 @@ PORT=$(grep ORCHESTRATOR_PORT .env | cut -d= -f2)
 
 **All `curl` examples in this file use `$PORT`.** Never assume 3000 or 4000.
 
+### Multiple Commanders (panel tabs)
+
+There can be SEVERAL Commander instances at once (panel tabs: "Commander 1" =
+`main`, plus `cmd-2`..`cmd-6`). Know which one you are and address others:
+
+- **Your identity**: `echo $COMMANDER_INSTANCE_ID` (`main`, `cmd-2`, ...); your
+  current tab label is in `$COMMANDER_INSTANCE_LABEL` (snapshot from launch).
+- **Rename yourself** (e.g. to reflect what you're working on):
+  `curl -sS -X PATCH http://localhost:$PORT/api/commander/instances/$COMMANDER_INSTANCE_ID -H 'Content-Type: application/json' -d '{"label":"Deploys"}'`
+- **List instances**: `GET /api/commander/instances` → `{"instances":[{id,label,running,ready,claudeStarted}]}`
+- **Create / remove**: `POST /api/commander/instances` (returns `{id}`),
+  `DELETE /api/commander/instances/:id` (`main` cannot be removed).
+- Instance-scoped PTY endpoints take `?instance=<id>` (status/start/start-claude/
+  input/resize/stop/restart/output/clear). No param = `main`, so existing
+  automation keeps working untouched.
+
 ### What Commander Can Do
 1. **View All Sessions**: See all active Claude sessions across all workspaces
    - API: `GET /api/commander/sessions`
@@ -343,6 +361,26 @@ POST /api/recommendations              # {"package","reason","installCmd","categ
 PATCH /api/recommendations/:id         # {"status":"installed"|"dismissed"}
 DELETE /api/recommendations/:id        # remove entirely
 ```
+
+### Creating a New Repo (Commander / any agent)
+
+When the user says "start a new repo / new project" (e.g. "new repo, it's a game, Roblox, called X"), use the create-repo API. **Private is ALWAYS the default** — only pass `isPrivate: false` if the user explicitly says public.
+
+```bash
+curl -sS -X POST http://localhost:$PORT/api/github/create-repo-worktree \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workspaceId": "<GET /api/workspaces/active first!>",
+    "name": "repo-name",
+    "categoryId": "game",
+    "frameworkId": "roblox",
+    "worktreeId": "work1"
+  }'
+```
+
+What it does: creates `<categoryBase>/<frameworkSuffix>/<name>/master` (git init, branch `master`, seed commit), creates the GitHub repo (private) and pushes, then attaches + starts `work1` in the given workspace. `parentPath` defaults from the framework's `pathSuffix` (roblox → `games/roblox`, threejs → `games/ThreeJs`); pass it explicitly to override. Categories/frameworks: `GET /api/project-types` (add frameworks via `POST /api/project-types/frameworks`).
+
+UI equivalent: Add Worktrees → "✨ New repo" button.
 
 ### Logging Missing Tools
 When a command fails with "not found", POST a recommendation so the user sees it in the UI 🔧 badge:
@@ -839,3 +877,62 @@ All commands run these 4 services:
 
 ---
 🚨 **END OF FILE - ENSURE YOU READ EVERYTHING ABOVE** 🚨
+
+## In-Place Production Update
+
+### Preferred: just let nodemon restart — sessions survive on their own (as of PR #1059, 2026-08-22)
+
+Every session (Commander tabs AND worktree terminals) now runs as a tmux CLIENT attached to
+a pane on a dedicated per-port tmux socket (`agent-workspace-<port>`, e.g.
+`agent-workspace-3000` for production) — the real shell/Claude process lives under the tmux
+server, not under the node process. When `server/**` changes and nodemon restarts, only the
+outer node-pty client dies; the tmux pane keeps running untouched, and the orchestrator
+re-adopts it on the next `createSession()`/reconnect. This is on by default
+(`ORCHESTRATOR_SESSION_PERSISTENCE=0` disables it; unavailable tmux falls back to plain
+node-pty automatically, in which case sessions do NOT survive a restart).
+
+So the normal update path is just: `git pull`/`git checkout` in `master/`, let nodemon
+restart, done. Commander tabs and worktree terminals come back with their conversations
+intact — verified live via `tmux capture-pane` across all three Commander instances during
+that PR's own restart. Caveats:
+- If the update changes the Node ABI, source checkouts rebuild `node-pty` once through the
+  exact running Node executable before retrying the module load. Set
+  `ORCHESTRATOR_NODE_PTY_AUTO_REBUILD=false` to disable this recovery. Packaged backends
+  remain read-only and fail closed instead of trying to modify installed app resources.
+- Other native load failures remain explicit. For a missing binary, interrupted install, or
+  non-ABI native error in a source checkout, inspect the reported error and run
+  `npm rebuild node-pty` manually.
+- The browser UI does a brief WebSocket reconnect at restart; no action needed, it recovers
+  on its own within a few seconds.
+- If persistence is disabled or tmux is unavailable, fall back to the deferred-restart
+  method below instead.
+
+**Gotcha: an emergency manual restart can land on the wrong Node version.** `.nvmrc` pins
+this repo to a specific major (currently 20), and a normal interactive shell picks it up.
+But `nvm`'s own `alias/default` can point at a different version, and a raw background
+launch (`nohup npm start &`, or any restart that doesn't go through an interactive shell)
+does not run the `.nvmrc` auto-switch, so it silently falls back to that default alias
+instead. `node-pty`'s native binary is compiled for one specific Node ABI
+(`process.versions.modules`), so if the emergency restart's Node version doesn't match
+whichever version last rebuilt `node-pty`, every PTY spawn fails with either a missing
+module or a `NODE_MODULE_VERSION` mismatch error — this bypasses the ABI auto-rebuild
+above, which only triggers from nodemon's own restart path, not a manual recovery.
+Recovery: confirm the actual running version (`readlink /proc/<pid>/exe`), rebuild
+`node-pty` to match it (`npm rebuild node-pty`) if it doesn't, and prefer restarting via
+`bash -lc 'npm start'` (or explicitly `nvm use` first) so `.nvmrc` is respected instead of
+whatever `nvm`'s default alias happens to be.
+
+### Fallback: deferred restart (nodemon SIGSTOP)
+
+Use this when you want to control the exact moment sessions might glitch (e.g. persistence
+disabled, tmux missing, or you want zero WebSocket-reconnect blips during someone's active
+work) rather than nodemon restarting whenever it notices the file change. Full write-up:
+`PLANS/2026-08-15/PROD_UPDATE.md`.
+
+1. `pgrep -af nodemon` — find the nodemon pid watching `server/`.
+2. `kill -STOP <nodemon pid>` — server keeps running old code from memory; ptys/sessions survive.
+3. Update files (`git pull` / `git checkout`); file-change events queue but do not fire.
+4. `kill -CONT <nodemon pid>` when ready for downtime — queued events fire, server restarts at
+   that chosen moment. Verify with `ss -tlnp | grep :3000` + a `curl` to an API endpoint.
+
+Rules: never leave nodemon STOPped across a stack shutdown (pending signals unprocessed → orphans). Client-only changes (`client/*.js`/`*.css`) need NO restart — just Ctrl+F5 the browser.

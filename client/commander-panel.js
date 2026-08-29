@@ -22,18 +22,255 @@ class CommanderPanel {
     this.lineBuffer = '';
     this.historyPending = false;
     this.lastSyncedSize = null;
-    this.resizeObserver = null;
+    this.resizeObservers = new Map(); // instanceId -> ResizeObserver on that tab's container
+    this.windowResizeHandler = null;
     this.inputChain = Promise.resolve();
+    // Commander tabs: 'main' always exists; extra instances are cmd-2..cmd-6.
+    this.activeInstance = 'main';
+    this.tabs = new Map([['main', { label: 'Commander 1', terminal: null, fitAddon: null, isRunning: false, isStarting: false, lastSyncedSize: null }]]);
+
+    // xterm's Canvas renderer occasionally leaves stale/garbled rows after a
+    // burst of output while the browser tab was backgrounded (rendering gets
+    // throttled while hidden). fitTerminalSoon() already forces a full
+    // repaint — that's why manually resizing "fixes" it — so run the same
+    // heal on focus/visibility regain and a slow background sweep, matching
+    // the pattern terminal.js already uses for worktree terminals.
+    this.healIntervalMs = 15_000;
+    window.addEventListener('focus', () => this.healTerminal());
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) this.healTerminal();
+    });
+    setInterval(() => {
+      if (!document.hidden) this.healTerminal();
+    }, this.healIntervalMs);
   }
 
-  fitTerminalSoon() {
+  healTerminal() {
+    if (!this.isVisible || !this.terminal) return;
+    // Passive repaint only — this runs on a timer and on every tab/window
+    // focus regain, so it must never steal keyboard focus into Commander
+    // while the user is typing somewhere else on the page.
+    this.fitTerminalSoon({ focus: false });
+  }
+
+  // Instance-scoped API URL: main uses the bare endpoint (back-compat),
+  // extra tabs append ?instance=<id>.
+  apiUrl(path) {
+    if (this.activeInstance === 'main') return `${this.serverUrl}${path}`;
+    const sep = path.includes('?') ? '&' : '?';
+    return `${this.serverUrl}${path}${sep}instance=${encodeURIComponent(this.activeInstance)}`;
+  }
+
+  // Per-tab terminal container; created on demand, shown only when active.
+  getActiveContainer() {
+    if (this.activeInstance === 'main') return document.getElementById('commander-terminal');
+    const id = `commander-terminal-${this.activeInstance}`;
+    let el = document.getElementById(id);
+    if (!el) {
+      const mainEl = document.getElementById('commander-terminal');
+      if (!mainEl) return null;
+      el = document.createElement('div');
+      el.className = 'commander-terminal';
+      el.id = id;
+      mainEl.parentElement.insertBefore(el, mainEl.nextSibling);
+    }
+    return el;
+  }
+
+  renderTabs() {
+    const bar = document.getElementById('commander-tabbar');
+    if (!bar) return;
+    bar.replaceChildren();
+    for (const [id, tab] of this.tabs) {
+      const btn = document.createElement('button');
+      btn.className = `commander-tab${id === this.activeInstance ? ' active' : ''}`;
+      const label = document.createElement('span');
+      label.className = 'commander-tab-label';
+      label.textContent = tab.label || id;
+      btn.appendChild(label);
+      btn.title = 'Click to switch · double-click to rename';
+      btn.addEventListener('click', () => this.switchTab(id));
+      label.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        this.startTabRename(id, label);
+      });
+      if (id !== 'main') {
+        const close = document.createElement('span');
+        close.className = 'commander-tab-close';
+        close.textContent = '×';
+        close.title = 'Close this Commander';
+        close.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.closeTab(id);
+        });
+        btn.appendChild(close);
+      }
+      bar.appendChild(btn);
+    }
+    if (this.tabs.size < 6) {
+      const add = document.createElement('button');
+      add.className = 'commander-tab commander-tab-add';
+      add.textContent = '+';
+      add.title = 'Start a new Commander';
+      add.addEventListener('click', () => this.addTab());
+      bar.appendChild(add);
+    }
+    const title = document.getElementById('commander-title-text');
+    if (title) title.textContent = this.tabs.get(this.activeInstance)?.label || 'Commander';
+  }
+
+  startTabRename(id, labelEl) {
+    labelEl.contentEditable = 'true';
+    labelEl.focus();
+    document.getSelection()?.selectAllChildren(labelEl);
+    const finish = async (commit) => {
+      labelEl.contentEditable = 'false';
+      const text = labelEl.textContent.trim().slice(0, 40);
+      if (!commit || !text) {
+        this.renderTabs();
+        return;
+      }
+      try {
+        await fetch(`${this.serverUrl}/api/commander/instances/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label: text })
+        });
+        const tab = this.tabs.get(id);
+        if (tab) tab.label = text;
+      } catch { /* keep old label */ }
+      this.renderTabs();
+    };
+    labelEl.addEventListener('blur', () => finish(true), { once: true });
+    labelEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); labelEl.blur(); }
+      if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    });
+  }
+
+  saveActiveTabState() {
+    const tab = this.tabs.get(this.activeInstance);
+    if (!tab) return;
+    tab.terminal = this.terminal;
+    tab.fitAddon = this.fitAddon;
+    tab.isRunning = this.isRunning;
+    tab.isStarting = this.isStarting;
+    tab.lastSyncedSize = this.lastSyncedSize;
+  }
+
+  switchTab(id) {
+    if (!this.tabs.has(id) || id === this.activeInstance) return;
+    this.saveActiveTabState();
+    const prevContainer = this.getActiveContainer();
+    if (prevContainer) prevContainer.style.display = 'none';
+    this.activeInstance = id;
+    const tab = this.tabs.get(id);
+    this.terminal = tab.terminal;
+    this.fitAddon = tab.fitAddon;
+    this.isRunning = tab.isRunning;
+    this.isStarting = tab.isStarting;
+    this.lastSyncedSize = null; // PTY may have drifted while hidden
+    const container = this.getActiveContainer();
+    if (container) container.style.display = '';
+    this.updateStatusBadge();
+    this.renderTabs();
+    if (this.terminal) {
+      this.fitTerminalSoon();
+    } else {
+      // A tab restored by syncTabsFromServer() (its PTY survived a page
+      // refresh) never had a terminal attached locally — check status and
+      // attach one now instead of leaving the container blank.
+      this.checkStatus().then((status) => {
+        if (this.activeInstance !== id) return; // switched away while awaiting
+        if (status.running) {
+          this.initTerminal();
+          if (this.fitAddon && this.terminal) {
+            this.lastSyncedSize = null;
+            this.fitTerminalSoon();
+          }
+        } else {
+          this.setPlaceholderMessages(['Commander is not running.', 'Click ▶️ Start to launch it.']);
+        }
+      });
+    }
+  }
+
+  async addTab() {
+    try {
+      const res = await fetch(`${this.serverUrl}/api/commander/instances`, { method: 'POST' });
+      const result = await res.json();
+      if (!res.ok || !result.id) {
+        this.orchestrator?.showNotification?.(result.error || 'Could not create Commander', 'error');
+        return;
+      }
+      this.tabs.set(result.id, { label: `Commander ${result.id.replace('cmd-', '')}`, terminal: null, fitAddon: null, isRunning: false, isStarting: false, lastSyncedSize: null });
+      this.switchTab(result.id);
+      // Same auto-start flow as first open: start the PTY, Claude follows.
+      await this.startCommander();
+    } catch (error) {
+      console.error('Failed to add commander tab:', error);
+    }
+  }
+
+  async closeTab(id) {
+    if (id === 'main') return;
+    try {
+      await fetch(`${this.serverUrl}/api/commander/instances/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch { /* remove locally regardless */ }
+    const tab = this.tabs.get(id);
+    this.scrollKeeper?.detach(id);
+    const observer = this.resizeObservers?.get(id);
+    if (observer) {
+      observer.disconnect();
+      this.resizeObservers.delete(id);
+    }
+    try { tab?.terminal?.dispose?.(); } catch { /* already gone */ }
+    document.getElementById(`commander-terminal-${id}`)?.remove();
+    this.tabs.delete(id);
+    if (this.activeInstance === id) {
+      this.activeInstance = 'main';
+      const main = this.tabs.get('main');
+      this.terminal = main.terminal;
+      this.fitAddon = main.fitAddon;
+      this.isRunning = main.isRunning;
+      this.isStarting = main.isStarting;
+      const container = this.getActiveContainer();
+      if (container) container.style.display = '';
+      this.fitTerminalSoon();
+    }
+    this.updateStatusBadge();
+    this.renderTabs();
+  }
+
+  fitTerminalSoon({ focus = true } = {}) {
     if (!this.fitAddon || !this.terminal) return;
+    // Snapshot the tab this fit was scheduled for: a tab switch during the two
+    // rAF hops swaps this.terminal/this.fitAddon, and finishing the fit against
+    // the new tab would push the OLD tab's size onto the new tab's PTY.
+    const instanceAtSchedule = this.activeInstance;
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
+        if (this.activeInstance !== instanceAtSchedule) return;
+        const beforeCols = this.terminal.cols;
+        const beforeRows = this.terminal.rows;
         this.fitAddon?.fit();
+        // xterm-addon-fit only clears+redraws the renderer when the computed
+        // size actually changed — a same-size fit (the common heal-sweep
+        // case: nothing was actually resized, we're just recovering from a
+        // stale/garbled canvas) leaves it untouched, so refresh() alone
+        // schedules a repaint of the SAME stale render state. Force two real
+        // resizes (nudge a column down, then back) so the renderer always
+        // reconstructs — this is what an actual window resize does that a
+        // same-size fit + refresh doesn't, which is why manually resizing
+        // "fixes" it but the passive heal sometimes didn't.
+        if (this.terminal.cols === beforeCols && this.terminal.rows === beforeRows) {
+          const nudgedCols = Math.max(beforeCols - 1, 2);
+          this.terminal.resize(nudgedCols, beforeRows);
+          this.terminal.resize(beforeCols, beforeRows);
+        }
         this.syncTerminalSize();
         this.terminal?.refresh?.(0, Math.max(0, (this.terminal.rows || 1) - 1));
-        this.terminal?.focus();
+        if (focus) this.terminal?.focus();
       });
     });
   }
@@ -51,7 +288,7 @@ class CommanderPanel {
       return;
     }
     this.lastSyncedSize = { cols, rows };
-    fetch(`${this.serverUrl}/api/commander/resize`, {
+    fetch(this.apiUrl('/api/commander/resize'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cols, rows })
@@ -77,6 +314,36 @@ class CommanderPanel {
     this.setupSocketListeners();
     await this.fetchStatus();
     this.updateCommanderTitle();
+    this.syncTabsFromServer();
+  }
+
+  // The server is the source of truth for Commander instances (it re-adopts
+  // surviving cmd-N panes after a restart). Without this sync, a recovered
+  // Commander 2 has no tab and "+" would create Commander 3 instead.
+  async syncTabsFromServer() {
+    try {
+      const res = await fetch(`${this.serverUrl}/api/commander/instances`);
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      const rows = Array.isArray(data?.instances) ? data.instances : [];
+      let changed = false;
+      for (const row of rows) {
+        const id = String(row?.id || '').trim();
+        if (!id || this.tabs.has(id)) continue;
+        this.tabs.set(id, {
+          label: String(row?.label || `Commander ${id.replace('cmd-', '')}`),
+          terminal: null,
+          fitAddon: null,
+          isRunning: !!row?.running,
+          isStarting: false,
+          lastSyncedSize: null
+        });
+        changed = true;
+      }
+      if (changed) this.renderTabs();
+    } catch {
+      // panel works without the sync; tabs just reflect local state
+    }
   }
 
   /**
@@ -128,6 +395,7 @@ class CommanderPanel {
           <button id="commander-close" class="commander-window-btn close" title="Close">✕</button>
         </div>
       </div>
+      <div class="commander-tabbar" id="commander-tabbar"></div>
       <div class="commander-toolbar">
         <button id="commander-start" class="commander-btn" title="Start terminal" data-ui-visibility="commander.startStop">▶️ Start</button>
         <button id="commander-stop" class="commander-btn" title="Stop terminal" data-ui-visibility="commander.startStop">⏹️ Stop</button>
@@ -135,14 +403,20 @@ class CommanderPanel {
         <button id="commander-cmdmode" class="commander-btn" title="Command mode: type / then a natural-language command to control the UI" data-ui-visibility="commander.cmdMode">
           ⌨️ Cmd:on
         </button>
-        <button id="commander-start-claude" class="commander-btn" title="Start Claude Code" data-ui-visibility="commander.startClaude">
-          Start Claude
+        <select id="commander-provider" data-ui-visibility="commander.startClaude" title="Harness to launch">
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+          <option value="grok">Grok</option>
+        </select>
+        <button id="commander-start-claude" class="commander-btn" title="Start agent" data-ui-visibility="commander.startClaude">
+          Start
         </button>
         <select id="commander-mode" data-ui-visibility="commander.modeSelect">
           <option value="fresh">Fresh</option>
           <option value="continue">Continue</option>
           <option value="resume">Resume</option>
         </select>
+        <span class="terminal-model-badge" id="commander-model-badge" style="display: none;"></span>
         <button id="commander-advice" class="commander-btn" title="Show workflow advice" data-ui-visibility="commander.advice">
           Advice
         </button>
@@ -155,6 +429,7 @@ class CommanderPanel {
       </div>
     `;
     document.body.appendChild(panel);
+    this.renderTabs();
 
     // Advice overlay (rendered on demand)
     const advice = document.createElement('div');
@@ -178,7 +453,7 @@ class CommanderPanel {
   setPlaceholderMessages(lines = []) {
     if (this.terminal) return;
 
-    const container = document.getElementById('commander-terminal');
+    const container = this.getActiveContainer();
     if (!container) return;
 
     const messages = Array.isArray(lines) && lines.length
@@ -204,55 +479,25 @@ class CommanderPanel {
   initTerminal() {
     if (this.terminal) return;
 
-    const container = document.getElementById('commander-terminal');
+    const container = this.getActiveContainer();
     if (!container) return;
 
     // Clear placeholder
     container.innerHTML = '';
 
-    // Create terminal
-    this.terminal = new Terminal({
-      cursorBlink: true,
-      cursorStyle: 'bar',
-      fontSize: 12,
-      fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-      scrollback: 5000,
-      tabStopWidth: 4,
-      bellStyle: 'none',
-      allowTransparency: false,
-      convertEol: false,
-      wordSeparator: ' ()[]{}\'"',
-      rightClickSelectsWord: true,
-      // xterm 5.x removed rendererType/experimentalCharAtlas; the Canvas renderer is
-      // loaded as an addon after open() below (DOM renderer leaves garbled rows).
-      theme: {
-        background: '#0d1117',
-        foreground: '#c9d1d9',
-        cursor: '#c9d1d9',
-        cursorAccent: '#0d1117',
-        selection: 'rgba(88, 166, 255, 0.3)',
-        black: '#484f58',
-        red: '#ff7b72',
-        green: '#3fb950',
-        yellow: '#d29922',
-        blue: '#58a6ff',
-        magenta: '#bc8cff',
-        cyan: '#39c5cf',
-        white: '#b1bac4',
-        brightBlack: '#6e7681',
-        brightRed: '#ffa198',
-        brightGreen: '#56d364',
-        brightYellow: '#e3b341',
-        brightBlue: '#79c0ff',
-        brightMagenta: '#d2a8ff',
-        brightCyan: '#56d4dd',
-        brightWhite: '#f0f6fc'
-      }
-    });
+    // Create terminal — same shared base options as the worktree terminals
+    // (terminal-themes.js), so fonts/colors/cursor/scrollback always match,
+    // including when the user switches theme (see updateTheme()).
+    this.terminal = new Terminal(window.getTerminalOptions(this.orchestrator?.settings?.theme));
 
     // Add fit addon
     this.fitAddon = new FitAddon.FitAddon();
     this.terminal.loadAddon(this.fitAddon);
+
+    // Clickable URLs — worktree terminals have had this since WebLinksAddon was
+    // wired into TerminalManager; Commander never got it, so links in Commander
+    // output (PR URLs, doc links) sat there unclickable.
+    this.terminal.loadAddon(new WebLinksAddon.WebLinksAddon());
 
     // Open terminal
     this.terminal.open(container);
@@ -270,6 +515,17 @@ class CommanderPanel {
 
     // Use requestAnimationFrame to ensure renderer is ready before fitting
     this.fitTerminalSoon();
+
+    // Commander writes rely on xterm's native follow-at-bottom, so it never yanks
+    // a reader out of scrollback — but a forgotten scroll-up would strand the view
+    // in history forever. The keeper returns it to the bottom after a quiet period,
+    // same policy as the worktree terminals.
+    if (typeof TerminalScrollKeeper !== 'undefined') {
+      if (!this.scrollKeeper) {
+        this.scrollKeeper = TerminalScrollKeeper.forSettings(() => this.orchestrator?.settings);
+      }
+      this.scrollKeeper.attach(this.activeInstance || 'main', this.terminal, container);
+    }
 
     // Replay server-side history first; live socket output stays buffered
     // until the replay finishes so nothing is written out of order.
@@ -323,7 +579,7 @@ class CommanderPanel {
         }
         this.lastPasteAt = now;
 
-        this.sendInput(text);
+        this.sendInput(this.bracketPastedText(text));
       };
 
       container.addEventListener('paste', onPaste, true);
@@ -337,22 +593,51 @@ class CommanderPanel {
       }
     });
 
-    // Handle resize
-    window.addEventListener('resize', () => {
-      if (this.isVisible && this.fitAddon) {
-        this.fitTerminalSoon();
-      }
-    });
-
-    // Refit when the panel itself changes size, not just the window
-    if (window.ResizeObserver && !this.resizeObserver) {
-      this.resizeObserver = new ResizeObserver(() => {
+    // Handle window resize (register once, not once per Commander tab)
+    if (!this.windowResizeHandler) {
+      this.windowResizeHandler = () => {
         if (this.isVisible && this.fitAddon) {
           this.fitTerminalSoon();
         }
-      });
-      this.resizeObserver.observe(container);
+      };
+      window.addEventListener('resize', this.windowResizeHandler);
     }
+
+    // Refit when the panel itself changes size (drag handle), not just the
+    // window. EVERY tab's container needs its own observer — observing only the
+    // first one left Commander 2+ un-fitted after a panel resize until a tab
+    // switch forced it. Hidden tabs' containers are display:none (0x0), so gate
+    // on this tab still being the active one.
+    if (window.ResizeObserver) {
+      const instanceId = this.activeInstance;
+      if (!this.resizeObservers.has(instanceId)) {
+        const observer = new ResizeObserver(() => {
+          if (this.isVisible && this.fitAddon && this.activeInstance === instanceId) {
+            this.fitTerminalSoon();
+          }
+        });
+        observer.observe(container);
+        this.resizeObservers.set(instanceId, observer);
+      }
+    }
+  }
+
+  /**
+   * Mirrors TerminalManager.updateTheme() — called from the same app-wide
+   * theme toggle. Every Commander tab keeps its own xterm instance (see
+   * saveActiveTabState/switchTab), and only the active one is ever
+   * guaranteed to be synced into `this.tabs`, so this updates both.
+   */
+  updateTheme(theme) {
+    const themeConfig = window.getTerminalTheme(theme);
+    const seen = new Set();
+    const apply = (terminal) => {
+      if (!terminal || seen.has(terminal)) return;
+      seen.add(terminal);
+      terminal.options.theme = themeConfig;
+    };
+    apply(this.terminal);
+    for (const tab of this.tabs.values()) apply(tab.terminal);
   }
 
   /**
@@ -363,17 +648,18 @@ class CommanderPanel {
     document.getElementById('commander-toggle')?.addEventListener('click', () => this.toggle());
 
     // Window controls
-    document.getElementById('commander-close')?.addEventListener('click', () => this.hide());
+    document.getElementById('commander-close')?.addEventListener('click', () => this.closeSession());
     document.getElementById('commander-minimize')?.addEventListener('click', () => this.hide());
 
     // Terminal controls
     document.getElementById('commander-start')?.addEventListener('click', () => this.startCommander());
     document.getElementById('commander-stop')?.addEventListener('click', () => this.stopCommander());
 
-    // Start Claude button
+    // Start agent button (harness-agnostic - Claude/Codex/Grok)
     document.getElementById('commander-start-claude')?.addEventListener('click', () => {
       const mode = document.getElementById('commander-mode')?.value || 'fresh';
-      this.startClaude(mode);
+      const provider = document.getElementById('commander-provider')?.value || 'claude';
+      this.startAgent({ provider, mode });
     });
 
     // Command mode toggle
@@ -584,22 +870,36 @@ class CommanderPanel {
     socket.off('commander-output');
     socket.off('commander-exit');
 
-    socket.on('commander-output', ({ data }) => {
-      if (this.terminal && !this.historyPending) {
-        this.terminal.write(data);
-      } else {
-        // Buffer output until the terminal exists and history replay is done
-        this.pendingOutput = (this.pendingOutput || '') + data;
+    socket.on('commander-output', ({ data, instanceId }) => {
+      const id = instanceId || 'main';
+      if (id === this.activeInstance) {
+        if (this.terminal && !this.historyPending) {
+          this.terminal.write(data);
+        } else {
+          // Buffer output until the terminal exists and history replay is done
+          this.pendingOutput = (this.pendingOutput || '') + data;
+        }
+        return;
       }
+      // Background tab: write straight into its terminal so scrollback stays live.
+      const tab = this.tabs.get(id);
+      tab?.terminal?.write?.(data);
     });
 
-    socket.on('commander-exit', ({ exitCode }) => {
-      this.isRunning = false;
-      // A restarted PTY comes back at its default size, so force a re-sync
-      this.lastSyncedSize = null;
-      this.updateStatusBadge();
-      if (this.terminal) {
-        this.terminal.writeln(`\r\n[Commander exited with code ${exitCode}]`);
+    socket.on('commander-exit', ({ exitCode, instanceId }) => {
+      const id = instanceId || 'main';
+      const tab = this.tabs.get(id);
+      if (tab) tab.isRunning = false;
+      if (id === this.activeInstance) {
+        this.isRunning = false;
+        // A restarted PTY comes back at its default size, so force a re-sync
+        this.lastSyncedSize = null;
+        this.updateStatusBadge();
+        if (this.terminal) {
+          this.terminal.writeln(`\r\n[Commander exited with code ${exitCode}]`);
+        }
+      } else {
+        tab?.terminal?.writeln?.(`\r\n[Commander exited with code ${exitCode}]`);
       }
     });
   }
@@ -609,7 +909,7 @@ class CommanderPanel {
    */
   async fetchStatus() {
     try {
-      const response = await fetch(`${this.serverUrl}/api/commander/status`);
+      const response = await fetch(this.apiUrl('/api/commander/status'));
       if (response.ok) {
         const status = await response.json();
         this.isRunning = status.running;
@@ -626,16 +926,52 @@ class CommanderPanel {
   updateStatusBadge() {
     const badge = document.getElementById('commander-status-badge');
     if (badge) {
-      if (this.isStarting) {
-        badge.textContent = 'Starting';
-        badge.className = 'commander-status starting';
-      } else if (this.isRunning) {
-        badge.textContent = 'Running';
-        badge.className = 'commander-status online';
-      } else {
-        badge.textContent = 'Stopped';
-        badge.className = 'commander-status offline';
+      badge.textContent = '●';
+      badge.className = `commander-status ${this.isStarting ? 'starting' : (this.isRunning ? 'online' : 'offline')}`;
+      badge.title = this.isStarting ? 'Starting' : (this.isRunning ? 'Running' : 'Stopped');
+    }
+    this.refreshModelBadge();
+  }
+
+  /**
+   * Refresh the model/effort badge for the currently visible tab and wire
+   * the same session-only ModelEffortPicker dropdown onto it - see
+   * server/index.js GET /api/commander/model-config. Throttled since this
+   * piggybacks on updateStatusBadge(), which fires on every status change.
+   */
+  async refreshModelBadge(instanceId = this.activeInstance) {
+    if (instanceId !== this.activeInstance) return; // only the visible tab's badge is in the DOM
+    const now = Date.now();
+    if (this.modelBadgeRefreshInFlight || (now - (this.lastModelBadgeRefreshAt || 0)) < 2000) return;
+    this.modelBadgeRefreshInFlight = true;
+    this.lastModelBadgeRefreshAt = now;
+
+    const badge = document.getElementById('commander-model-badge');
+    if (!badge) {
+      this.modelBadgeRefreshInFlight = false;
+      return;
+    }
+    try {
+      const res = await fetch(this.apiUrl('/api/commander/model-config'));
+      const payload = await res.json().catch(() => null);
+      if (!payload?.ok) {
+        badge.style.display = 'none';
+        return;
       }
+      const modelLabel = String(payload.model || '').replace(/^claude-/i, '').replace(/^grok-/i, 'Grok ');
+      const effort = String(payload.effortLevel || '').trim().toLowerCase();
+      const text = [modelLabel, effort].filter(Boolean).join(' ');
+      if (!text) {
+        badge.style.display = 'none';
+        return;
+      }
+      badge.style.display = '';
+      badge.textContent = text;
+      this.orchestrator.modelEffortPicker?.attachTrigger(badge, { kind: 'commander', id: instanceId });
+    } catch {
+      badge.style.display = 'none';
+    } finally {
+      this.modelBadgeRefreshInFlight = false;
     }
   }
 
@@ -660,6 +996,7 @@ class CommanderPanel {
       panel.classList.remove('hidden');
       backdrop?.classList.remove('hidden');
       this.isVisible = true;
+      this.syncTabsFromServer();
       this.pinPanelPosition(panel);
 
       // Focus immediately so keystrokes land without waiting for the
@@ -720,6 +1057,20 @@ class CommanderPanel {
     }
   }
 
+  // Close (✕): fully stop the Commander session, then hide the panel. Reopening
+  // starts a fresh Commander. This is distinct from minimize (—), which only hides
+  // the window and leaves the session running so it's instantly available again.
+  // Stopping a live session is destructive (kills the Commander's agent process),
+  // so gate it behind a confirm; hide immediately so the panel never hangs on the
+  // stop round-trip (stopCommander handles its own errors and never throws).
+  closeSession() {
+    if (this.isRunning && !window.confirm('Close Commander and stop its running session? Use minimize (—) to keep it running in the background.')) {
+      return;
+    }
+    this.hide();
+    this.stopCommander();
+  }
+
   /**
    * Start the Commander terminal
    */
@@ -733,7 +1084,7 @@ class CommanderPanel {
 
     this.startCommanderPromise = (async () => {
       try {
-        const response = await fetch(`${this.serverUrl}/api/commander/start`, {
+        const response = await fetch(this.apiUrl('/api/commander/start'), {
           method: 'POST'
         });
         const result = response.ok
@@ -775,7 +1126,7 @@ class CommanderPanel {
    */
   async stopCommander() {
     try {
-      const response = await fetch(`${this.serverUrl}/api/commander/stop`, {
+      const response = await fetch(this.apiUrl('/api/commander/stop'), {
         method: 'POST'
       });
 
@@ -789,9 +1140,18 @@ class CommanderPanel {
   }
 
   /**
-   * Start Claude Code in the Commander terminal
+   * Start Claude Code in the Commander terminal (back-compat wrapper).
    */
   async startClaude(mode = 'fresh') {
+    return this.startAgent({ provider: 'claude', mode });
+  }
+
+  /**
+   * Start an AI agent (Claude/Codex/Grok) in the Commander terminal, with
+   * optional session-only model/effort launch flags - see
+   * server/commanderService.js#startAgent for what each provider supports.
+   */
+  async startAgent({ provider = 'claude', mode = 'fresh', model = null, effort = null } = {}) {
     if (!this.isRunning) {
       await this.startCommander();
       // Wait for terminal to be ready
@@ -799,19 +1159,20 @@ class CommanderPanel {
     }
 
     try {
-      const response = await fetch(`${this.serverUrl}/api/commander/start-claude`, {
+      const response = await fetch(this.apiUrl('/api/commander/start-agent'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode })
+        body: JSON.stringify({ provider, mode, model, effort })
       });
 
       if (response.ok) {
         if (this.terminal) {
           this.terminal.focus();
         }
+        this.refreshModelBadge?.();
       }
     } catch (error) {
-      console.error('Failed to start Claude:', error);
+      console.error('Failed to start agent:', error);
     }
   }
 
@@ -932,7 +1293,31 @@ class CommanderPanel {
     }
   }
 
+  // Strip mouse-tracking MOTION reports (idle hover, no button held) from an input
+  // chunk: SGR (mode 1006) "ESC[<btn;col;rowM/m" and X10-encoded (modes 1002/1003)
+  // "ESC[M" + 3 bytes. Only motion-with-no-button reports are noise; clicks, drags,
+  // and scroll-wheel reports are meaningful to mouse-aware apps (Claude Code's TUI,
+  // vim, less) and must keep flowing. Stripping (vs dropping the whole chunk) also
+  // preserves any real keystrokes xterm coalesced into the same data event.
+  stripMouseMotionReports(data) {
+    const s = String(data == null ? '' : data);
+    if (!s.includes('\x1b[')) return s;
+    const isIdleMotion = (btnCode) => (btnCode & 0x20) !== 0 && (btnCode & 0x03) === 3 && (btnCode & 0x40) === 0;
+    return s
+      .replace(/\x1b\[<(\d+);\d+;\d+[Mm]/g, (match, btn) => (isIdleMotion(Number(btn)) ? '' : match))
+      .replace(/\x1b\[M([\s\S]{3})/g, (match, payload) => (isIdleMotion(payload.charCodeAt(0) - 32) ? '' : match));
+  }
+
   handleTerminalData(data) {
+    // Filter mouse-motion noise. Claude Code's TUI enables mouse reporting, so every
+    // mouse move over the panel emits a report — and each was sent as its own chained
+    // HTTP request, flooding the input queue and stalling real keystrokes (measured:
+    // hundreds of mouse reports queued ahead of a single typed character). Hover
+    // motion carries no meaning for the panel, so it's stripped; clicks/drags/scroll
+    // still reach the PTY for apps that use them.
+    data = this.stripMouseMotionReports(data);
+    if (!data) return;
+
     // If we're currently capturing a command, don't forward to Commander PTY.
     if (this.commandCapture) {
       if (data === '\r' || data === '\n') {
@@ -979,13 +1364,28 @@ class CommanderPanel {
   }
 
   /**
+   * Wrap pasted text so multi-line pastes aren't treated as a burst of Enter keys.
+   * Newlines are normalized to \r (how a terminal sees Enter), and when the Commander
+   * program has bracketed-paste mode enabled (it sent ESC[?2004h) the text is wrapped
+   * in ESC[200~ .. ESC[201~ so the program treats it as literal pasted input. Programs
+   * that don't enable the mode get the text unwrapped, so nothing regresses.
+   */
+  bracketPastedText(text) {
+    const normalized = String(text == null ? '' : text).replace(/\r\n|\r|\n/g, '\r');
+    const bracketed = this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode;
+    // Strip any embedded paste terminator so crafted clipboard content can't
+    // end the bracket early and smuggle the rest in as live keystrokes.
+    return bracketed ? `\x1b[200~${normalized.replace(/\x1b\[201~/g, '')}\x1b[201~` : normalized;
+  }
+
+  /**
    * Send input to Commander terminal
    */
   async sendInput(input) {
     // Chain requests so keystrokes reach the terminal in the order typed;
     // parallel fetches can otherwise arrive out of order and scramble input.
     this.inputChain = this.inputChain
-      .then(() => fetch(`${this.serverUrl}/api/commander/input`, {
+      .then(() => fetch(this.apiUrl('/api/commander/input'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ input })
@@ -1002,7 +1402,7 @@ class CommanderPanel {
    */
   async fetchInitialOutput() {
     try {
-      const response = await fetch(`${this.serverUrl}/api/commander/output?lines=500`);
+      const response = await fetch(this.apiUrl('/api/commander/output?lines=500'));
       if (response.ok) {
         const { output } = await response.json();
         if (output && this.terminal) {
@@ -1028,7 +1428,7 @@ class CommanderPanel {
    */
   async checkStatus() {
     try {
-      const response = await fetch(`${this.serverUrl}/api/commander/status`);
+      const response = await fetch(this.apiUrl('/api/commander/status'));
       if (response.ok) {
         const status = await response.json();
         this.isRunning = status.running;

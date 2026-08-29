@@ -1,3 +1,6 @@
+const path = require('path');
+const { defaultNodePtyRuntimeRepair } = require('./nodePtyRuntimeRepair');
+
 const KNOWN_BROKEN_NODE_PTY_VERSION = '1.2.0-beta.12';
 const LOAD_NATIVE_MODULE_PATCH_FLAG = '__agentWorkspaceConptyCompatPatched';
 const START_PROCESS_PATCH_FLAG = '__agentWorkspaceConptyStartProcessPatched';
@@ -249,7 +252,9 @@ function loadNodePty({
   logger = null,
   utilsModule = null,
   packageInfo = null,
-  requireModule = require
+  requireModule = require,
+  rootDir = path.resolve(__dirname, '..', '..'),
+  runtimeRepair = defaultNodePtyRuntimeRepair
 } = {}) {
   const compat = ensureWindowsNodePtyCompat({
     platform,
@@ -274,7 +279,34 @@ function loadNodePty({
     });
   }
 
-  return requireModule('node-pty');
+  try {
+    return requireModule('node-pty');
+  } catch (error) {
+    const repair = runtimeRepair?.tryRepair?.(error, { rootDir });
+    if (!repair?.repaired) {
+      if (repair?.attempted && repair.error) {
+        throw new Error(
+          `${error.message} Automatic node-pty rebuild failed: ${repair.error.message}`,
+          { cause: error }
+        );
+      }
+      throw error;
+    }
+
+    logger?.warn?.('Rebuilt node-pty for the active Node.js ABI', {
+      builtAbi: repair.builtAbi,
+      runtimeAbi: repair.runtimeAbi
+    });
+
+    try {
+      return requireModule('node-pty');
+    } catch (retryError) {
+      throw new Error(
+        `node-pty still failed after automatic ABI rebuild: ${retryError.message}`,
+        { cause: retryError }
+      );
+    }
+  }
 }
 
 module.exports = {

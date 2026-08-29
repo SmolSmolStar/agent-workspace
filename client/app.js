@@ -29,11 +29,30 @@ const LEGACY_SETTINGS_STORAGE_KEY = 'claude-orchestrator-settings';
 const AUTH_TOKEN_STORAGE_KEY = 'agent-workspace-token';
 const LEGACY_AUTH_TOKEN_STORAGE_KEY = 'claude-orchestrator-token';
 
+// Column id for repos that were never placed on the projects board. Distinct from
+// 'backlog' so the board visibility toggles never hide untriaged repos.
+const PROJECTS_BOARD_UNCLASSIFIED_COLUMN = 'unclassified';
+
+// Repo catalogs survive reloads so Add Worktree opens instantly instead of
+// rescanning from an empty in-memory cache on every page load.
+const SCANNED_REPOS_CACHE_STORAGE_KEY = 'agent-workspace-scanned-repos-cache';
+const GITHUB_REPOS_CACHE_STORAGE_KEY = 'agent-workspace-github-repos-cache';
+const REPO_CACHE_PERSIST_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 // Enhanced Agent Workspace with sidebar and flexible viewing
 class ClaudeOrchestrator {
   constructor() {
     this.sessions = new Map();
     this.activeView = [];
+    // Per-worktree button config lookups log "using defaults" for every
+    // worktree without a custom .orchestrator-config.json — normal, and noisy
+    // with many worktrees. Opt in via localStorage 'debug-worktree-config'.
+    this.debugWorktreeConfig = false;
+    try {
+      this.debugWorktreeConfig = window?.localStorage?.getItem('debug-worktree-config') === 'true';
+    } catch {
+      // ignore
+    }
     this.visibleTerminals = new Set(); // Track which terminals are visible
     // Second-layer filter applied after per-worktree visibility toggles:
     // 'all' | 'claude' | 'server'
@@ -60,6 +79,10 @@ class ClaudeOrchestrator {
     this.simpleModeStartupTriggered = false;
     this.desktopDevtoolsKeydownHandler = null;
     this.currentLayout = '2x4';
+    // Minimum usable height for a terminal-pair row; below this the grid
+    // scrolls instead of squeezing. Keep in sync with the 200px floor in
+    // .terminal-grid-scrollable's grid-auto-rows.
+    this.minTerminalRowPx = 200;
     this.serverStatuses = new Map(); // Track server running status
     this.serverPorts = new Map(); // Track server ports
     this.githubLinks = new Map(); // Track GitHub PR/branch links per session
@@ -120,6 +143,7 @@ class ClaudeOrchestrator {
     this.intentHaikuPolicyBySession = new Map(); // sessionId -> milestone refresh state
     this.modelConfigBySession = new Map(); // sessionId -> { cwd, claude: {model, effortLevel, ...} }
     this.modelConfigCodex = null; // global codex config from /api/sessions/model-config
+    this.modelConfigGrok = null; // global grok config from /api/sessions/model-config
     this.modelConfigInFlight = false;
     this.modelConfigLastFetchedAt = 0;
     this.modelConfigRefreshMs = 20000; // fallback poll for idle terminals; activity refreshes sooner
@@ -293,6 +317,7 @@ class ClaudeOrchestrator {
         focusSwap: false,
         tasks: false,
         ports: true,
+        work: false,
         voice: false,
         notifications: false,
         commander: true,
@@ -327,6 +352,7 @@ class ClaudeOrchestrator {
         viewBranchOnGithub: false,
         viewBranchDiff: true,
         viewPrOnGithub: true,
+        viewOpenPRsOnGithub: true,
         advancedDiff: false,
         advancedBranchDiff: false,
         startServerDev: false,
@@ -741,6 +767,7 @@ class ClaudeOrchestrator {
       if (!response.ok || payload?.ok === false) return;
 
       this.modelConfigCodex = payload?.codex || null;
+      this.modelConfigGrok = payload?.grok || null;
       this.modelConfigBySession = new Map(Object.entries(payload?.sessions || {}));
       for (const sessionId of this.sessions.keys()) {
         this.renderSessionModelBadge(sessionId);
@@ -771,9 +798,8 @@ class ClaudeOrchestrator {
       return;
     }
     el.style.display = '';
-    el.textContent = `🧠 ${meta.text}`;
-    el.title = meta.tooltip;
-    el.dataset.effort = meta.effortLevel;
+    el.textContent = meta.text;
+    this.modelEffortPicker?.attachTrigger(el, sessionId);
   }
 
   getSessionModelBadgeMeta(sessionId) {
@@ -781,31 +807,23 @@ class ClaudeOrchestrator {
     const session = this.sessions.get(sid) || this.sessions.get(sessionId);
     const runningAgent = String(session?.agent || '').trim().toLowerCase();
     const sessionType = String(session?.type || '').trim().toLowerCase();
-    // Only Claude and Codex configs are resolved; other agents (gemini,
+    // Claude, Codex, and Grok configs are resolved; other agents (gemini,
     // opencode, aider) don't read these files — hide rather than mislabel.
-    if (runningAgent && runningAgent !== 'claude' && runningAgent !== 'codex') return null;
+    if (runningAgent && runningAgent !== 'claude' && runningAgent !== 'codex' && runningAgent !== 'grok') return null;
     const isCodex = runningAgent === 'codex' || (!runningAgent && sessionType === 'codex');
-    const config = isCodex ? this.modelConfigCodex : this.modelConfigBySession.get(sid)?.claude;
+    const isGrok = runningAgent === 'grok';
+    const config = isGrok
+      ? this.modelConfigGrok
+      : (isCodex ? this.modelConfigCodex : this.modelConfigBySession.get(sid)?.claude);
     if (!config || (!config.model && !config.effortLevel)) return null;
 
-    const modelLabel = String(config.model || '').replace(/^claude-/i, '');
+    // e.g. "grok-4.6" -> "Grok 4.6"; Claude models drop their "claude-" prefix.
+    const modelLabel = isGrok
+      ? String(config.model || '').replace(/^grok-/i, 'Grok ')
+      : String(config.model || '').replace(/^claude-/i, '');
     const effortLevel = String(config.effortLevel || '').trim().toLowerCase();
-    // Model first — it's the fact you scan for; effort is the qualifier.
-    const text = [modelLabel, effortLevel.toUpperCase()].filter(Boolean).join(' · ');
-
-    const tooltipLines = ['Model & effort agent launches in this worktree will use (settings files + env overrides).'];
-    const describeSource = (source) => {
-      const label = source?.label || 'unknown';
-      return source?.file ? `${label} (${source.file})` : label;
-    };
-    if (config.model) {
-      tooltipLines.push(`Model: ${config.model} — from ${describeSource(config.modelSource)}`);
-    }
-    if (effortLevel) {
-      tooltipLines.push(`Effort: ${effortLevel} — from ${describeSource(config.effortSource)}`);
-    }
-    tooltipLines.push('Note: while a Claude session is running here, Model reflects what it is actually using (including "/model" switches); otherwise the configured launch default is shown.');
-    return { text, tooltip: tooltipLines.join('\n'), effortLevel };
+    const text = [modelLabel, effortLevel].filter(Boolean).join(' ');
+    return { text };
   }
 
   hashStringToBase36(value) {
@@ -1175,6 +1193,9 @@ class ClaudeOrchestrator {
 	      this.terminalManager.autosuggestEnabled = false;
 	      this.notificationManager = new NotificationManager(this);
       this.agentModalManager = new AgentModalManager(this);
+      if (typeof ModelEffortPicker !== 'undefined') {
+        this.modelEffortPicker = new ModelEffortPicker(this);
+      }
 
       // Initialize tab manager for multi-workspace support
       if (typeof WorkspaceTabManager !== 'undefined') {
@@ -1245,6 +1266,14 @@ class ClaudeOrchestrator {
           this.activityFeedPanel.toggle();
         });
         console.log('Activity feed initialized');
+      }
+
+      // Work panel (five thieves of time — flow across every repo in flight)
+      if (typeof WorkPanel !== 'undefined') {
+        this.workPanel = new WorkPanel(this);
+        document.getElementById('work-btn')?.addEventListener('click', () => {
+          this.workPanel.toggle();
+        });
       }
 
       document.getElementById('diff-viewer-open')?.addEventListener('click', () => {
@@ -1405,6 +1434,13 @@ class ClaudeOrchestrator {
         this.buildSidebar();
       });
 
+      // A stale resize can leave the client's own buffer garbled, not just
+      // its pixels — the server sends a clean capture-pane read to replace
+      // it wholesale instead of asking us to repaint something already wrong.
+      this.socket.on('terminal-resync', ({ sessionId, buffer }) => {
+        this.terminalManager?.handleResync?.(sessionId, buffer);
+      });
+
       this.socket.on('terminal-output', ({ sessionId, data, workspaceId }) => {
         this.terminalManager.handleOutput(sessionId, data);
 
@@ -1524,6 +1560,37 @@ class ClaudeOrchestrator {
       this.socket.on('agent-started', ({ sessionId, config }) => {
         this.hideStartupUI(sessionId);
         this.scheduleAutoPromptFallback(sessionId, config?.agentId);
+      });
+
+      this.socket.on('codex-usage-guard', (status) => {
+        const wasDraining = this.codexUsageGuardStatus?.mode === 'draining';
+        this.codexUsageGuardStatus = status || null;
+        if (status?.mode !== 'draining' || wasDraining) return;
+        const message = status.drainReason === 'exhausted'
+          ? 'Codex weekly usage is exhausted. New Codex launches are paused; active sessions continue.'
+          : 'Codex weekly usage reset. New Codex launches are paused; active sessions continue.';
+        this.showToast(message, 'warning', { force: true, durationMs: 10_000 });
+      });
+
+      this.socket.on('agent-start-blocked', ({ agentId, reason, code }) => {
+        if (String(agentId || '').toLowerCase() !== 'codex') return;
+        let message = 'Codex launch blocked because the weekly window reset and drain mode is active.';
+        if (reason === 'exhausted') {
+          message = 'Codex launch blocked because weekly usage is exhausted.';
+        } else if (code === 'codex-usage-monitor-pending') {
+          message = 'Codex launch is paused until the first usage check completes.';
+        } else if (code === 'codex-usage-monitor-unavailable' || code === 'codex-usage-monitor-error') {
+          message = 'Codex launch is paused because the usage monitor is unavailable.';
+        }
+        this.showToast(message, 'warning', { force: true, durationMs: 8_000 });
+      });
+
+      this.socket.on('agent-turn-blocked', ({ agentId, code }) => {
+        if (String(agentId || '').toLowerCase() !== 'codex') return;
+        const message = code === 'codex-usage-draining'
+          ? 'New work was not sent to Codex because drain mode is active.'
+          : 'New work was not sent to Codex because its usage check is unavailable.';
+        this.showToast(message, 'warning', { force: true, durationMs: 8_000 });
       });
 
       this.socket.on('claude-update-required', (updateInfo) => {
@@ -1936,7 +2003,11 @@ class ClaudeOrchestrator {
           e.preventDefault();
           e.stopPropagation();
           const key = String(shortcutBtn.getAttribute('data-sidebar-project-shortcut') || '').trim();
-          if (key) this.startProjectWorktreeFromBoardKey(key);
+          if (key) {
+            Promise.resolve(this.startProjectWorktreeFromBoardKey(key)).catch((error) => {
+              this.showTemporaryMessage('Failed to open project: ' + (error?.message || error), 'error');
+            });
+          }
           if (this.isMobileLayout()) this.closeSidebar();
           return;
         }
@@ -2959,6 +3030,8 @@ class ClaudeOrchestrator {
       this.updateSidebarToggleIcon();
 	      clearTimeout(resizeTimeout);
 	      resizeTimeout = setTimeout(() => {
+        // Window height changed — re-decide squeeze-to-fit vs scroll.
+        this.updateTerminalGridScrollMode();
 	        // Refit all terminals (not just activeView — covers newly started sessions)
 	        for (const sessionId of this.terminalManager.terminals.keys()) {
           this.terminalManager.fitTerminal(sessionId);
@@ -4225,7 +4298,10 @@ class ClaudeOrchestrator {
         special: 'disabled-until-ready'
       },
       claudeModal: {
-        icon: '↻',
+        // Matches the 🤖 shown at the start of every agent terminal's title
+        // (createTerminalElement) instead of a refresh-looking ↻, so the
+        // button reads as "this starts the agent" rather than "reload".
+        icon: '🤖',
         title: 'Start Agent with Options',
         action: 'showClaudeStartupModal',
         showWhen: 'always',
@@ -4348,15 +4424,15 @@ class ClaudeOrchestrator {
     }
 
     if (!repositoryType) {
-      console.log(`No repositoryType found for session ${sessionId}, using defaults`);
+      if (this.debugWorktreeConfig) console.debug(`No repositoryType found for session ${sessionId}, using defaults`);
       return this.getDefaultButtons(terminalType, sessionId);
     }
 
     // Get worktree-specific cascaded config (pre-fetched)
     const cascadedConfig = this.worktreeConfigs.get(sessionId);
-    console.log(`Looking up worktree config for ${sessionId} (type: ${repositoryType}):`, cascadedConfig);
+    if (this.debugWorktreeConfig) console.debug(`Looking up worktree config for ${sessionId} (type: ${repositoryType}):`, cascadedConfig);
     if (!cascadedConfig || !cascadedConfig.buttons) {
-      console.log(`No worktree config or buttons found for ${sessionId}, using defaults`);
+      if (this.debugWorktreeConfig) console.debug(`No worktree config or buttons found for ${sessionId}, using defaults`);
       return this.getDefaultButtons(terminalType, sessionId);
     }
 
@@ -4743,9 +4819,98 @@ class ClaudeOrchestrator {
     return this.getSidebarVisualStatusForWorktree(worktreeKey, raw);
   }
 
+  // Manual sidebar project ordering (drag-to-reorder), persisted per workspace
+  // in user settings at ui.worktrees.repoOrder.<workspaceKey> = [repoName, ...].
+  getSidebarRepoOrderKey() {
+    return String(this.currentWorkspace?.id || 'default').replace(/\./g, '_');
+  }
+
+  getSidebarRepoOrder() {
+    const all = this.userSettings?.global?.ui?.worktrees?.repoOrder || {};
+    const arr = all[this.getSidebarRepoOrderKey()];
+    return Array.isArray(arr) ? arr.map((v) => String(v || '').toLowerCase()) : [];
+  }
+
+  // Projects-board status ranking for sidebar ordering: Ship Next repos first,
+  // then Active, then everything else. Keys in the board are relative paths
+  // (games/roblox/kpop-idol-empire); the sidebar knows repo names, so match by
+  // final path segment. Memoized per board fetch.
+  getSidebarRepoStatusRank() {
+    const fetchedAt = this.projectsBoardCache?.fetchedAt || 0;
+    if (this._sidebarStatusRank && this._sidebarStatusRank.fetchedAt === fetchedAt) {
+      return this._sidebarStatusRank.map;
+    }
+    const columnRank = { next: 0, active: 1 };
+    const map = new Map();
+    const mapping = this.projectsBoardCache?.value?.board?.projectToColumn || {};
+    for (const [projectKey, columnId] of Object.entries(mapping)) {
+      const base = String(projectKey || '').split('/').filter(Boolean).pop()?.toLowerCase();
+      if (!base) continue;
+      const rank = columnRank[String(columnId)] ?? 2;
+      const previous = map.get(base);
+      map.set(base, previous === undefined ? rank : Math.min(previous, rank));
+    }
+    this._sidebarStatusRank = { fetchedAt, map };
+    return map;
+  }
+
+  compareSidebarRepos(aName, bName) {
+    const a = String(aName || '').toLowerCase();
+    const b = String(bName || '').toLowerCase();
+    if (a === b) return 0;
+    // Manual drag order beats everything.
+    const order = this.getSidebarRepoOrder();
+    const ai = order.indexOf(a);
+    const bi = order.indexOf(b);
+    if (ai !== -1 || bi !== -1) {
+      if (ai === -1) return 1;      // unordered repos sort after pinned ones
+      if (bi === -1) return -1;
+      return ai - bi;
+    }
+    // Then project status: Ship Next, then Active, then the rest.
+    const statusRank = this.getSidebarRepoStatusRank();
+    const aRank = statusRank.get(a) ?? 2;
+    const bRank = statusRank.get(b) ?? 2;
+    if (aRank !== bRank) return aRank - bRank;
+    return a.localeCompare(b);
+  }
+
+  async moveSidebarRepoBefore(draggedRepo, targetRepo) {
+    const dragged = String(draggedRepo || '').toLowerCase();
+    const target = String(targetRepo || '').toLowerCase();
+    if (dragged === target) return;
+
+    // Current effective order of the repos visible in this workspace.
+    const repos = [];
+    for (const [sessionId, session] of this.sessions) {
+      if (this.currentWorkspace && session.workspace && session.workspace !== this.currentWorkspace.id) continue;
+      const name = String(this.extractRepositoryName(sessionId) || '').toLowerCase();
+      if (!repos.includes(name)) repos.push(name);
+    }
+    repos.sort((a, b) => this.compareSidebarRepos(a, b));
+
+    const from = repos.indexOf(dragged);
+    const to = repos.indexOf(target);
+    if (from === -1 || to === -1) return;
+    repos.splice(from, 1);
+    repos.splice(repos.indexOf(target) + (from < to ? 1 : 0), 0, dragged);
+
+    await this.updateGlobalUserSetting(`ui.worktrees.repoOrder.${this.getSidebarRepoOrderKey()}`, repos);
+    this.buildSidebar();
+  }
+
   buildSidebar() {
     const worktreeList = document.getElementById('worktree-list');
     if (!worktreeList) return;
+
+    // Status-based ordering needs the projects board; fetch once and re-render.
+    if (!this.projectsBoardCache?.value && !this._sidebarBoardFetchInFlight) {
+      this._sidebarBoardFetchInFlight = true;
+      this.getProjectsBoard()
+        .then(() => this.buildSidebar())
+        .catch(() => {})
+        .finally(() => { this._sidebarBoardFetchInFlight = false; });
+    }
 
     const previousScrollTop = worktreeList.scrollTop;
     const preservedProjectShortcuts = document.getElementById('sidebar-project-shortcuts')?.cloneNode(true) || null;
@@ -4791,12 +4956,13 @@ class ClaudeOrchestrator {
       }
     }
 
-    // Sort worktrees by repository name, then worktree ID
+    // Sort worktrees: manual repo order (drag-to-reorder) first, then
+    // repository name alphabetically, then worktree ID numeric-aware so
+    // work2 < work10.
     const sortedWorktrees = [...worktrees.entries()].sort((a, b) => {
-      const repoA = (a[1].repositoryName || '').toLowerCase();
-      const repoB = (b[1].repositoryName || '').toLowerCase();
-      if (repoA !== repoB) return repoA.localeCompare(repoB);
-      return (a[1].worktreeId || '').localeCompare(b[1].worktreeId || '');
+      const repoCmp = this.compareSidebarRepos(a[1].repositoryName, b[1].repositoryName);
+      if (repoCmp !== 0) return repoCmp;
+      return (a[1].worktreeId || '').localeCompare(b[1].worktreeId || '', undefined, { numeric: true, sensitivity: 'base' });
     });
 
     // Create sidebar items
@@ -4818,7 +4984,38 @@ class ClaudeOrchestrator {
       // Only show visibility state, not activity state (activity filtering is handled separately)
       item.className = `worktree-item ${!isVisible ? 'hidden-terminal' : ''}`;
       item.dataset.worktreeId = worktree.id;
-      item.title = 'Click to toggle • Ctrl+Click to solo/unsolo this worktree';
+      item.title = 'Click to toggle • Ctrl+Click to solo/unsolo this worktree • Drag to reorder projects';
+
+      // Drag a worktree row to move its whole repository group above/below others.
+      item.draggable = true;
+      const dragRepoName = worktree.repositoryName || '';
+      item.addEventListener('dragstart', (e) => {
+        this.sidebarDragRepo = dragRepoName;
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          try { e.dataTransfer.setData('text/plain', dragRepoName); } catch { /* IE-style guards */ }
+        }
+        item.classList.add('dragging');
+      });
+      item.addEventListener('dragend', () => {
+        this.sidebarDragRepo = null;
+        item.classList.remove('dragging');
+      });
+      item.addEventListener('dragover', (e) => {
+        if (this.sidebarDragRepo === null || this.sidebarDragRepo === undefined) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        item.classList.add('drag-over');
+      });
+      item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
+      item.addEventListener('drop', (e) => {
+        e.preventDefault();
+        item.classList.remove('drag-over');
+        const dragged = this.sidebarDragRepo;
+        this.sidebarDragRepo = null;
+        if (dragged === null || dragged === undefined) return;
+        this.moveSidebarRepoBefore(dragged, dragRepoName);
+      });
 
       const rawBranch = worktree.claude?.branch || worktree.server?.branch || 'unknown';
       const branchMeta = this.formatBranchLabel(rawBranch, { context: 'sidebar' });
@@ -5009,31 +5206,13 @@ class ClaudeOrchestrator {
         if (!repoByKey.has(key)) repoByKey.set(key, repo);
       }
 
-      const getOrderIndex = (columnId) => {
-        const raw = board?.orderByColumn && typeof board.orderByColumn === 'object' ? board.orderByColumn[columnId] : null;
-        const order = Array.isArray(raw) ? raw : [];
-        const index = new Map();
-        order.forEach((k, i) => {
-          const key = this.normalizeProjectsBoardProjectKey(k);
-          if (!key || index.has(key)) return;
-          index.set(key, i);
-        });
-        return index;
-      };
-
       const collect = (columnId) => {
         const out = [];
         for (const [key, repo] of repoByKey.entries()) {
           const col = this.getProjectsBoardColumnForProjectKey(key, boardData);
           if (col === columnId) out.push({ key, repo });
         }
-        const index = getOrderIndex(columnId);
-        out.sort((a, b) => {
-          const aRank = index.has(a.key) ? index.get(a.key) : Number.POSITIVE_INFINITY;
-          const bRank = index.has(b.key) ? index.get(b.key) : Number.POSITIVE_INFINITY;
-          if (aRank !== bRank) return aRank - bRank;
-          return String(a.repo?.name || '').localeCompare(String(b.repo?.name || ''));
-        });
+        out.sort((a, b) => String(a.repo?.name || a.key || '').localeCompare(String(b.repo?.name || b.key || '')));
         return out;
       };
 
@@ -5848,12 +6027,28 @@ class ClaudeOrchestrator {
       }
     });
 
-    grid.classList.toggle('terminal-grid-scrollable', visibleCount > 16);
+    this.updateTerminalGridScrollMode(grid, rows);
 
     // Force a resize after everything is rendered to ensure terminals fit properly
     setTimeout(() => {
       this.resizeAllVisibleTerminals();
     }, 200);
+  }
+
+  // Scroll only when sharing the viewport would crush rows below a usable
+  // height. Height-based instead of the old magic ">16 pairs" count: a tall
+  // monitor fits more rows without scrolling, and a small window stops
+  // squeezing terminals into unreadable slivers before the scrollbar appears.
+  updateTerminalGridScrollMode(grid = null, rowsOverride = null) {
+    const target = grid || this.getTerminalGrid?.() || document.getElementById('terminal-grid');
+    if (!target) return;
+    const rows = Math.max(1, Number(rowsOverride ?? target.style.getPropertyValue('--grid-rows')) || 1);
+    const available = target.clientHeight;
+    if (!available) return; // grid hidden (dashboard/tab switch) — keep current mode
+    const styles = window.getComputedStyle(target);
+    const rowGap = parseFloat(styles.rowGap) || 0;
+    const needed = rows * this.minTerminalRowPx + Math.max(0, rows - 1) * rowGap;
+    target.classList.toggle('terminal-grid-scrollable', needed > available + 1);
   }
 
 	  showClaudeOnly() {
@@ -6884,6 +7079,13 @@ class ClaudeOrchestrator {
 
     // Always show branch button (uses current session's git info)
     const session = this.sessions.get(sessionId);
+
+    // Open-PRs link, always present — the "view PR" button below only
+    // shows once a specific PR is parsed from output, this one never is.
+    if (session && session.remoteUrl && visibility.viewOpenPRsOnGithub !== false) {
+      buttons += `<button class="control-btn" onclick="window.open('${session.remoteUrl}/pulls', '_blank')" title="View open PRs on GitHub">🔀</button>`;
+    }
+
     if (session && session.branch && session.branch !== 'master' && session.branch !== 'main') {
       const worktreeId = sessionId.split('-')[0];
 
@@ -6983,7 +7185,7 @@ class ClaudeOrchestrator {
 					    // show an explanatory toast instead of rendering a dead button.
 					    const disabledAttr = canOpen ? '' : 'aria-disabled="true" data-disabled="true"';
 					    const sidArg = this.escapeOnclickArg(String(sessionId || ''));
-					    return `<button class="control-btn" onclick="(typeof event !== 'undefined' && event && event.stopPropagation ? event.stopPropagation() : null); window.orchestrator.openWorktreeInspector(${sidArg}, { reviewConsole: true })" title="Review Console (worktree/files/commits/diff)" ${disabledAttr}>🗂</button>`;
+					    return `<button class="control-btn" onclick="(typeof event !== 'undefined' && event && event.stopPropagation ? event.stopPropagation() : null); window.orchestrator.openWorktreeInspector(${sidArg}, { reviewConsole: true })" title="Review Console (worktree/files/commits/diff)" ${disabledAttr}>🖥</button>`;
 					  }
 
 		  getWorktreeRemoveButtonHTML(sessionId) {
@@ -8073,6 +8275,13 @@ class ClaudeOrchestrator {
         break;
       }
 
+      case 'resync-terminal': {
+        const sid = String(params?.sessionId || '').trim();
+        if (!sid) break;
+        this.socket?.emit('resync-session', { sessionId: sid });
+        break;
+      }
+
       case 'git-pull-all': {
         for (const [sid, session] of this.sessions) {
           if (!session || session.type !== 'server') continue;
@@ -8297,6 +8506,9 @@ class ClaudeOrchestrator {
 	      notifications: false,
 	      sounds: false,
 	      autoScroll: true,
+	      // How long a terminal left scrolled up sits idle before the view returns
+	      // to the bottom on its own. 0 disables the snap-back.
+	      scrollSnapBackSeconds: 60,
 	      autoSuggestions: false,
 	      theme: 'dark',
 	      skin: 'blue'
@@ -9105,6 +9317,7 @@ class ClaudeOrchestrator {
 
 	    // Keep terminals visually consistent with UI theme.
 	    this.terminalManager?.updateTheme?.(this.settings.theme);
+	    this.commanderPanel?.updateTheme?.(this.settings.theme);
 	  }
 
 	  applyThemeFromUserSettings() {
@@ -11793,9 +12006,30 @@ class ClaudeOrchestrator {
     }
   }
 
+  // Passive-toast suppression: success/info popups are only feedback when they
+  // follow the user's OWN action in this tab. Broadcast/background events
+  // (another Commander adding a worktree, restarts, status churn) firing
+  // top-right toasts while the user is elsewhere are noise — suppressed by
+  // default. Re-enable with ui.notifications.passiveToasts: true. Errors and
+  // warnings always show.
+  isPassiveToastSuppressed(type) {
+    if (type === 'error' || type === 'warning') return false;
+    if (this.userSettings?.global?.ui?.notifications?.passiveToasts === true) return false;
+    if (!this._interactionTrackerInstalled) {
+      this._interactionTrackerInstalled = true;
+      this._lastUserInteractionAt = 0;
+      const mark = () => { this._lastUserInteractionAt = Date.now(); };
+      document.addEventListener('mousedown', mark, true);
+      document.addEventListener('keydown', mark, true);
+      return true; // no interaction observed yet this page-load
+    }
+    return (Date.now() - (this._lastUserInteractionAt || 0)) > 5000;
+  }
+
   showToast(message, type = 'info', options = {}) {
     const rawMessage = String(message || '').trim();
     if (!rawMessage) return;
+    if (!options?.force && this.isPassiveToastSuppressed(type)) return;
 
     const normalizedType = (['info', 'success', 'warning', 'error'].includes(type)) ? type : 'info';
     const durationMsRaw = Number(options?.durationMs);
@@ -12256,11 +12490,6 @@ class ClaudeOrchestrator {
 
         if (!pushBottom) return;
 
-        try {
-          this.terminalManager?.userScrolling?.set?.(sid, false);
-        } catch {
-          // ignore
-        }
         try {
           term.scrollToBottom?.();
         } catch {
@@ -16993,6 +17222,14 @@ class ClaudeOrchestrator {
       return false;
     }
 
+    // Don't show when an agent is already active in this terminal (e.g. a
+    // tmux-adopted session after a server restart — the agent survived, only
+    // the UI state was reset). Recovery keeps `agent` across restarts.
+    const session = this.sessions?.get?.(sessionId);
+    if (session?.agent) {
+      return false;
+    }
+
     // Don't show if auto-start is enabled (it will handle startup)
     const effectiveSettings = this.getEffectiveSettings(sessionId);
     if (effectiveSettings && effectiveSettings.autoStart && effectiveSettings.autoStart.enabled) {
@@ -17907,15 +18144,18 @@ class ClaudeOrchestrator {
       return;
     }
 
+    const globalSettings = this.userSettings.global || {};
+    const claudeFlags = globalSettings.claudeFlags || {};
+
     // Update global settings UI
     const globalSkipPermissions = document.getElementById('global-skip-permissions');
     if (globalSkipPermissions) {
-      globalSkipPermissions.checked = this.userSettings.global.claudeFlags.skipPermissions;
+      globalSkipPermissions.checked = claudeFlags.skipPermissions === true;
     }
 
     const globalZaiProvider = document.getElementById('global-zai-provider');
     if (globalZaiProvider) {
-      globalZaiProvider.checked = this.userSettings.global.claudeFlags.provider === 'zai';
+      globalZaiProvider.checked = claudeFlags.provider === 'zai';
     }
 
     // Update auto-start settings UI
@@ -17924,15 +18164,15 @@ class ClaudeOrchestrator {
     const autoStartMode = document.getElementById('global-auto-start-mode');
     const autoStartDelay = document.getElementById('global-auto-start-delay');
 
-    if (globalAutoStart && this.userSettings.global.autoStart) {
-      globalAutoStart.checked = this.userSettings.global.autoStart.enabled || false;
+    if (globalAutoStart && globalSettings.autoStart) {
+      globalAutoStart.checked = globalSettings.autoStart.enabled || false;
       autoStartOptions.style.display = globalAutoStart.checked ? 'block' : 'none';
 
       if (autoStartMode) {
-        autoStartMode.value = this.userSettings.global.autoStart.mode || 'fresh';
+        autoStartMode.value = globalSettings.autoStart.mode || 'fresh';
       }
       if (autoStartDelay) {
-        autoStartDelay.value = this.userSettings.global.autoStart.delay || 500;
+        autoStartDelay.value = globalSettings.autoStart.delay || 500;
       }
     }
 
@@ -18171,7 +18411,7 @@ class ClaudeOrchestrator {
     const recoveryResumeCwd = document.getElementById('recovery-resume-cwd');
     const recoveryResumeConversation = document.getElementById('recovery-resume-conversation');
 
-    const recoverySettings = this.userSettings.global.sessionRecovery || {};
+    const recoverySettings = globalSettings.sessionRecovery || {};
     if (sessionRecoveryEnabled) {
       sessionRecoveryEnabled.checked = recoverySettings.enabled !== false; // Default to enabled
       if (sessionRecoveryOptions) {
@@ -18435,6 +18675,9 @@ class ClaudeOrchestrator {
   }
 
   showTemporaryMessage(message, type = 'info') {
+    // Same passive suppression as showToast — this is the green top-right
+    // popup; unsolicited ones are noise.
+    if (this.isPassiveToastSuppressed(type)) return;
     // Create a temporary message element
     const messageEl = document.createElement('div');
     messageEl.className = `temporary-message ${type}`;
@@ -32055,6 +32298,9 @@ class ClaudeOrchestrator {
           <button class="btn-secondary quick-folder-map-btn" id="quick-worktree-folder-map" title="Show how category dropdown values map to folders">
             Folder map
           </button>
+          <button class="btn-primary quick-new-repo-btn" id="quick-worktree-new-repo" title="Create a brand-new repo (local master/ + GitHub, private by default) and start work1 here">
+            ✨ New repo
+          </button>
           <span class="quick-cache-status" id="quick-worktree-cache-status" title="Repo list cache status"></span>
           <label class="quick-checkbox" title="Keep this modal open after starting so you can start multiple worktrees" style="display:none">
             <input type="checkbox" id="worktree-modal-keep-open">
@@ -32187,6 +32433,11 @@ class ClaudeOrchestrator {
     const advancedBtn = modal.querySelector('.quick-advanced-btn');
     const refreshBtn = modal.querySelector('#quick-worktree-refresh');
     const folderMapBtn = modal.querySelector('#quick-worktree-folder-map');
+    const newRepoBtn = modal.querySelector('#quick-worktree-new-repo');
+    newRepoBtn?.addEventListener('click', (e) => {
+      e.preventDefault();
+      this.showQuickNewRepoModal();
+    });
     const quickRemoteInput = modal.querySelector('#quick-remote-repo-input');
     const quickRemoteAddBtn = modal.querySelector('#quick-remote-repo-add');
     const quickRemoteConfigBtn = modal.querySelector('#quick-remote-repo-configure');
@@ -32914,7 +33165,7 @@ class ClaudeOrchestrator {
     this.showToast(`${cloneMessage}: ${repo.nameWithOwner} (${data?.worktree?.id || 'work1'})`, 'success');
 
     // Refresh repo caches so the repo moves from "Not Cloned" into regular scanned repos.
-    this.scannedReposCache = { value: null, fetchedAt: 0 };
+    this.invalidateScannedReposCache();
     await this.loadQuickWorktreeRepos();
 
     if (!keepOpen) {
@@ -32963,8 +33214,17 @@ class ClaudeOrchestrator {
             </label>
             <label class="quick-remote-clone-label">
               <span>Framework</span>
-              <select id="quick-remote-framework"></select>
+              <div class="quick-remote-framework-row">
+                <select id="quick-remote-framework"></select>
+                <button type="button" id="quick-remote-framework-add" class="btn-secondary quick-remote-framework-add" title="Add a new framework to this category">＋</button>
+              </div>
             </label>
+          </div>
+          <div id="quick-remote-framework-form" class="quick-remote-framework-form" style="display:none;">
+            <input id="quick-remote-framework-name" type="text" class="search-input" placeholder="Framework name (e.g. Godot)">
+            <input id="quick-remote-framework-suffix" type="text" class="search-input" placeholder="Subfolder (optional, e.g. godot)">
+            <button type="button" class="btn-primary" id="quick-remote-framework-save">Save</button>
+            <button type="button" class="btn-secondary" id="quick-remote-framework-cancel">Cancel</button>
           </div>
           <div id="quick-remote-category-help" class="quick-remote-clone-category-help"></div>
 
@@ -33008,7 +33268,12 @@ class ClaudeOrchestrator {
       parentPathManuallyEdited: false
     };
 
-    const getFrameworkRows = (categoryId) => frameworksAll.filter((framework) => String(framework?.categoryId || '').trim() === String(categoryId || '').trim());
+    // Read frameworks from the live taxonomy so inline-added frameworks appear
+    // without reopening the modal.
+    const getFrameworkRows = (categoryId) => {
+      const rows = Array.isArray(this.projectTypeTaxonomy?.frameworks) ? this.projectTypeTaxonomy.frameworks : frameworksAll;
+      return rows.filter((framework) => String(framework?.categoryId || '').trim() === String(categoryId || '').trim());
+    };
 
     const populateCategorySelect = () => {
       categorySelect.innerHTML = categories.map((category) => {
@@ -33022,7 +33287,9 @@ class ClaudeOrchestrator {
 
     const populateFrameworkSelect = () => {
       const rows = getFrameworkRows(state.categoryId);
-      const hasCurrent = rows.some((framework) => String(framework?.id || '').trim() === state.frameworkId);
+      // '' is a valid explicit "(none)" choice — never override it back to a framework.
+      const hasCurrent = state.frameworkId === ''
+        || rows.some((framework) => String(framework?.id || '').trim() === state.frameworkId);
       if (!hasCurrent) {
         state.frameworkId = rows[0]?.id ? String(rows[0].id) : '';
       }
@@ -33143,6 +33410,293 @@ class ClaudeOrchestrator {
       state.parentPathManuallyEdited = true;
       refreshState({ preserveManualPath: true });
     });
+
+    // Inline "+ New framework": adds a taxonomy framework for the selected
+    // category via POST /api/project-types/frameworks, then selects it.
+    const frameworkAddBtn = modal.querySelector('#quick-remote-framework-add');
+    const frameworkForm = modal.querySelector('#quick-remote-framework-form');
+    const frameworkNameInput = modal.querySelector('#quick-remote-framework-name');
+    const frameworkSuffixInput = modal.querySelector('#quick-remote-framework-suffix');
+    const frameworkSaveBtn = modal.querySelector('#quick-remote-framework-save');
+    const frameworkCancelBtn = modal.querySelector('#quick-remote-framework-cancel');
+    const toggleFrameworkForm = (show) => {
+      if (frameworkForm) frameworkForm.style.display = show ? '' : 'none';
+      if (show) frameworkNameInput?.focus();
+    };
+    frameworkAddBtn?.addEventListener('click', (e) => {
+      e.preventDefault();
+      toggleFrameworkForm(frameworkForm?.style.display === 'none');
+    });
+    frameworkCancelBtn?.addEventListener('click', (e) => {
+      e.preventDefault();
+      toggleFrameworkForm(false);
+    });
+    frameworkSaveBtn?.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const name = String(frameworkNameInput?.value || '').trim();
+      if (!name) {
+        this.showToast('Framework name is required', 'error');
+        return;
+      }
+      const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      const category = categories.find((row) => String(row?.id || '').trim() === state.categoryId) || null;
+      const defaultTemplateId = String(category?.defaultTemplateId || 'generic-empty').trim();
+      const pathSuffix = String(frameworkSuffixInput?.value || '').trim();
+      try {
+        frameworkSaveBtn.disabled = true;
+        const res = await fetch('/api/project-types/frameworks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id,
+            name,
+            categoryId: state.categoryId,
+            defaultTemplateId,
+            templateIds: [defaultTemplateId],
+            pathSuffix: pathSuffix || undefined
+          })
+        });
+        const result = await res.json().catch(() => ({}));
+        if (!res.ok || result?.ok === false) {
+          throw new Error(result?.error || `Failed to add framework (${res.status})`);
+        }
+        await this.ensureProjectTypeTaxonomy({ force: true }).catch(() => {});
+        state.frameworkId = id;
+        state.parentPathManuallyEdited = false;
+        populateFrameworkSelect();
+        refreshState({ preserveManualPath: false });
+        toggleFrameworkForm(false);
+        if (frameworkNameInput) frameworkNameInput.value = '';
+        if (frameworkSuffixInput) frameworkSuffixInput.value = '';
+        this.showToast(`Framework "${name}" added`, 'success');
+      } catch (error) {
+        this.showToast(String(error?.message || error), 'error');
+      } finally {
+        frameworkSaveBtn.disabled = false;
+      }
+    });
+  }
+
+  // "New repo" flow: category + framework + name + private checkbox →
+  // creates <base>/<parent>/<name>/master locally, pushes to GitHub (private
+  // by default), and starts work1 in the current workspace.
+  async showQuickNewRepoModal() {
+    await this.ensureProjectTypeTaxonomy({ force: false }).catch(() => {});
+    const categories = Array.isArray(this.projectTypeTaxonomy?.categories) ? this.projectTypeTaxonomy.categories : [];
+    if (!categories.length) {
+      this.showToast('Project taxonomy unavailable (cannot configure folder placement)', 'error');
+      return;
+    }
+    if (!this.currentWorkspace?.id) {
+      this.showToast('No active workspace selected', 'error');
+      return;
+    }
+
+    // Mutable stand-in for the repo object the placement helpers expect.
+    const repoRef = { name: '' };
+    const existing = document.getElementById('quick-new-repo-modal');
+    if (existing) existing.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'quick-new-repo-modal';
+    modal.className = 'modal';
+    modal.innerHTML = `
+      <div class="modal-content quick-remote-clone-modal-content">
+        <div class="modal-header">
+          <h3>New Repo</h3>
+          <button class="close-btn" data-action="close">✕</button>
+        </div>
+        <div class="modal-body quick-remote-clone-body">
+          <div class="quick-remote-clone-help">Creates <code>&lt;repo&gt;/master</code> locally, pushes to GitHub, then starts <code>work1</code> in this workspace.</div>
+
+          <label class="quick-remote-clone-label">
+            <span>Repo name</span>
+            <input id="quick-new-repo-name" type="text" class="search-input" placeholder="e.g. otter-cove-tycoon" autocomplete="off">
+          </label>
+
+          <div class="quick-remote-clone-grid">
+            <label class="quick-remote-clone-label">
+              <span>Category</span>
+              <select id="quick-new-repo-category"></select>
+            </label>
+            <label class="quick-remote-clone-label">
+              <span>Framework</span>
+              <select id="quick-new-repo-framework"></select>
+            </label>
+          </div>
+
+          <label class="quick-remote-clone-label">
+            <span>Parent folders inside category (optional)</span>
+            <input id="quick-new-repo-parent" type="text" class="search-input" placeholder="e.g. roblox">
+          </label>
+
+          <label class="quick-checkbox" title="Private repos are only visible to you">
+            <input type="checkbox" id="quick-new-repo-private" checked>
+            Private GitHub repo (default)
+          </label>
+
+          <div class="quick-remote-final-path">
+            <div class="quick-remote-final-path-label">Final path</div>
+            <div id="quick-new-repo-final-path" class="quick-remote-final-path-value"></div>
+          </div>
+        </div>
+        <div class="modal-footer quick-remote-clone-footer">
+          <button class="btn-secondary" data-action="close">Cancel</button>
+          <button class="btn-primary" id="quick-new-repo-confirm" disabled>Create + Start work1</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    const nameInput = modal.querySelector('#quick-new-repo-name');
+    const categorySelect = modal.querySelector('#quick-new-repo-category');
+    const frameworkSelect = modal.querySelector('#quick-new-repo-framework');
+    const parentInput = modal.querySelector('#quick-new-repo-parent');
+    const privateCheckbox = modal.querySelector('#quick-new-repo-private');
+    const finalPathEl = modal.querySelector('#quick-new-repo-final-path');
+    const confirmBtn = modal.querySelector('#quick-new-repo-confirm');
+
+    const state = {
+      categoryId: String(categories.find((c) => c.id === 'game')?.id || categories[0]?.id || ''),
+      frameworkId: '',
+      parentPath: '',
+      parentManuallyEdited: false
+    };
+
+    const frameworksFor = (categoryId) => {
+      const rows = Array.isArray(this.projectTypeTaxonomy?.frameworks) ? this.projectTypeTaxonomy.frameworks : [];
+      return rows.filter((f) => String(f?.categoryId || '').trim() === String(categoryId || '').trim());
+    };
+
+    const populateCategories = () => {
+      categorySelect.innerHTML = categories.map((category) => {
+        const id = String(category?.id || '').trim();
+        const selected = id === state.categoryId ? 'selected' : '';
+        return `<option value="${this.escapeHtml(id)}" ${selected}>${this.escapeHtml(category?.name || id)}</option>`;
+      }).join('');
+    };
+
+    const populateFrameworks = () => {
+      const rows = frameworksFor(state.categoryId);
+      const hasCurrent = state.frameworkId === '' || rows.some((f) => String(f?.id || '').trim() === state.frameworkId);
+      if (!hasCurrent) state.frameworkId = rows[0]?.id ? String(rows[0].id) : '';
+      frameworkSelect.innerHTML = [
+        '<option value="">(none)</option>',
+        ...rows.map((f) => {
+          const id = String(f?.id || '').trim();
+          const selected = id === state.frameworkId ? 'selected' : '';
+          return `<option value="${this.escapeHtml(id)}" ${selected}>${this.escapeHtml(f?.name || id)}</option>`;
+        })
+      ].join('');
+    };
+
+    const refresh = () => {
+      if (!state.parentManuallyEdited) {
+        state.parentPath = this.guessQuickRemoteParentPath({ categoryId: state.categoryId, frameworkId: state.frameworkId });
+        parentInput.value = state.parentPath;
+      }
+      const defaults = this.buildQuickRemoteCloneDefaults(repoRef, {
+        categoryId: state.categoryId,
+        frameworkId: state.frameworkId,
+        parentPath: state.parentPath
+      });
+      const nameOk = /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(repoRef.name);
+      confirmBtn.disabled = !nameOk;
+      finalPathEl.textContent = nameOk
+        ? `${defaults.finalPath}/master (worktree: work1)`
+        : 'Enter a repo name (letters, numbers, . _ -)';
+    };
+
+    populateCategories();
+    populateFrameworks();
+    refresh();
+
+    nameInput.addEventListener('input', () => {
+      repoRef.name = String(nameInput.value || '').trim();
+      refresh();
+    });
+    categorySelect.addEventListener('change', () => {
+      state.categoryId = String(categorySelect.value || '').trim();
+      state.parentManuallyEdited = false;
+      populateFrameworks();
+      refresh();
+    });
+    frameworkSelect.addEventListener('change', () => {
+      state.frameworkId = String(frameworkSelect.value || '').trim();
+      state.parentManuallyEdited = false;
+      refresh();
+    });
+    parentInput.addEventListener('input', () => {
+      state.parentPath = this.sanitizeQuickRemoteParentPath(String(parentInput.value || ''));
+      state.parentManuallyEdited = true;
+      refresh();
+    });
+
+    modal.addEventListener('click', async (event) => {
+      if (event.target.closest('[data-action="close"]')) {
+        event.preventDefault();
+        modal.remove();
+        return;
+      }
+      if (event.target !== confirmBtn) return;
+      event.preventDefault();
+
+      const previousText = confirmBtn.textContent;
+      try {
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = 'Creating…';
+        const payload = {
+          workspaceId: this.currentWorkspace.id,
+          name: repoRef.name,
+          categoryId: state.categoryId,
+          frameworkId: state.frameworkId || '',
+          parentPath: this.sanitizeQuickRemoteParentPath(state.parentPath || ''),
+          worktreeId: 'work1',
+          socketId: this.socket?.id || null,
+          startTier: (() => {
+            const startTier = Number(this.quickWorktreeStartTier);
+            return (startTier >= 1 && startTier <= 4) ? startTier : undefined;
+          })(),
+          isPrivate: !!privateCheckbox.checked,
+          createGithub: true,
+          createFolders: true
+        };
+        const response = await fetch('/api/github/create-repo-worktree', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data?.ok === false) {
+          throw new Error(String(data?.error || `Create failed (HTTP ${response.status})`));
+        }
+
+        const responseSessions = data?.sessions && typeof data.sessions === 'object' ? data.sessions : {};
+        if (Object.keys(responseSessions).some((sessionId) => !this.sessions.has(sessionId))) {
+          this.applyWorktreeSessionsAddedPayload({
+            worktreeId: data?.worktree?.id || 'work1',
+            sessions: responseSessions,
+            startTier: payload.startTier,
+            workspaceId: this.currentWorkspace.id
+          }, { silent: true });
+        }
+
+        const remote = data?.repo?.nameWithOwner ? ` → ${data.repo.nameWithOwner}` : '';
+        this.showToast(`Created ${repoRef.name}${remote} (${data?.worktree?.id || 'work1'})`, 'success');
+        this.invalidateScannedReposCache();
+        await this.loadQuickWorktreeRepos().catch(() => {});
+        modal.remove();
+        document.getElementById('quick-worktree-modal')?.remove();
+      } catch (error) {
+        console.error('Create repo + worktree failed:', error);
+        this.showToast(String(error?.message || error), 'error');
+        confirmBtn.disabled = false;
+      } finally {
+        confirmBtn.textContent = previousText;
+      }
+    });
+
+    nameInput.focus();
   }
 
   toggleQuickWorktreeFavorite(repoPath) {
@@ -34031,6 +34585,18 @@ class ClaudeOrchestrator {
     const category = categories.find((row) => String(row?.id || '').trim() === String(categoryId || '').trim());
     if (!category) return '';
 
+    // Explicit "(none)" framework → no framework-flavored parent guess at all.
+    const frameworkToken = String(frameworkId || '').trim().toLowerCase();
+    if (!frameworkToken) return '';
+
+    // The framework's own pathSuffix is the authoritative folder placement
+    // (e.g. roblox -> games/roblox, threejs -> games/ThreeJs).
+    const frameworks = Array.isArray(this.projectTypeTaxonomy?.frameworks) ? this.projectTypeTaxonomy.frameworks : [];
+    const framework = frameworks.find((row) => String(row?.id || '').trim().toLowerCase() === frameworkToken) || null;
+    if (framework?.pathSuffix) {
+      return this.sanitizeQuickRemoteParentPath(String(framework.pathSuffix));
+    }
+
     const workspaceRepoPath = normalizeClientPath(this.currentWorkspace?.repository?.path || '');
     const workspaceRepoPathNorm = this.normalizeWorktreePath(workspaceRepoPath);
     const categoryBaseNorm = this.normalizeWorktreePath(this.getQuickRemoteCategoryBasePath(category));
@@ -34045,8 +34611,7 @@ class ClaudeOrchestrator {
     const suggestions = this.collectQuickRemoteParentPathSuggestions({ categoryId, frameworkId });
     if (suggestions[0]) return this.sanitizeQuickRemoteParentPath(suggestions[0]);
 
-    const frameworkToken = String(frameworkId || '').trim().toLowerCase();
-    if (frameworkToken && frameworkToken !== 'generic' && frameworkToken !== 'web-generic') {
+    if (frameworkToken !== 'generic' && frameworkToken !== 'web-generic') {
       return this.sanitizeQuickRemoteParentPath(frameworkToken);
     }
 
@@ -34078,7 +34643,11 @@ class ClaudeOrchestrator {
     const category = categories.find((row) => String(row?.id || '').trim() === categoryId) || categories[0] || null;
     const selectedCategoryId = String(category?.id || '').trim();
 
-    const frameworkId = String(overrides?.frameworkId || this.resolveQuickRemoteFrameworkId(selectedCategoryId, remoteRepo)).trim();
+    // overrides.frameworkId === '' means the user explicitly chose "(none)" —
+    // do not re-infer a framework for them (that made "none" impossible to select).
+    const frameworkId = overrides?.frameworkId !== undefined
+      ? String(overrides.frameworkId || '').trim()
+      : String(this.resolveQuickRemoteFrameworkId(selectedCategoryId, remoteRepo) || '').trim();
     const parentPath = this.sanitizeQuickRemoteParentPath(
       overrides?.parentPath ?? this.guessQuickRemoteParentPath({ categoryId: selectedCategoryId, frameworkId })
     );
@@ -35128,7 +35697,10 @@ class ClaudeOrchestrator {
       // ignore
     }
 
-    if (!silent && (activeWorkspaceChanged || activeVisibilityChanged)) {
+    // "Worktree ready" toast is opt-in (default OFF — the sidebar dot already
+    // shows readiness). Re-enable via ui.notifications.worktreeReady: true.
+    if (!silent && (activeWorkspaceChanged || activeVisibilityChanged)
+        && this.userSettings?.global?.ui?.notifications?.worktreeReady === true) {
       const readyMsg = isBackground
         ? `Worktree ${resolvedWorktreeId} terminals ready (background)`
         : `Worktree ${resolvedWorktreeId} terminals ready!`;
@@ -35503,10 +36075,45 @@ class ClaudeOrchestrator {
     return safeMinutes * 60 * 1000;
   }
 
+  readPersistedRepoCache(storageKey) {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !Array.isArray(parsed.value)) return null;
+      const fetchedAt = Number(parsed.fetchedAt);
+      if (!Number.isFinite(fetchedAt) || fetchedAt <= 0) return null;
+      // Guard against clock skew and stale-forever entries.
+      const age = Date.now() - fetchedAt;
+      if (age < 0 || age > REPO_CACHE_PERSIST_MAX_AGE_MS) return null;
+      return { value: parsed.value, fetchedAt, key: parsed.key };
+    } catch {
+      return null;
+    }
+  }
+
+  writePersistedRepoCache(storageKey, entry) {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(entry));
+    } catch {
+      // Quota exceeded or storage disabled - the in-memory cache still works.
+      try { localStorage.removeItem(storageKey); } catch {}
+    }
+  }
+
+  invalidateScannedReposCache() {
+    this.scannedReposCache = { value: null, fetchedAt: 0 };
+    try { localStorage.removeItem(SCANNED_REPOS_CACHE_STORAGE_KEY); } catch {}
+  }
+
   async getScannedRepos({ force = false, cacheTtlMs = null } = {}) {
     const now = Date.now();
     const ttlRaw = Number(cacheTtlMs);
     const ttlMs = Number.isFinite(ttlRaw) && ttlRaw >= 0 ? ttlRaw : 20_000;
+    if (!this.scannedReposCache?.value) {
+      const persisted = this.readPersistedRepoCache(SCANNED_REPOS_CACHE_STORAGE_KEY);
+      if (persisted) this.scannedReposCache = { value: persisted.value, fetchedAt: persisted.fetchedAt };
+    }
     if (!force && this.scannedReposCache?.value && (now - (this.scannedReposCache.fetchedAt || 0) < ttlMs)) {
       return this.scannedReposCache.value;
     }
@@ -35516,6 +36123,7 @@ class ClaudeOrchestrator {
     const repos = await res.json();
     const arr = Array.isArray(repos) ? repos : [];
     this.scannedReposCache = { value: arr, fetchedAt: now };
+    this.writePersistedRepoCache(SCANNED_REPOS_CACHE_STORAGE_KEY, this.scannedReposCache);
     return arr;
   }
 
@@ -35598,18 +36206,21 @@ class ClaudeOrchestrator {
 
   getProjectsBoardColumnForProjectKey(projectKey, boardData = null) {
     const key = this.normalizeProjectsBoardProjectKey(projectKey);
-    if (!key) return 'backlog';
+    if (!key) return PROJECTS_BOARD_UNCLASSIFIED_COLUMN;
     const board = (boardData?.board && typeof boardData.board === 'object')
       ? boardData.board
       : (this.projectsBoardCache?.value?.board && typeof this.projectsBoardCache.value.board === 'object' ? this.projectsBoardCache.value.board : null);
     const mapping = board?.projectToColumn && typeof board.projectToColumn === 'object' ? board.projectToColumn : {};
     const mapped = this.normalizeProjectsBoardColumnId(mapping[key]);
-    return mapped || 'backlog';
+    // A repo the user never filed is unclassified, not backlogged. Collapsing the
+    // two hid every untriaged repo as soon as "show backlog" was off - and on a
+    // fresh install (empty board) that is the entire repo list.
+    return mapped || PROJECTS_BOARD_UNCLASSIFIED_COLUMN;
   }
 
   getProjectsBoardColumnForRepo(repo, boardData = null) {
     const key = this.normalizeProjectsBoardProjectKey(repo?.relativePath || repo?.key);
-    if (!key) return 'backlog';
+    if (!key) return PROJECTS_BOARD_UNCLASSIFIED_COLUMN;
     return this.getProjectsBoardColumnForProjectKey(key, boardData);
   }
 
@@ -35625,6 +36236,8 @@ class ClaudeOrchestrator {
 
     return rows.filter((repo) => {
       const col = this.getProjectsBoardColumnForRepo(repo, board);
+      // Untriaged repos stay visible; the toggles only hide repos the user filed.
+      if (col === PROJECTS_BOARD_UNCLASSIFIED_COLUMN) return true;
       if (!prefs.showBacklog && col === 'backlog') return false;
       if (!prefs.showArchived && col === 'archived') return false;
       if (!prefs.showDone && col === 'done') return false;
@@ -35641,6 +36254,12 @@ class ClaudeOrchestrator {
     const ownerKey = owner ? String(owner).trim() : '';
     const key = `${ownerKey}:${safeLimit}`;
 
+    if (this.githubReposCache?.key !== key || !this.githubReposCache?.value) {
+      const persisted = this.readPersistedRepoCache(GITHUB_REPOS_CACHE_STORAGE_KEY);
+      if (persisted && persisted.key === key) {
+        this.githubReposCache = { key, value: persisted.value, fetchedAt: persisted.fetchedAt };
+      }
+    }
     if (!force && this.githubReposCache?.key === key && this.githubReposCache?.value && (now - (this.githubReposCache.fetchedAt || 0) < ttlMs)) {
       return this.githubReposCache.value;
     }
@@ -35658,6 +36277,7 @@ class ClaudeOrchestrator {
     }
     const arr = Array.isArray(data) ? data : [];
     this.githubReposCache = { key, value: arr, fetchedAt: now };
+    this.writePersistedRepoCache(GITHUB_REPOS_CACHE_STORAGE_KEY, this.githubReposCache);
     return arr;
   }
 
@@ -36268,6 +36888,12 @@ let orchestrator;
 document.addEventListener('DOMContentLoaded', () => {
   orchestrator = new ClaudeOrchestrator();
   window.orchestrator = orchestrator; // Make globally available
+  try {
+    if (window.AtlasPortfolioUI && !window.atlasPortfolioUI) {
+      window.atlasPortfolioUI = new window.AtlasPortfolioUI(orchestrator);
+      orchestrator.atlasPortfolioUI = window.atlasPortfolioUI;
+    }
+  } catch {}
   try {
     if (window.ProjectsBoardUI && !window.projectsBoardUI) {
       window.projectsBoardUI = new window.ProjectsBoardUI(orchestrator);

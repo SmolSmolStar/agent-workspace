@@ -12,6 +12,8 @@ const os = require('os');
 const winston = require('winston');
 const { augmentProcessEnv, buildPowerShellArgs } = require('./utils/processUtils');
 const { loadNodePty } = require('./utils/nodePtyCompat');
+const { TmuxSessionBackend } = require('./utils/tmuxSessionBackend');
+const commanderSessions = require('./commanderSessionRegistry');
 
 const HOME_DIR = process.env.HOME || os.homedir();
 
@@ -53,11 +55,37 @@ const packagedDataDir = (() => {
 })();
 const packagedCommanderDir = packagedDataDir ? path.join(packagedDataDir, 'commander') : null;
 const COMMANDER_CWD = process.env.COMMANDER_CWD || (isPackaged ? (packagedCommanderDir || (process.env.HOME || process.env.USERPROFILE || defaultCwd)) : defaultCwd);
+
+// Commander persistence: the same tmux backend worktree sessions use, so a
+// server restart (nodemon reload, update, crash) detaches the Commander pane
+// instead of killing the Claude conversation running in it. Shares the
+// per-port socket with SessionManager. ORCHESTRATOR_SESSION_PERSISTENCE=0
+// disables; Windows/tmux-less installs fall back to direct pty spawning.
+let commanderPersistenceBackend;
+function getCommanderPersistence() {
+  if (commanderPersistenceBackend !== undefined) return commanderPersistenceBackend;
+  const envOverride = String(process.env.ORCHESTRATOR_SESSION_PERSISTENCE || '').trim();
+  const wanted = envOverride ? envOverride !== '0' : true;
+  if (!wanted || process.platform === 'win32') {
+    commanderPersistenceBackend = null;
+    return commanderPersistenceBackend;
+  }
+  const backend = new TmuxSessionBackend({
+    socketName: `agent-workspace-${process.env.ORCHESTRATOR_PORT || 'default'}`,
+    logger
+  });
+  commanderPersistenceBackend = backend.isAvailable() ? backend : null;
+  return commanderPersistenceBackend;
+}
 const TRUST_PROMPT_BUFFER_CHARS = 6000;
 const TRUST_PROMPT_MAX_WAIT_MS = 15000;
 // Claude's banner can appear before a pending trust prompt; wait this long
 // for the prompt before deciding it isn't coming (already-trusted folder).
 const READY_WITHOUT_TRUST_GRACE_MS = 2000;
+// Failsafe for launches on an already-trusted folder: no trust prompt can
+// appear, so if ready-detection misses, release queued keystrokes quickly
+// instead of holding them for the full trust-prompt window.
+const READY_PROMPT_MAX_WAIT_MS = 5000;
 
 // Claude Code records accepted trust dialogs per project in ~/.claude.json,
 // keyed by path with forward slashes (e.g. "C:/Users/x/project").
@@ -145,23 +173,103 @@ function seedCommanderInstructionsIfNeeded() {
   writeFromTemplateOrFallback('AGENTS.md');
 }
 
+const MAX_COMMANDER_INSTANCES = 6;
+
 class CommanderService {
   constructor(options = {}) {
+    this.instanceId = options.instanceId || 'main';
+    this.label = options.label || (this.instanceId === 'main' ? 'Commander 1' : this.instanceId);
     this.io = options.io;
     this.sessionManager = options.sessionManager;
     this.session = null;
     this.outputBuffer = '';
     this.maxBufferChars = 200000;
     this.isReady = false;
-    this.claudeStarted = false; // Track if Claude has been auto-started
+    this.claudeStarted = false; // Track if an agent has been auto-started (name predates multi-provider support)
+    this.activeProvider = null; // 'claude' | 'codex' | 'grok', set once startAgent()/startClaude() actually launches one
     this.claudeLaunchState = null;
   }
 
   static getInstance(options) {
     if (!CommanderService.instance) {
       CommanderService.instance = new CommanderService(options);
+      CommanderService.instances.set('main', CommanderService.instance);
     }
     return CommanderService.instance;
+  }
+
+  // Additional Commander instances (panel tabs). 'main' is always the
+  // singleton above so existing callers keep their exact behavior.
+  static forInstance(instanceId, options) {
+    const id = String(instanceId || 'main').trim() || 'main';
+    if (id === 'main') return CommanderService.getInstance(options);
+    return CommanderService.instances.get(id) || null;
+  }
+
+  // The instance registry is in-memory but the tmux panes are not: after a
+  // server restart, surviving commander-cmd-N panes would be orphaned (no tab,
+  // Claude still running inside). Re-register and start them so `new-session
+  // -A` re-adopts each pane and the tab reappears with its conversation.
+  static adoptOrphanInstances(options = {}, backendOverride = null) {
+    const backend = backendOverride || getCommanderPersistence();
+    if (!backend) return [];
+    let names = [];
+    try {
+      names = backend.listSessionNames();
+    } catch {
+      return [];
+    }
+    const adopted = [];
+    for (const name of names) {
+      const match = /^commander-(cmd-(\d+))$/.exec(String(name || ''));
+      if (!match) continue;
+      const id = match[1];
+      if (CommanderService.instances.has(id)) continue;
+      if (CommanderService.instances.size >= MAX_COMMANDER_INSTANCES) break;
+      const service = new CommanderService({ ...options, instanceId: id, label: `Commander ${match[2]}` });
+      CommanderService.instances.set(id, service);
+      service.start().catch((error) => {
+        logger.warn('Failed to start adopted Commander instance', { id, error: error?.message });
+      });
+      adopted.push(id);
+    }
+    if (adopted.length) {
+      logger.info('Adopted orphaned Commander instances', { adopted });
+    }
+    return adopted;
+  }
+
+  static createInstance(options) {
+    if (CommanderService.instances.size >= MAX_COMMANDER_INSTANCES) {
+      return { error: `Instance limit reached (${MAX_COMMANDER_INSTANCES})` };
+    }
+    let n = 2;
+    while (CommanderService.instances.has(`cmd-${n}`)) n += 1;
+    const id = `cmd-${n}`;
+    const service = new CommanderService({ ...options, instanceId: id, label: `Commander ${n}` });
+    CommanderService.instances.set(id, service);
+    return { id, service };
+  }
+
+  static async removeInstance(instanceId) {
+    const id = String(instanceId || '').trim();
+    if (!id || id === 'main') return { error: 'Cannot remove the main Commander' };
+    const service = CommanderService.instances.get(id);
+    if (!service) return { error: 'Unknown instance' };
+    try { await service.stop(); } catch { /* best effort */ }
+    CommanderService.instances.delete(id);
+    return { ok: true };
+  }
+
+  static listInstances() {
+    return Array.from(CommanderService.instances.entries()).map(([id, s]) => ({
+      id,
+      label: s.label || id,
+      running: !!s.session,
+      ready: !!s.isReady,
+      claudeStarted: !!s.claudeStarted,
+      provider: s.activeProvider || null
+    }));
   }
 
   /**
@@ -198,14 +306,20 @@ class CommanderService {
         ? buildPowerShellArgs(null, { keepOpen: true, hideWindow: false })
         : [];
 
+      const instanceEnv = {
+        COMMANDER_INSTANCE_ID: this.instanceId,
+        COMMANDER_INSTANCE_LABEL: this.label || this.instanceId
+      };
       const env = process.platform === 'win32'
         ? augmentProcessEnv({
             ...process.env,
+            ...instanceEnv,
             HOME: HOME_DIR,
             TERM: 'xterm-color'
           })
         : {
             ...process.env,
+            ...instanceEnv,
             PATH: `${HOME_DIR}/.nvm/versions/node/v22.16.0/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
             HOME: HOME_DIR,
             TERM: 'xterm-color'
@@ -219,8 +333,33 @@ class CommanderService {
         env
       };
 
+      // Persistence path: spawn a tmux CLIENT; the real shell/Claude runs in a
+      // pane that survives server restarts. `new-session -A` re-adopts a
+      // surviving pane, preserving the running Claude conversation.
+      let spawnCommand = shell;
+      let spawnArgs = shellArgs;
+      let persistence = null;
+      const persistenceBackend = getCommanderPersistence();
+      if (persistenceBackend) {
+        delete env.TMUX;
+        delete env.TMUX_PANE;
+        const persistSessionId = `commander-${this.instanceId}`;
+        const resolved = persistenceBackend.resolveSpawn({
+          sessionId: persistSessionId,
+          command: shell,
+          args: shellArgs,
+          cwd: COMMANDER_CWD,
+          ptyOptions,
+          logger,
+          logLabel: 'Commander session'
+        });
+        spawnCommand = resolved.command;
+        spawnArgs = resolved.args;
+        persistence = resolved.persistence;
+      }
+
       // Spawn Claude Code terminal
-      const ptyProcess = pty.spawn(shell, shellArgs, ptyOptions);
+      const ptyProcess = pty.spawn(spawnCommand, spawnArgs, ptyOptions);
 
       this.session = {
         id: 'commander',
@@ -228,8 +367,27 @@ class CommanderService {
         type: 'commander',
         status: 'starting',
         buffer: '',
-        lastActivity: Date.now()
+        lastActivity: Date.now(),
+        persistence
       };
+
+      // An adopted pane already has its Claude running: mark ready and never
+      // auto-type `claude` into the surviving conversation. Backfill history
+      // from the pane so the panel shows pre-restart output.
+      if (persistence?.adopted) {
+        this.session.status = 'ready';
+        this.isReady = true;
+        this.claudeStarted = true;
+        try {
+          const history = persistenceBackend.capturePane(persistence.sessionId);
+          if (history) {
+            this.session.buffer = history;
+            this.addToOutputBuffer(history);
+          }
+        } catch {
+          // history backfill is best-effort
+        }
+      }
 
       // Handle output
       ptyProcess.onData((data) => {
@@ -245,7 +403,7 @@ class CommanderService {
 
         // Emit to Commander panel
         if (this.io) {
-          this.io.emit('commander-output', { data });
+          this.io.emit('commander-output', { data, instanceId: this.instanceId });
         }
 
         // Detect when shell is ready
@@ -272,9 +430,10 @@ class CommanderService {
         this.session = null;
         this.isReady = false;
         this.claudeStarted = false; // Reset for next start
+        this.activeProvider = null;
         this.resetClaudeLaunchState();
         if (this.io) {
-          this.io.emit('commander-exit', { exitCode });
+          this.io.emit('commander-exit', { exitCode, instanceId: this.instanceId });
         }
       });
 
@@ -286,11 +445,79 @@ class CommanderService {
   }
 
   /**
+   * Start an AI agent in the Commander terminal. Claude is the well-tested
+   * path (trust-prompt detection, queued-input flushing, per-instance
+   * session-id pinning). Codex/Grok skip all of that: their exact TUI banner
+   * text isn't verified here, so rather than fabricate a matcher that could
+   * silently hang forever waiting for the wrong string, they're marked ready
+   * right after the launch command is sent. Model/effort are session-only
+   * launch flags for every provider - see agentManager.buildCommand for the
+   * same per-provider flag shapes used by worktree terminals.
+   * @param {object} options
+   * @param {'claude'|'codex'|'grok'} [options.provider]
+   * @param {string} [options.mode] - 'fresh', 'continue', or 'resume'
+   * @param {boolean} [options.yolo] - skip-permissions/always-approve/bypass-all
+   * @param {string} [options.model]
+   * @param {string} [options.effort]
+   * @param {string} [options.tier] - Codex service tier ("priority" for the
+   *   1.5x-speed "Fast" tier); ignored by Claude/Grok, "default" is a no-op
+   */
+  async startAgent({ provider = 'claude', mode = 'fresh', yolo = true, model = null, effort = null, tier = null } = {}) {
+    if (provider !== 'claude') {
+      return this.startNonClaudeAgent({ provider, mode, yolo, model, effort, tier });
+    }
+    return this.startClaude(mode, yolo, { model, effort });
+  }
+
+  startNonClaudeAgent({ provider, mode, yolo, model, effort, tier }) {
+    if (!['codex', 'grok'].includes(provider)) {
+      return { success: false, error: `Unknown provider: ${provider}` };
+    }
+    if (this.claudeStarted) {
+      logger.warn('Agent already started in this Commander instance, ignoring duplicate call');
+      return { success: false, error: 'Already started' };
+    }
+
+    const cmd = this.buildNonClaudeCommand({ provider, mode, yolo, model, effort, tier });
+    this.claudeStarted = true;
+    this.activeProvider = provider;
+    logger.info('Starting agent in Commander', { provider, mode, cmd });
+    // No launch-queue/trust-prompt gating here (unverified banner text) -
+    // send directly and let output stream in like any other command.
+    const success = this.sendInput(`${cmd}\n`, { bypassLaunchQueue: true });
+    return { success, message: `Starting ${provider} (${mode})` };
+  }
+
+  buildNonClaudeCommand({ provider, mode, yolo, model, effort, tier }) {
+    if (provider === 'codex') {
+      let cmd = 'codex';
+      if (mode === 'continue') cmd = 'codex resume --last';
+      else if (mode === 'resume') cmd = 'codex resume';
+      if (model) cmd += ` -m ${model}`;
+      if (effort) cmd += ` -c model_reasoning_effort="${effort}"`;
+      // "default" is the model's own normal tier and needs no override;
+      // only a non-default tier (e.g. "priority") is worth an explicit -c.
+      if (tier && tier !== 'default') cmd += ` -c service_tier="${tier}"`;
+      if (yolo) cmd += ' --dangerously-bypass-approvals-and-sandbox';
+      return cmd;
+    }
+    // grok
+    let cmd = 'grok';
+    if (mode === 'continue') cmd += ' --continue';
+    else if (mode === 'resume') cmd += ' --resume';
+    if (model) cmd += ` --model ${model}`;
+    if (effort) cmd += ` --effort ${effort}`;
+    if (yolo) cmd += ' --always-approve';
+    return cmd;
+  }
+
+  /**
    * Start Claude Code in the Commander terminal
    * @param {string} mode - 'fresh', 'continue', or 'resume'
    * @param {boolean} yolo - Use --dangerously-skip-permissions (default: true for Commander)
+   * @param {object} [modelOptions]
    */
-  async startClaude(mode = 'fresh', yolo = true) {
+  async startClaude(mode = 'fresh', yolo = true, { model = null, effort = null } = {}) {
     if (!this.session) {
       await this.start();
     }
@@ -301,21 +528,46 @@ class CommanderService {
       return { success: false, error: 'Already started' };
     }
     this.claudeStarted = true;
+    this.activeProvider = 'claude';
 
     // Build the claude command
     let cmd = 'claude';
 
-    // Add flags based on mode
-    if (mode === 'continue') {
-      cmd += ' --continue';
-    } else if (mode === 'resume') {
-      cmd += ' --resume';
+    // Every Commander instance launches from the same COMMANDER_CWD, so
+    // Claude Code's own "most recent conversation in this directory" (bare
+    // --continue/--resume) is ambiguous across tabs — see
+    // commanderSessionRegistry.js. Pin an explicit session id whenever we
+    // have one so this instance always reattaches to its own conversation.
+    if (mode === 'continue' || mode === 'resume') {
+      const pinnedId = commanderSessions.getSessionId(this.instanceId, COMMANDER_CWD);
+      if (pinnedId) {
+        cmd += ` --resume ${pinnedId}`;
+      } else if (mode === 'continue') {
+        cmd += ' --continue';
+      } else {
+        cmd += ' --resume';
+      }
+      if (!pinnedId) {
+        // Ambiguous resume — capture whichever session ends up newest right
+        // after launch so the NEXT resume for this instance is precise.
+        setTimeout(() => commanderSessions.captureLatestSessionId(this.instanceId, COMMANDER_CWD), 3000);
+      }
+    } else {
+      const freshId = commanderSessions.newSessionId();
+      commanderSessions.setSessionId(this.instanceId, freshId);
+      cmd += ` --session-id ${freshId}`;
     }
 
     // Commander runs in YOLO mode by default for orchestration capabilities
     if (yolo) {
       cmd += ' --dangerously-skip-permissions';
     }
+
+    // Session-only launch flags (confirmed via `claude --help`) - never
+    // touch the persisted default the way the in-session /model and
+    // /effort commands do.
+    if (model) cmd += ` --model ${model}`;
+    if (effort) cmd += ` --effort ${effort}`;
 
     // Only wait for a trust prompt if Claude Code hasn't already trusted this
     // folder — on a trusted folder the prompt never appears and waiting for it
@@ -434,10 +686,18 @@ class CommanderService {
   stop() {
     if (this.session && this.session.pty) {
       logger.info('Stopping Commander terminal');
+      // Explicit stop/restart means "give me a fresh terminal" — kill the
+      // persistent pane too (server SHUTDOWN never calls stop(), so restarts
+      // still detach-and-survive).
+      const persistSessionId = this.session.persistence?.sessionId;
+      if (persistSessionId) {
+        try { getCommanderPersistence()?.killSession(persistSessionId); } catch { /* best effort */ }
+      }
       this.session.pty.kill();
       this.session = null;
       this.isReady = false;
       this.claudeStarted = false;
+      this.activeProvider = null;
       this.resetClaudeLaunchState();
       return { success: true };
     }
@@ -494,7 +754,8 @@ class CommanderService {
       status: this.session?.status || 'stopped',
       cwd: COMMANDER_CWD,
       bufferLines: this.outputBuffer ? this.outputBuffer.split('\n').length : 0,
-      lastActivity: this.session?.lastActivity || null
+      lastActivity: this.session?.lastActivity || null,
+      provider: this.activeProvider || null
     };
   }
 
@@ -537,7 +798,16 @@ class CommanderService {
       return false;
     }
 
-    // Use pty.write directly since sendInput may not exist
+    // Route through the single input choke point so this shares the same
+    // handling as browser keystrokes: device-report stripping under tmux,
+    // PowerShell CRLF normalization, and activity/status bookkeeping. Falls
+    // back to a direct write only if writeToSession is somehow unavailable.
+    if (typeof this.sessionManager.writeNewTurnToSession === 'function') {
+      return this.sessionManager.writeNewTurnToSession(sessionId, input, { source: 'commander' });
+    }
+    if (typeof this.sessionManager.writeToSession === 'function') {
+      return this.sessionManager.writeToSession(sessionId, input);
+    }
     if (session.pty) {
       session.pty.write(input);
       return true;
@@ -585,7 +855,7 @@ class CommanderService {
       recentOutput: '',
       forceFlushTimer: setTimeout(() => {
         this.flushQueuedLaunchInputs();
-      }, TRUST_PROMPT_MAX_WAIT_MS)
+      }, expectTrustPrompt ? TRUST_PROMPT_MAX_WAIT_MS : READY_PROMPT_MAX_WAIT_MS)
     };
   }
 
@@ -651,12 +921,14 @@ class CommanderService {
   }
 
   matchesClaudeTrustPrompt(text) {
-    const normalized = String(text || '').toLowerCase();
-    if (!normalized.includes('quick safety check')) return false;
-    return normalized.includes('trust this folder')
-      || normalized.includes('trust this directory')
-      || normalized.includes('trust this workspace')
-      || normalized.includes('trust this project');
+    // Whitespace-collapsed: positioned TUI text loses its spaces when control
+    // sequences are stripped (same failure mode as the ready-prompt matcher).
+    const compact = String(text || '').toLowerCase().replace(/\s+/g, '');
+    if (!compact.includes('quicksafetycheck')) return false;
+    return compact.includes('trustthisfolder')
+      || compact.includes('trustthisdirectory')
+      || compact.includes('trustthisworkspace')
+      || compact.includes('trustthisproject');
   }
 
   matchesClaudeReadyPrompt(text) {
@@ -665,12 +937,18 @@ class CommanderService {
     if (normalized.includes('welcome to claude code') && normalized.includes('? for shortcuts')) {
       return true;
     }
+    // Newer TUIs render text via cursor positioning, so after control-sequence
+    // stripping the banner can arrive with NO spaces ("claudecodev2.1.220").
+    // Match on a whitespace-collapsed view of the buffer.
+    const compact = normalized.replace(/\s+/g, '');
+    // The permission-mode status line only renders once the TUI is interactive.
+    if (compact.includes('shift+tabtocycle')) return true;
     // Claude Code v2 banner: "Claude Code v2.x.y". Don't match version strings
     // that are part of an upgrade notice ("claude code v2.1.201 -> v2.1.205"),
     // which can hit the buffer before the TUI is actually interactive. The first
     // lookahead pins the full version (stops greedy backtracking from matching a
     // truncated version that dodges the arrow check).
-    return /claude code v[\d.]+(?![\d.])(?!\s*(?:->|→|=>)\s*v?\d)/.test(normalized);
+    return /claudecodev[\d.]+(?![\d.])(?!(?:->|→|=>)v?\d)/.test(compact);
   }
 
   flushQueuedLaunchInputs() {
@@ -695,5 +973,7 @@ class CommanderService {
     return true;
   }
 }
+
+CommanderService.instances = new Map();
 
 module.exports = { CommanderService, isCommanderCwdTrusted };

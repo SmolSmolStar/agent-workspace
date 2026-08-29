@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Work</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles/work-panel.css">
+  <style>
+    body { margin: 0; background: var(--bg-primary, #0d1117); }
+    .wp-standalone { min-height: 100vh; display: flex; flex-direction: column; }
+  </style>
+</head>
+<body>
+  <div class="wp-standalone">
+    <header class="wp-page-head">
+      <h1>Work<span class="wp-subtitle">where the time is going, by the five thieves</span></h1>
+    </header>
+    <div class="wp-scroll"><div class="wp-root" id="work-root"></div></div>
+  </div>
+  <script src="work-charts.js"></script>
+  <script src="work-page.js"></script>
+  <script>
+    const page = new WorkPage(document.getElementById('work-root'));
+    page.load();
+  </script>
+</body>
+</html>

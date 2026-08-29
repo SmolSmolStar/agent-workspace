@@ -739,6 +739,16 @@ body {
   transform: translateX(2px);
 }
 
+/* Drag-to-reorder project groups in the sidebar */
+.worktree-item.dragging {
+  opacity: 0.5;
+}
+
+.worktree-item.drag-over {
+  border-color: var(--accent-primary);
+  box-shadow: 0 -2px 0 0 var(--accent-primary);
+}
+
 .worktree-item.active {
   background: var(--accent-primary);
   color: var(--text-on-accent);
@@ -1287,7 +1297,8 @@ header {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  justify-content: flex-end;
+  /* End alignment puts early actions outside the scroll origin when this row overflows. */
+  justify-content: flex-start;
   margin-left: auto;
   padding-right: var(--space-xl);
   flex: 1;
@@ -1776,17 +1787,17 @@ header {
   color: var(--text-primary);
 }
 
+/* Deliberately muted: the chip is reference info, not something to notice. */
 .terminal-model-badge {
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-weight: 600;
   margin-left: var(--space-sm);
-  background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
-  padding: 2px 8px;
+  background: color-mix(in srgb, var(--text-secondary) 8%, transparent);
+  padding: 1px 5px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-color);
-  max-width: min(280px, 30vw);
+  max-width: min(200px, 22vw);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1796,29 +1807,207 @@ header {
   cursor: help;
 }
 
-/* Expensive effort levels get only a faintly tinted border — a whisper, not a
-   shout. With xhigh as a daily-driver default, the old bright orange chip lit
-   up every terminal header and became pure noise. */
-.terminal-model-badge[data-effort="xhigh"],
-.terminal-model-badge[data-effort="ultra"],
-.terminal-model-badge[data-effort="ultra-code"],
-.terminal-model-badge[data-effort="ultracode"],
-.terminal-model-badge[data-effort="max"] {
-  border-color: color-mix(in srgb, var(--accent-warning) 28%, transparent);
-}
-
-.terminal-model-badge[data-effort="low"],
-.terminal-model-badge[data-effort="minimal"] {
-  color: var(--accent-success);
-  border-color: color-mix(in srgb, var(--accent-success) 40%, transparent);
-  background: color-mix(in srgb, var(--accent-success) 8%, transparent);
-}
-
-/* Narrow viewports: keep the chip from crowding out the terminal
-   title/branch in the header flex row. */
+/* Narrow viewports: keep the chip from crowding out the
+   terminal title/branch in the header flex row. */
 @media (max-width: 640px) {
   .terminal-model-badge {
     max-width: 6.5rem;
+  }
+}
+
+/* Model badge becomes a dropdown trigger once model-effort-picker.js attaches. */
+.model-badge-trigger {
+  cursor: pointer;
+}
+
+.model-badge-trigger::after {
+  content: '';
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-left: 4px;
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-top: 3px solid currentColor;
+  opacity: 0.6;
+}
+
+.model-badge-trigger:hover,
+.model-badge-trigger:focus-visible {
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.model-effort-picker {
+  position: fixed;
+  z-index: 2000;
+  min-width: 15rem;
+  max-width: 20rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  overflow: hidden;
+}
+
+.model-effort-picker-empty {
+  padding: var(--space-md);
+  color: var(--text-secondary);
+}
+
+.model-effort-picker-body {
+  max-height: min(60vh, 24rem);
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.model-effort-picker-row {
+  position: relative;
+  border-radius: var(--radius-sm);
+}
+
+.model-effort-picker-row.is-current {
+  background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+}
+
+.model-effort-picker-model {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.model-effort-picker-model:hover,
+.model-effort-picker-model:focus-visible {
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  outline: none;
+}
+
+.model-effort-picker-check {
+  color: var(--accent-primary);
+  font-weight: 700;
+  width: 0.9rem;
+  flex: 0 0 auto;
+}
+
+.model-effort-picker-harness-logo {
+  flex: 0 0 auto;
+  border-radius: 3px;
+}
+
+.model-effort-picker-model-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+
+.model-effort-picker-expand {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px 4px;
+  opacity: 0.55;
+  font-size: 0.65rem;
+}
+
+.model-effort-picker-row.is-flyout-open .model-effort-picker-expand,
+.model-effort-picker-model:hover .model-effort-picker-expand {
+  opacity: 1;
+}
+
+/* Effort flyout: a sibling of .model-effort-picker (appended to body,
+   position: fixed, coordinates computed in JS from the hovered row's own
+   rect) rather than nested inside .model-effort-picker-body. That body
+   scrolls (overflow-y: auto), and the CSS overflow spec computes ANY
+   'visible' axis as 'auto' the moment its sibling axis isn't 'visible' too
+   - so a nested absolutely-positioned flyout would get silently clipped. */
+.model-effort-picker-efforts-flyout {
+  position: fixed;
+  z-index: 2001;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  padding: 4px;
+  min-width: 6rem;
+}
+
+.model-effort-picker-effort {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  text-transform: capitalize;
+}
+
+.model-effort-picker-effort:hover,
+.model-effort-picker-effort:focus-visible {
+  background: color-mix(in srgb, var(--accent-primary) 16%, transparent);
+  outline: none;
+}
+
+.model-effort-picker-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+}
+
+.model-effort-picker-stamp {
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-effort-picker-refresh {
+  flex: 0 0 auto;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 0.7rem;
+}
+
+.model-effort-picker-refresh:hover {
+  border-color: var(--accent-primary);
+}
+
+.model-effort-picker-refresh:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Touch devices: no hover, so tapping a model row toggles the flyout open via
+   JS (is-flyout-open) instead of relying on :hover/:focus-within. Rows also
+   get a bit more breathing room for fat-finger accuracy. */
+@media (hover: none) {
+  .model-effort-picker-model {
+    padding: 9px 8px;
+  }
+  .model-effort-picker-effort {
+    padding: 8px;
   }
 }
 
@@ -3807,6 +3996,12 @@ header {
   margin-bottom: var(--space-xs);
 }
 
+.agent-option .agent-logo {
+  display: block;
+  margin: 0 auto var(--space-xs);
+  border-radius: var(--radius-sm);
+}
+
 .agent-option .agent-name {
   font-weight: 500;
   display: block;
@@ -3848,12 +4043,63 @@ header {
   color: white;
 }
 
+.model-selector, .effort-selector, .tier-selector {
+  margin-bottom: var(--space-lg);
+}
+
+.model-selector label, .effort-selector label, .tier-selector label {
+  display: block;
+  font-weight: 500;
+  margin-bottom: var(--space-sm);
+  color: var(--text-primary);
+}
+
+.model-buttons, .effort-buttons, .tier-buttons {
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.model-btn, .effort-btn, .tier-btn {
+  flex: 1;
+  min-width: 6rem;
+  padding: var(--space-sm) var(--space-md);
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: center;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.effort-btn, .tier-btn {
+  text-transform: capitalize;
+  min-width: 4.5rem;
+}
+
+.model-btn:hover, .effort-btn:hover, .tier-btn:hover {
+  border-color: var(--accent-primary);
+  background: var(--bg-secondary);
+}
+
+.model-btn.selected, .effort-btn.selected, .tier-btn.selected {
+  border-color: var(--accent-primary);
+  background: var(--accent-primary);
+  color: white;
+}
+
+/* Fixed floor so switching harness (fewer/more sandbox+approval flags)
+   doesn't visibly yank the modal's height around - model/effort now have
+   their own rows above and no longer contribute to this jank. */
 .flag-configuration {
   margin-bottom: var(--space-lg);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   padding: var(--space-md);
   background: var(--bg-tertiary);
+  min-height: 4.5rem;
 }
 
 .flag-category {
@@ -4486,6 +4732,35 @@ header {
   background: var(--bg-secondary);
   color: var(--text-primary);
   padding: 8px 10px;
+}
+
+.quick-remote-framework-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.quick-remote-framework-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.quick-remote-framework-add {
+  padding: 0 10px;
+  font-weight: 700;
+}
+
+.quick-remote-framework-form {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.quick-remote-framework-form input {
+  flex: 1;
+  min-width: 10rem;
 }
 
 .quick-remote-clone-category-help {
@@ -7293,7 +7568,7 @@ body.dependency-onboarding-active #dependency-setup-modal {
 .toast,
 .ready-toast {
   --toast-accent: 96, 165, 250;
-  pointer-events: auto;
+  pointer-events: none;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -7318,6 +7593,7 @@ body.dependency-onboarding-active #dependency-setup-modal {
 
 .toast.is-leaving,
 .ready-toast.is-leaving {
+  pointer-events: none;
   transform: translateX(16px);
   opacity: 0;
 }
@@ -7370,6 +7646,7 @@ body.dependency-onboarding-active #dependency-setup-modal {
 }
 
 .toast-close {
+  pointer-events: auto;
   width: 22px;
   height: 22px;
   border-radius: 7px;
@@ -16040,4 +16317,269 @@ body.dependency-onboarding-active #dependency-setup-modal {
   .ports-dashboard-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* Header plan-usage widget: one pill per provider, reference info, deliberately muted. */
+.usage-limits-widget {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: 4px;
+  margin-left: var(--space-sm);
+}
+
+.usage-pill {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  background: color-mix(in srgb, var(--text-secondary) 8%, transparent);
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  white-space: pre;
+  display: inline-flex;
+  align-items: center;
+  cursor: help;
+}
+
+/* Usage severity highlights: running-out (%) and use-it-or-lose-it (countdown) */
+.usage-pill .usage-sev-yellow { color: #ffd685; font-weight: 600; }
+.usage-pill .usage-sev-orange { color: #ffab5e; font-weight: 600; }
+.usage-pill .usage-sev-red { color: #ff6b6b; font-weight: 700; }
+
+/* EXPERIMENT: two-signal pace bar (Claude 7d bucket only) — fill = quota
+   used, marker line = fraction of the window elapsed. */
+.usage-bar {
+  position: relative;
+  display: inline-block;
+  width: 60px;
+  height: 8px;
+  margin-left: 5px;
+  background: var(--bg-tertiary);
+  border: 1px solid color-mix(in srgb, var(--border-color) 80%, var(--text-secondary) 20%);
+  border-radius: 3px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.usage-bar-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: var(--used);
+  background: var(--text-tertiary);
+}
+.usage-bar-marker {
+  position: absolute;
+  top: -1px; bottom: -1px;
+  left: var(--pace);
+  width: 2px;
+  background: var(--text-primary);
+}
+
+/* Header CPU/RAM/VRAM stats button + modal */
+#system-stats-summary { font-family: var(--font-mono); font-size: 0.78rem; }
+#system-stats-summary .usage-sev-yellow { color: #ffd685; font-weight: 600; }
+#system-stats-summary .usage-sev-orange { color: #ffab5e; font-weight: 600; }
+#system-stats-summary .usage-sev-red { color: #ff6b6b; font-weight: 700; }
+
+.system-stats-modal .system-stats-content {
+  max-width: 560px;
+  width: 90vw;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.system-stats-body {
+  overflow-y: auto;
+  padding: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.system-stats-bar-row { display: flex; flex-direction: column; gap: 4px; }
+
+.system-stats-bar-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.system-stats-bar-detail {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.system-stats-bar-track {
+  height: 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.system-stats-bar-fill {
+  height: 100%;
+  background: var(--accent-primary);
+  transition: width 0.2s ease;
+}
+.system-stats-bar-fill.sev-yellow { background: #ffd685; }
+.system-stats-bar-fill.sev-orange { background: #ffab5e; }
+.system-stats-bar-fill.sev-red { background: #ff6b6b; }
+
+.system-stats-section-title {
+  margin: var(--space-sm) 0 0 0;
+  font-size: 0.9rem;
+}
+
+.system-stats-loading,
+.system-stats-empty {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  padding: var(--space-sm) 0;
+}
+
+.system-stats-process-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.system-stats-process-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: var(--space-sm);
+  padding: 4px var(--space-sm);
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+}
+
+.system-stats-process-row:nth-child(odd) { background: var(--bg-tertiary); }
+
+.system-stats-process-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-stats-process-pid,
+.system-stats-process-mem {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.system-stats-process-mem { color: var(--text-primary); font-weight: 600; }
+
+.system-stats-source-note {
+  margin-top: var(--space-sm);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.system-stats-process-subrow { opacity: 0.85; }
+.system-stats-process-subrow .system-stats-process-name { font-style: italic; }
+
+.system-stats-process-suspect .system-stats-process-name,
+.system-stats-process-suspect .system-stats-process-mem { color: #ffd685; }
+
+.system-stats-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: 6px var(--space-sm);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  margin-bottom: 4px;
+}
+
+.system-stats-model-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.system-stats-model-name {
+  font-weight: 600;
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-stats-model-detail {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.system-stats-unload-btn {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 0.78rem;
+}
+
+/* Commander tab bar (multiple Commander instances) */
+.commander-tabbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px 0 6px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  overflow-x: auto;
+}
+
+.commander-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  padding: 3px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.commander-tab:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-secondary) 8%, transparent);
+}
+
+.commander-tab.active {
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border-color: var(--border-color);
+}
+
+.commander-tab-label[contenteditable="true"] {
+  outline: 1px solid var(--accent-primary);
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
+.commander-tab-close {
+  opacity: 0.5;
+  padding: 0 2px;
+}
+
+.commander-tab-close:hover {
+  opacity: 1;
+}
+
+.commander-tab-add {
+  font-weight: 700;
+  padding: 3px 8px;
 }

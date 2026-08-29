@@ -21,15 +21,26 @@ class TerminalManager {
     this.lastWordDeleteTimes = new Map();
     this.wordDeleteCooldown = 150; // milliseconds
     
-    // Track scroll state per terminal
-    this.terminalScrollStates = new Map();
-    this.userScrolling = new Map();
+    // Scroll policy: follow output only when the viewport is already at the bottom;
+    // a user reading scrollback keeps their position, and the keeper returns a
+    // forgotten scroll-up to the bottom after a quiet period.
+    this.scrollKeeper = TerminalScrollKeeper.forSettings(() => this.orchestrator?.settings);
     this.ephemeralLineState = new Map();
 
     // Guardrail: never resize the PTY to tiny dimensions (can hard-wrap output irreversibly).
     this.lastGoodPtyDimensions = new Map(); // sessionId -> { cols, rows }
     this.minPtyCols = 40;
     this.minPtyRows = 5;
+
+    // A down-fit proposal below the lastGood ratchet is accepted once the SAME
+    // dimensions have been proposed this many times in a row — a repeated
+    // measurement is a settled layout, not a mid-transition glitch. Without this
+    // escape hatch, one oversized fit (full-width container measured mid-layout
+    // after a reload, or a focused single-terminal view) poisons lastGood and
+    // every later correct fit is refused forever: the PTY stays huge while the
+    // tile is small, and the TUI's wide frames wrap into stacked duplicates.
+    this.stableSmallFitConfirmations = 3;
+    this.pendingSmallFits = new Map(); // sessionId -> { cols, rows, count }
 
     // Auto-heal: terminal-resize messages are fire-and-forget, so a dropped one
     // (socket reconnecting, session still spawning) leaves the PTY and the rendered
@@ -66,56 +77,6 @@ class TerminalManager {
 
     // Apply global terminal scrollbar styles
     this.applyScrollbarStyles();
-    
-    // Terminal theme
-    this.theme = {
-      background: '#0d1117',
-      foreground: '#c9d1d9',
-      cursor: '#c9d1d9',
-      cursorAccent: '#0d1117',
-      selection: 'rgba(88, 166, 255, 0.3)',
-      black: '#484f58',
-      red: '#ff7b72',
-      green: '#3fb950',
-      yellow: '#d29922',
-      blue: '#58a6ff',
-      magenta: '#bc8cff',
-      cyan: '#39c5cf',
-      white: '#b1bac4',
-      brightBlack: '#6e7681',
-      brightRed: '#ffa198',
-      brightGreen: '#56d364',
-      brightYellow: '#e3b341',
-      brightBlue: '#79c0ff',
-      brightMagenta: '#d2a8ff',
-      brightCyan: '#56d4dd',
-      brightWhite: '#f0f6fc'
-    };
-    
-    // Light theme
-    this.lightTheme = {
-      background: '#ffffff',
-      foreground: '#24292f',
-      cursor: '#24292f',
-      cursorAccent: '#ffffff',
-      selection: 'rgba(9, 105, 218, 0.3)',
-      black: '#24292f',
-      red: '#cf222e',
-      green: '#1a7f37',
-      yellow: '#9a6700',
-      blue: '#0969da',
-      magenta: '#8250df',
-      cyan: '#1b7c83',
-      white: '#6e7781',
-      brightBlack: '#57606a',
-      brightRed: '#a40e26',
-      brightGreen: '#116329',
-      brightYellow: '#633c01',
-      brightBlue: '#218bff',
-      brightMagenta: '#a475f9',
-      brightCyan: '#3192aa',
-      brightWhite: '#8c959f'
-    };
   }
 
   getDomId(prefix, sessionId) {
@@ -313,25 +274,9 @@ class TerminalManager {
       return null;
     }
     
-    // Create Xterm instance
-    const terminal = new Terminal({
-      fontSize: 12,
-      fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-      theme: this.orchestrator.settings.theme === 'light' ? this.lightTheme : this.theme,
-      cursorBlink: true,
-      cursorStyle: 'bar',
-      scrollback: 5000,
-      tabStopWidth: 4,
-      bellStyle: 'none',
-      allowTransparency: false,
-      convertEol: false,  // CRITICAL: Don't convert \r to \r\n - needed for spinner animations
-      wordSeparator: ' ()[]{}\'"',
-      rightClickSelectsWord: true
-      // NOTE: xterm 5.x removed the `rendererType`/`experimentalCharAtlas` options.
-      // The renderer is now selected by loading an addon after open() — see CanvasAddon
-      // below. Without it, xterm falls back to the DOM renderer, which intermittently
-      // fails to repaint damaged rows (garbled text until a scroll forces a redraw).
-    });
+    // Create Xterm instance — visual config comes from the shared base options
+    // (terminal-themes.js) so Commander and worktree terminals cannot drift apart.
+    const terminal = new Terminal(window.getTerminalOptions(this.orchestrator.settings.theme));
     
     // Load addons
     const fitAddon = new FitAddon.FitAddon();
@@ -414,8 +359,13 @@ class TerminalManager {
       this.orchestrator?.onManualTerminalInput?.(sessionId);
       this.orchestrator.sendTerminalInput(sessionId, data);
 
-      // Track input buffer for autosuggestions
-      this.updateInputBuffer(sessionId, data);
+      // Track input buffer for autosuggestions — but not for paste-originated
+      // bursts: an unbracketed multi-line paste would be stored whole as the
+      // "current line" and later pollute command history with a bogus glued
+      // entry. (Bracketed pastes were already skipped by their ESC prefix.)
+      if (!this._pasteInProgress) {
+        this.updateInputBuffer(sessionId, data);
+      }
     });
     
     // Handle resize
@@ -434,40 +384,9 @@ class TerminalManager {
       }
     });
     
-    // Track user scrolling with mouse wheel
-    terminalElement.addEventListener('wheel', (e) => {
-      // User is scrolling, mark as user interaction
-      this.userScrolling.set(sessionId, true);
-      
-      // Clear user scrolling flag after a short delay
-      setTimeout(() => {
-        this.checkScrollPosition(sessionId);
-      }, 100);
-    });
-    
-    // Track scrollbar dragging
-    terminalElement.addEventListener('mousedown', (e) => {
-      // Check if clicking on scrollbar (rough approximation)
-      const rect = terminalElement.getBoundingClientRect();
-      const isScrollbar = e.clientX > rect.right - 20; // Scrollbar is typically ~17px wide
-      
-      if (isScrollbar) {
-        this.userScrolling.set(sessionId, true);
-        
-        // Monitor mouse up to check final position
-        const handleMouseUp = () => {
-          setTimeout(() => {
-            this.checkScrollPosition(sessionId);
-          }, 100);
-          document.removeEventListener('mouseup', handleMouseUp);
-        };
-        document.addEventListener('mouseup', handleMouseUp);
-      }
-    });
-    
-    // Initialize scroll state
-    this.userScrolling.set(sessionId, false);
-    
+    // Wheel/drag/touch activity tracking for the scroll snap-back countdown.
+    this.scrollKeeper.attach(sessionId, terminal, terminalElement);
+
     // Custom key handlers
     this.setupKeyHandlers(terminal, sessionId);
     
@@ -504,18 +423,6 @@ class TerminalManager {
     }
     if (!textarea.name) {
       textarea.name = `terminal-input-${sessionId}`;
-    }
-  }
-  
-  checkScrollPosition(sessionId) {
-    const terminal = this.terminals.get(sessionId);
-    if (terminal) {
-      const buffer = terminal.buffer.active;
-      const scrollOffset = buffer.baseY - buffer.viewportY;
-      // If user scrolled back to bottom (within 5 lines), clear the flag
-      if (scrollOffset <= 5) {
-        this.userScrolling.set(sessionId, false);
-      }
     }
   }
   
@@ -594,18 +501,12 @@ class TerminalManager {
         return false;
       }
       
-      // Track keyboard scrolling (Page Up, Page Down, Home, End, Ctrl+Home, Ctrl+End)
-      if (e.key === 'PageUp' || e.key === 'PageDown' || 
-          e.key === 'Home' || e.key === 'End' ||
-          (e.ctrlKey && (e.key === 'Home' || e.key === 'End'))) {
-        this.userScrolling.set(sessionId, true);
-        
-        // Check if at bottom after keyboard navigation
-        setTimeout(() => {
-          this.checkScrollPosition(sessionId);
-        }, 100);
+      // Keyboard scrolling (Page Up/Down, Home, End) counts as scroll activity
+      if (e.key === 'PageUp' || e.key === 'PageDown' ||
+          e.key === 'Home' || e.key === 'End') {
+        this.scrollKeeper.noteActivity(sessionId);
       }
-      
+
       return true;
     });
   }
@@ -632,8 +533,7 @@ class TerminalManager {
         if (item.types.includes('text/plain')) {
           const blob = await item.getType('text/plain');
           const text = await blob.text();
-          this.orchestrator?.onManualTerminalInput?.(sessionId);
-          this.orchestrator.sendTerminalInput(sessionId, text);
+          this.pasteTextToTerminal(sessionId, text);
           return;
         }
       }
@@ -641,21 +541,54 @@ class TerminalManager {
       // If no supported content found, try readText as fallback
       const text = await navigator.clipboard.readText();
       if (text) {
-        this.orchestrator?.onManualTerminalInput?.(sessionId);
-        this.orchestrator.sendTerminalInput(sessionId, text);
+        this.pasteTextToTerminal(sessionId, text);
       }
     } catch (err) {
       // Some browsers don't support clipboard.read(), fall back to readText
       console.warn('clipboard.read() not supported, falling back to readText:', err.message);
       try {
         const text = await navigator.clipboard.readText();
-        this.orchestrator?.onManualTerminalInput?.(sessionId);
-        this.orchestrator.sendTerminalInput(sessionId, text);
+        this.pasteTextToTerminal(sessionId, text);
       } catch (textErr) {
         console.error('Failed to read text from clipboard:', textErr);
         throw textErr;
       }
     }
+  }
+
+  /**
+   * Send pasted text to a session's terminal.
+   *
+   * Uses xterm's paste() rather than sending the raw string: paste() normalizes
+   * newlines and, when the running program has bracketed-paste mode enabled
+   * (it sent ESC[?2004h), wraps the text in ESC[200~ .. ESC[201~. That tells the
+   * program "this is pasted text" so multi-line code is treated as literal input
+   * instead of a burst of Enter keypresses (which was mangling/early-submitting
+   * multi-line pastes). Programs that don't enable the mode receive the text
+   * unwrapped, so nothing regresses for them.
+   *
+   * paste() routes through terminal.onData, which already forwards to
+   * sendTerminalInput and marks the session active — so no extra plumbing here.
+   * If the xterm instance isn't available, fall back to sending raw text.
+   */
+  pasteTextToTerminal(sessionId, text) {
+    const terminal = this.terminals.get(sessionId);
+    if (terminal && typeof terminal.paste === 'function') {
+      // paste() fires onData synchronously; flag the burst so autosuggestion
+      // input-buffer tracking skips it (see the onData handler).
+      this._pasteInProgress = true;
+      try {
+        terminal.paste(text);
+      } finally {
+        this._pasteInProgress = false;
+      }
+      return;
+    }
+    // Deliberate fail-open: the terminal vanished during the async clipboard
+    // read (tab close/teardown race) — deliver the raw text unnormalized
+    // rather than dropping the paste.
+    this.orchestrator?.onManualTerminalInput?.(sessionId);
+    this.orchestrator?.sendTerminalInput?.(sessionId, text);
   }
 
   /**
@@ -833,7 +766,33 @@ class TerminalManager {
             : this.minPtyCols;
           const minStableRows = this.minPtyRows;
 
-          if (proposedCols < minStableCols || proposedRows < minStableRows) {
+          // Track repeated identical below-ratchet proposals. Only proposals that
+          // are at least the absolute PTY minimums count — genuinely tiny or 0x0
+          // measurements always stay refused.
+          const plausibleSmallFit =
+            proposedCols >= this.minPtyCols && proposedRows >= this.minPtyRows &&
+            (proposedCols < minStableCols || proposedRows < minStableRows);
+          if (plausibleSmallFit) {
+            const pending = this.pendingSmallFits.get(sessionId);
+            const count = pending && pending.cols === proposedCols && pending.rows === proposedRows
+              ? pending.count + 1
+              : 1;
+            this.pendingSmallFits.set(sessionId, { cols: proposedCols, rows: proposedRows, count });
+          } else {
+            this.pendingSmallFits.delete(sessionId);
+          }
+          const stableSmallFit = plausibleSmallFit &&
+            this.pendingSmallFits.get(sessionId).count >= this.stableSmallFitConfirmations;
+          if (stableSmallFit) {
+            // The layout has clearly settled at this smaller size — accept the
+            // down-fit instead of refusing it forever off a stale lastGood.
+            this.debugFit(
+              sessionId,
+              'stable-small-fit-accepted',
+              `Terminal ${sessionId} accepting settled down-fit ${proposedCols}x${proposedRows} (lastGood ratchet was ${minStableCols}x${minStableRows})`
+            );
+            this.pendingSmallFits.delete(sessionId);
+          } else if (proposedCols < minStableCols || proposedRows < minStableRows) {
             if (retryCount < 5) {
               const retryDelay = 120 * (retryCount + 1);
               this.debugFit(
@@ -846,17 +805,52 @@ class TerminalManager {
               return;
             }
 
-            this.warnFit(
+            // 0x0 means the element simply isn't measurable right now — an
+            // off-screen terminal in the scrollable grid, or one whose fonts/
+            // layout haven't settled. That's expected with many worktrees and
+            // resolves on the next show/resize, so keep it at debug level.
+            // A small-but-nonzero proposal is a real fit problem worth warning.
+            const unmeasurable = proposedCols === 0 && proposedRows === 0;
+            const logFit = unmeasurable ? this.debugFit.bind(this) : this.warnFit.bind(this);
+            logFit(
               sessionId,
               'proposed-still-too-small',
               `Terminal ${sessionId} proposed fit still too small after 5 retries (${proposedCols}x${proposedRows}; min ${minStableCols}x${minStableRows}); skipping fit`
             );
+            // Off-screen terminals still deserve a delayed retry so they fit
+            // correctly once scrolled into view without a resize event.
+            if (unmeasurable) {
+              if (!this.delayedFitTimers) this.delayedFitTimers = new Map();
+              if (!this.delayedFitTimers.has(sessionId)) {
+                const t = setTimeout(() => {
+                  this.delayedFitTimers.delete(sessionId);
+                  this.fitTerminal(sessionId, 0);
+                }, 1200);
+                this.delayedFitTimers.set(sessionId, t);
+              }
+            }
             this.fitTimers.delete(sessionId);
             return;
           }
         }
 
+        const beforeCols = terminal?.cols || 0;
+        const beforeRows = terminal?.rows || 0;
         fitAddon.fit();
+
+        // xterm-addon-fit only clears+redraws the renderer when the computed
+        // size actually changed — a same-size fit (the common heal-sweep
+        // case: nothing was actually resized, we're just recovering from a
+        // stale/garbled canvas after the tab was backgrounded) leaves it
+        // untouched, so the refresh() below just repaints the same stale
+        // state. Force two real resizes (nudge a column down, then back) so
+        // the renderer always reconstructs — this is what an actual window
+        // resize does that a same-size fit + refresh doesn't.
+        if (terminal && terminal.cols === beforeCols && terminal.rows === beforeRows) {
+          const nudgedCols = Math.max(beforeCols - 1, 2);
+          terminal.resize(nudgedCols, beforeRows);
+          terminal.resize(beforeCols, beforeRows);
+        }
 
         // Get dimensions and (only if reasonable) notify server. Resizing the PTY to
         // very small sizes can hard-wrap output in the shell, which can't be undone.
@@ -951,29 +945,23 @@ class TerminalManager {
       return;
     }
 
-    // Check if user is manually scrolling
-    const isUserScrolling = this.userScrolling.get(sessionId) || false;
-
     const normalized = this.normalizeOutput(sessionId, data);
     if (!normalized) {
       return;
     }
 
-    // Write data to terminal
-    terminal.write(normalized);
+    // Decide follow-vs-stay from the REAL viewport position, sampled before the
+    // write moves the buffer. A viewport at the bottom follows new output; one the
+    // user scrolled up stays put (the keeper snaps it back after a quiet period).
+    const wasNearBottom = this.scrollKeeper.isNearBottom(terminal);
+
+    // xterm processes writes asynchronously — scroll in the write callback so the
+    // new lines exist before the viewport moves.
+    const follow = this.orchestrator.settings.autoScroll !== false && wasNearBottom;
+    terminal.write(normalized, follow ? () => terminal.scrollToBottom() : undefined);
 
     // Reposition or clear autosuggestion overlay after new output
     this.repositionSuggestion(sessionId);
-
-    // Check if this is a carriage return update (like a spinner)
-    // Don't auto-scroll for CR updates to avoid breaking the overwrite behavior
-    const hasCarriageReturn = normalized.includes('\r') && !normalized.includes('\n');
-
-    // Only auto-scroll if user is not manually scrolling and autoScroll is enabled
-    // AND this isn't a carriage return update (spinner)
-    if (this.orchestrator.settings.autoScroll && !isUserScrolling && !hasCarriageReturn) {
-      terminal.scrollToBottom();
-    }
 
     // Check for special patterns (optional enhancement)
     this.checkOutputPatterns(sessionId, normalized);
@@ -989,11 +977,27 @@ class TerminalManager {
     for (let i = 0; i < parts.length; i++) {
       const rawLine = parts[i];
       const hasNewline = i < parts.length - 1;
-      const line = rawLine.replace(/\r/g, '');
 
-      if (this.isEphemeralLine(line)) {
-        output += `\r\x1b[2K${line}`;
-        state.pendingEol = true;
+      // A bare \r inside a line (not the \r of a trailing \r\n pair) is a
+      // spinner/status line redrawing itself in place. Without an explicit
+      // erase, shrinking content (an elapsed-time counter, a changing hint)
+      // leaves old trailing characters on screen — text-matching a fixed
+      // whitelist of known hints missed every other variant, so this
+      // detects the redraw itself instead of guessing from its wording.
+      const trailingCrlf = hasNewline && rawLine.endsWith('\r');
+      const searchLine = trailingCrlf ? rawLine.slice(0, -1) : rawLine;
+      const lastCr = searchLine.lastIndexOf('\r');
+      const isKnownHint = this.isEphemeralLine(rawLine.replace(/\r/g, ''));
+
+      if (lastCr !== -1 || (isKnownHint && !hasNewline)) {
+        const finalSegment = lastCr !== -1 ? searchLine.slice(lastCr + 1) : searchLine;
+        output += `\r\x1b[K${finalSegment}`;
+        if (trailingCrlf) output += '\r';
+        if (hasNewline) {
+          output += '\n'; // already newline-terminated in this chunk — nothing pending
+        } else {
+          state.pendingEol = true; // redraw left open; next real content needs a fresh line first
+        }
         continue;
       }
 
@@ -1393,6 +1397,27 @@ class TerminalManager {
     }
   }
 
+  // Clears cursor/attribute state, replays the server's clean snapshot.
+  handleResync(sessionId, buffer) {
+    const terminal = this.terminals.get(sessionId);
+    if (!terminal) return;
+    terminal.reset();
+    if (buffer) terminal.write(buffer);
+
+    // Force a real repaint (same nudge trick as fitTerminal) — canvas
+    // dirty-tracking won't reliably clear old pixels on reset() alone.
+    const beforeCols = terminal.cols;
+    const beforeRows = terminal.rows;
+    const nudgedCols = Math.max(beforeCols - 1, 2);
+    terminal.resize(nudgedCols, beforeRows);
+    terminal.resize(beforeCols, beforeRows);
+    requestAnimationFrame(() => {
+      if (terminal && !terminal._core?.disposed) {
+        terminal.refresh(0, Math.max(0, terminal.rows - 1));
+      }
+    });
+  }
+
   destroyTerminal(sessionId) {
     const terminal = this.terminals.get(sessionId);
     if (terminal) {
@@ -1422,9 +1447,10 @@ class TerminalManager {
     if (suggestTimer) clearTimeout(suggestTimer);
     this.suggestTimers.delete(sessionId);
 
-    // Clean up scroll state
-    this.terminalScrollStates.delete(sessionId);
-    this.userScrolling.delete(sessionId);
+    // Clean up scroll + fit state
+    this.scrollKeeper.detach(sessionId);
+    this.pendingSmallFits.delete(sessionId);
+    this.lastGoodPtyDimensions.delete(sessionId);
 
     // Clean up addons (terminal.dispose() above already disposes loaded addons;
     // just drop our references so the maps don't leak).
@@ -1446,8 +1472,8 @@ class TerminalManager {
   }
   
   updateTheme(theme) {
-    const themeConfig = theme === 'light' ? this.lightTheme : this.theme;
-    
+    const themeConfig = window.getTerminalTheme(theme);
+
     for (const [sessionId, terminal] of this.terminals) {
       terminal.options.theme = themeConfig;
     }

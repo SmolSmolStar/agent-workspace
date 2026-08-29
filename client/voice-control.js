@@ -31,7 +31,9 @@ class VoiceControl {
 
     // Audio recording for Whisper
     this.mediaRecorder = null;
+    this.mediaStream = null;
     this.audioChunks = [];
+    this.recordingMimeType = '';
 
     // Backend status
     this.whisperAvailable = false;
@@ -345,9 +347,12 @@ class VoiceControl {
   async startWhisperRecording() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      this.mediaRecorder = new MediaRecorder(stream, {
-        mimeType: MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4'
-      });
+      this.mediaStream = stream;
+      const mimeType = this.getSupportedRecordingMimeType();
+      this.mediaRecorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+      this.recordingMimeType = String(this.mediaRecorder.mimeType || mimeType || '').trim();
       this.audioChunks = [];
 
       this.mediaRecorder.ondataavailable = (e) => {
@@ -357,8 +362,7 @@ class VoiceControl {
       };
 
       this.mediaRecorder.onstop = () => {
-        // Stop all tracks
-        stream.getTracks().forEach(track => track.stop());
+        this.releaseWhisperStream();
         // Process the recording
         this.processWhisperRecording();
       };
@@ -369,9 +373,51 @@ class VoiceControl {
       this.setStatus('Recording... [Whisper]', 'listening');
       this.transcriptEl.textContent = '';
     } catch (err) {
+      this.releaseWhisperStream();
+      this.mediaRecorder = null;
+      this.recordingMimeType = '';
       console.error('Failed to start Whisper recording:', err);
-      this.setStatus('Mic access denied', 'error');
+      this.setStatus('Microphone unavailable', 'error');
     }
+  }
+
+  getSupportedRecordingMimeType() {
+    if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') return '';
+    return ['audio/webm', 'audio/mp4'].find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) || '';
+  }
+
+  releaseWhisperStream() {
+    const stream = this.mediaStream;
+    this.mediaStream = null;
+    stream?.getTracks?.().forEach((track) => track.stop());
+  }
+
+  getRecordingUploadFormat() {
+    const chunkMimeType = this.audioChunks?.find((chunk) => String(chunk?.type || '').trim())?.type;
+    const mimeType = String(
+      this.mediaRecorder?.mimeType || this.recordingMimeType || chunkMimeType || 'audio/webm'
+    ).trim() || 'audio/webm';
+    const baseMimeType = mimeType.split(';', 1)[0].trim().toLowerCase();
+    const extensionByMimeType = {
+      'audio/webm': 'webm',
+      'audio/mp4': 'mp4',
+      'audio/m4a': 'm4a',
+      'audio/x-m4a': 'm4a',
+      'audio/aac': 'aac',
+      'video/mp4': 'mp4',
+      'video/webm': 'webm',
+      'audio/ogg': 'ogg',
+      'audio/wav': 'wav',
+      'audio/x-wav': 'wav',
+      'audio/mp3': 'mp3',
+      'audio/mpeg': 'mp3'
+    };
+    const extension = extensionByMimeType[baseMimeType];
+    if (!extension) throw new Error(`Unsupported recording format: ${baseMimeType || 'unknown'}`);
+    return {
+      mimeType,
+      extension
+    };
   }
 
   stopListening() {
@@ -381,7 +427,11 @@ class VoiceControl {
       try {
         this.mediaRecorder.stop();
       } catch (err) {
+        this.releaseWhisperStream();
+        this.isListening = false;
+        this.button.classList.remove('listening');
         console.error('Failed to stop recording:', err);
+        this.setStatus('Microphone unavailable', 'error');
       }
     } else if (this.recognition) {
       try {
@@ -398,9 +448,10 @@ class VoiceControl {
     this.setStatus('Transcribing...', 'processing');
 
     try {
-      const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
+      const uploadFormat = this.getRecordingUploadFormat();
+      const audioBlob = new Blob(this.audioChunks, { type: uploadFormat.mimeType });
       const formData = new FormData();
-      formData.append('audio', audioBlob, 'recording.webm');
+      formData.append('audio', audioBlob, `recording.${uploadFormat.extension}`);
 
       // Use the combined transcribe+execute endpoint
       const response = await fetch('/api/whisper/command', {

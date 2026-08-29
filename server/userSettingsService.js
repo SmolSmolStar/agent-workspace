@@ -173,6 +173,7 @@ class UserSettingsService {
               focusSwap: false,
               tasks: true,
               ports: true,
+              work: false,
               voice: false,
               notifications: false,
               commander: true,
@@ -207,6 +208,7 @@ class UserSettingsService {
               viewBranchOnGithub: false,
               viewBranchDiff: true,
               viewPrOnGithub: true,
+              viewOpenPRsOnGithub: true,
               advancedDiff: false,
               advancedBranchDiff: false,
               startServerDev: false,
@@ -297,13 +299,7 @@ class UserSettingsService {
             colorize: true,
             showAtInSidebar: false
           },
-          terminals: {
-            // Persist terminal filtering across refreshes.
-            // 'all' | 'claude' | 'server'
-            viewMode: 'all',
-            // 'all' | 'none' | '1' | '2' | '3' | '4'
-            tierFilter: 'all'
-          },
+          terminals: {},
           worktrees: {
             autoCreateExtraWhenBusy: true,
             autoCreateMinNumber: 9,
@@ -892,6 +888,10 @@ class UserSettingsService {
             };
           }
         }
+      }
+
+      if (userSettings.global.team) {
+        merged.global.team = userSettings.global.team;
       }
     }
 

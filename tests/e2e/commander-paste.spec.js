@@ -1,52 +1,6 @@
 const { test, expect } = require('@playwright/test');
+const { ensureWorkspaceLoaded, dismissFocusOverlay } = require('./_workspace');
 const { mockUserSettings } = require('./_mockUserSettings');
-
-const ensureWorkspaceLoaded = async (page) => {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const sidebar = page.locator('.sidebar');
-    if (await sidebar.isVisible().catch(() => false)) {
-      return;
-    }
-
-    await page.waitForFunction(() => window.orchestrator?.socket?.connected === true, {
-      timeout: 20000
-    });
-
-    const openWorkspaceBtn = page.getByRole('button', { name: 'Open Workspace' }).first();
-    try {
-      await openWorkspaceBtn.waitFor({ state: 'visible', timeout: 20000 });
-    } catch {
-      await page.reload();
-      continue;
-    }
-
-    await openWorkspaceBtn.click();
-    try {
-      await page.waitForSelector('#recovery-dialog, .sidebar:not(.hidden)', { timeout: 20000 });
-    } catch {
-      await page.reload();
-      continue;
-    }
-
-    const recoverySkipBtn = page.locator('#recovery-skip');
-    if (await recoverySkipBtn.isVisible().catch(() => false)) {
-      await recoverySkipBtn.click();
-    }
-
-    await page.waitForSelector('.sidebar:not(.hidden)', { timeout: 20000 });
-    return;
-  }
-
-  throw new Error('Failed to load workspace for tests.');
-};
-
-const dismissFocusOverlay = async (page) => {
-  const overlay = page.locator('#focus-overlay.active');
-  if (await overlay.isVisible().catch(() => false)) {
-    await page.locator('#focus-overlay .focus-close-btn').click();
-    await expect(overlay).toBeHidden();
-  }
-};
 
 test.describe('Commander terminal paste', () => {
   test.beforeEach(async ({ page }) => {
@@ -125,5 +79,54 @@ test.describe('Commander terminal paste', () => {
 
     const req = await inputReqPromise;
     expect(req.postDataJSON()).toEqual({ input: pasted });
+  });
+
+  test('multi-line paste is bracketed when the program has bracketed-paste mode on', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+
+    // Two lines: without bracketing, the newline would be treated as an Enter and
+    // submit the first line early. With bracketing it must arrive as one literal block.
+    const pasted = 'line one\nline two';
+
+    await page.route('**/api/commander/input', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+    });
+
+    await page.goto('/');
+    await ensureWorkspaceLoaded(page);
+    await dismissFocusOverlay(page);
+
+    await page.waitForFunction(() => !!window.orchestrator?.commanderPanel, { timeout: 20000 });
+    await page.evaluate(() => window.orchestrator?.commanderPanel?.show?.());
+    await expect(page.locator('#commander-panel')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#commander-terminal .xterm')).toBeVisible({ timeout: 10000 });
+
+    // Simulate the running program enabling bracketed-paste mode (ESC[?2004h), then
+    // wait for xterm to parse it so terminal.modes.bracketedPasteMode flips on.
+    await page.evaluate(async () => {
+      const term = window.orchestrator?.commanderPanel?.terminal;
+      await new Promise((resolve) => term.write('\x1b[?2004h', resolve));
+    });
+
+    await page.evaluate(async (text) => {
+      await navigator.clipboard.writeText(text);
+    }, pasted);
+
+    const inputReqPromise = page.waitForRequest((req) => {
+      if (req.method() !== 'POST') return false;
+      try {
+        return new URL(req.url()).pathname === '/api/commander/input';
+      } catch {
+        return false;
+      }
+    }, { timeout: 10000 });
+
+    await page.locator('#commander-terminal').click();
+    await page.keyboard.press('Control+V');
+
+    const req = await inputReqPromise;
+    // Newlines normalized to \r and the whole block wrapped in ESC[200~ .. ESC[201~.
+    const ESC = String.fromCharCode(27);
+    expect(req.postDataJSON()).toEqual({ input: `${ESC}[200~line one\rline two${ESC}[201~` });
   });
 });
