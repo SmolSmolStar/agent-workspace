@@ -930,6 +930,50 @@ class CommanderPanel {
       badge.className = `commander-status ${this.isStarting ? 'starting' : (this.isRunning ? 'online' : 'offline')}`;
       badge.title = this.isStarting ? 'Starting' : (this.isRunning ? 'Running' : 'Stopped');
     }
+    this.refreshModelBadge();
+  }
+
+  /**
+   * Refresh the model/effort badge for the currently visible tab and wire
+   * the same session-only ModelEffortPicker dropdown onto it - see
+   * server/index.js GET /api/commander/model-config. Throttled since this
+   * piggybacks on updateStatusBadge(), which fires on every status change.
+   */
+  async refreshModelBadge(instanceId = this.activeInstance) {
+    if (instanceId !== this.activeInstance) return; // only the visible tab's badge is in the DOM
+    const now = Date.now();
+    if (this.modelBadgeRefreshInFlight || (now - (this.lastModelBadgeRefreshAt || 0)) < 2000) return;
+    this.modelBadgeRefreshInFlight = true;
+    this.lastModelBadgeRefreshAt = now;
+
+    const badge = document.getElementById('commander-model-badge');
+    if (!badge) {
+      this.modelBadgeRefreshInFlight = false;
+      return;
+    }
+    try {
+      const res = await fetch(this.apiUrl('/api/commander/model-config'));
+      const payload = await res.json().catch(() => null);
+      if (!payload?.ok) {
+        badge.style.display = 'none';
+        return;
+      }
+      const modelLabel = String(payload.model || '').replace(/^claude-/i, '').replace(/^grok-/i, 'Grok ');
+      const effort = String(payload.effortLevel || '').trim().toLowerCase();
+      const text = [modelLabel, effort].filter(Boolean).join(' ');
+      if (!text) {
+        badge.style.display = 'none';
+        return;
+      }
+      badge.style.display = '';
+      badge.textContent = text;
+      badge.title = `Model & effort this Commander instance is using (${payload.provider}). Click to swap for this session only.`;
+      this.orchestrator.modelEffortPicker?.attachTrigger(badge, { kind: 'commander', id: instanceId });
+    } catch {
+      badge.style.display = 'none';
+    } finally {
+      this.modelBadgeRefreshInFlight = false;
+    }
   }
 
   /**

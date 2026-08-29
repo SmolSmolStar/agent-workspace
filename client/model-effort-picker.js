@@ -4,6 +4,12 @@
  * ONLY, without touching your saved default. Backed by /api/agents/model-catalog
  * (per-provider models + valid efforts) and /api/sessions/:id/switch-model
  * (Claude only for now - see PLANS/2026-08-29/MODEL_EFFORT_PICKER_PLAN.md).
+ *
+ * Also drives the same dropdown on the Commander panel's model badge - a
+ * Commander instance isn't a worktree session (it lives in CommanderService,
+ * not sessionManager.sessions), so every place this reads "current state" or
+ * posts a switch branches on target.kind ('session' | 'commander') instead
+ * of assuming a sessionId.
  */
 
 class ModelEffortPicker {
@@ -13,7 +19,7 @@ class ModelEffortPicker {
     this.catalogLoadedAt = 0;
     this.CATALOG_CLIENT_CACHE_MS = 5 * 60 * 1000;
     this.panelEl = null;
-    this.openSessionId = null;
+    this.openTarget = null;
     this.hoverOpenTimers = new WeakMap();
     this.flyoutEl = null;
     this.boundOutsideClick = (e) => {
@@ -28,12 +34,20 @@ class ModelEffortPicker {
     };
   }
 
+  normalizeTarget(target) {
+    if (typeof target === 'string') return { kind: 'session', id: target };
+    return { kind: target?.kind || 'session', id: target?.id };
+  }
+
   isTouchDevice() {
     return typeof window.matchMedia === 'function' && window.matchMedia('(hover: none)').matches;
   }
 
-  /** Wire hover/click/keyboard on a rendered .terminal-model-badge element. */
-  attachTrigger(badgeEl, sessionId) {
+  /**
+   * Wire hover/click/keyboard on a rendered .terminal-model-badge element.
+   * `target` is either a worktree sessionId string, or { kind: 'commander', id: instanceId }.
+   */
+  attachTrigger(badgeEl, target) {
     if (!badgeEl || badgeEl.dataset.pickerAttached === '1') return;
     badgeEl.dataset.pickerAttached = '1';
     badgeEl.classList.add('model-badge-trigger');
@@ -43,9 +57,12 @@ class ModelEffortPicker {
     // the model/effort source explanation on every render, after this runs.
     // The trigger affordance comes from the CSS chevron + pointer cursor.
 
+    const t = this.normalizeTarget(target);
+    const isOpenForThisTarget = () => this.openTarget?.kind === t.kind && this.openTarget?.id === t.id;
+
     badgeEl.addEventListener('mouseenter', () => {
       if (this.isTouchDevice()) return;
-      const timer = setTimeout(() => this.open(badgeEl, sessionId), 150);
+      const timer = setTimeout(() => this.open(badgeEl, t), 150);
       this.hoverOpenTimers.set(badgeEl, timer);
     });
     badgeEl.addEventListener('mouseleave', () => {
@@ -54,13 +71,13 @@ class ModelEffortPicker {
     });
     badgeEl.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (this.openSessionId === sessionId) this.close();
-      else this.open(badgeEl, sessionId);
+      if (isOpenForThisTarget()) this.close();
+      else this.open(badgeEl, t);
     });
     badgeEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
-        this.open(badgeEl, sessionId);
+        this.open(badgeEl, t);
       }
     });
   }
@@ -92,20 +109,37 @@ class ModelEffortPicker {
     return 'claude';
   }
 
-  resolveCurrentConfig(sessionId, providerId) {
+  resolveSessionConfig(sessionId, providerId) {
     if (providerId === 'grok') return this.orchestrator.modelConfigGrok || {};
     if (providerId === 'codex') return this.orchestrator.modelConfigCodex || {};
     return this.orchestrator.modelConfigBySession?.get?.(sessionId)?.claude || {};
   }
 
-  async open(anchorEl, sessionId) {
+  /** Resolve { providerId, config } for either a worktree session or a Commander instance. */
+  async resolveCurrentState(target) {
+    if (target.kind === 'commander') {
+      try {
+        const res = await fetch(`/api/commander/model-config?instance=${encodeURIComponent(target.id)}`);
+        const payload = await res.json().catch(() => null);
+        if (payload?.ok) return { providerId: payload.provider || 'claude', config: payload };
+      } catch {
+        // fall through to the claude-default below
+      }
+      return { providerId: 'claude', config: {} };
+    }
+    const providerId = this.resolveProviderId(target.id);
+    return { providerId, config: this.resolveSessionConfig(target.id, providerId) };
+  }
+
+  async open(anchorEl, target) {
+    const t = this.normalizeTarget(target);
     this.close();
-    this.openSessionId = sessionId;
+    this.openTarget = t;
     this.currentAnchor = anchorEl;
 
-    const providerId = this.resolveProviderId(sessionId);
     await this.ensureCatalog();
-    this.render(anchorEl, sessionId, providerId);
+    const { providerId, config } = await this.resolveCurrentState(t);
+    this.render(anchorEl, t, providerId, config);
 
     setTimeout(() => {
       document.addEventListener('mousedown', this.boundOutsideClick);
@@ -119,7 +153,7 @@ class ModelEffortPicker {
       this.panelEl.remove();
       this.panelEl = null;
     }
-    this.openSessionId = null;
+    this.openTarget = null;
     this.currentAnchor = null;
     document.removeEventListener('mousedown', this.boundOutsideClick);
     document.removeEventListener('keydown', this.boundEscape);
@@ -135,7 +169,7 @@ class ModelEffortPicker {
   // Renders the effort flyout as a sibling of the panel (fixed-positioned,
   // computed from the row's own rect) instead of nesting it inside the
   // scrolling model list - see the comment in renderModelRow() for why.
-  showFlyout(panel, row, sessionId, providerId) {
+  showFlyout(panel, row, target, providerId) {
     const modelId = row.dataset.modelId;
     if (this.flyoutEl?.dataset.forRow === modelId) return;
     this.hideFlyout();
@@ -166,18 +200,16 @@ class ModelEffortPicker {
 
     flyout.querySelectorAll('.model-effort-picker-effort').forEach((btn) => {
       btn.addEventListener('click', () => {
-        this.commit(sessionId, providerId, { model: modelId, effort: btn.dataset.effort });
+        this.commit(target, providerId, { model: modelId, effort: btn.dataset.effort });
       });
     });
 
     this.flyoutEl = flyout;
   }
 
-  render(anchorEl, sessionId, providerId) {
+  render(anchorEl, target, providerId, currentConfig) {
     const provider = this.catalog?.providers?.[providerId];
-    const current = this.resolveCurrentConfig(sessionId, providerId);
-    const currentModelId = this.normalizeCurrentModelId(current.model, provider);
-    const currentEffort = String(current.effortLevel || '').trim().toLowerCase();
+    const currentModelId = this.normalizeCurrentModelId(currentConfig?.model, provider);
 
     const panel = document.createElement('div');
     panel.className = 'model-effort-picker';
@@ -204,7 +236,7 @@ class ModelEffortPicker {
     document.body.appendChild(panel);
     this.panelEl = panel;
     this.positionPanel(panel, anchorEl);
-    this.wireEvents(panel, provider, sessionId, providerId, currentModelId, currentEffort);
+    this.wireEvents(panel, target, providerId);
   }
 
   normalizeCurrentModelId(rawModel, provider) {
@@ -220,9 +252,6 @@ class ModelEffortPicker {
   }
 
   renderModelRow(model, isCurrent) {
-    const effortChips = (model.efforts || [])
-      .map((e) => `<button type="button" class="model-effort-picker-effort" data-effort="${this.escape(e)}">${this.escape(e)}</button>`)
-      .join('');
     // The effort flyout is NOT nested here — .model-effort-picker-body
     // scrolls (overflow-y: auto), and per the CSS overflow spec pairing any
     // axis with 'auto' forces the other axis to compute as 'auto' too, so a
@@ -259,7 +288,7 @@ class ModelEffortPicker {
     panel.style.top = `${rect.bottom + 4}px`;
   }
 
-  wireEvents(panel, provider, sessionId, providerId, currentModelId, currentEffort) {
+  wireEvents(panel, target, providerId) {
     panel.querySelectorAll('.model-effort-picker-model').forEach((btn) => {
       const row = btn.closest('.model-effort-picker-row');
 
@@ -269,16 +298,16 @@ class ModelEffortPicker {
         if (e.target.closest('[data-expand-toggle]')) {
           e.stopPropagation();
           if (this.flyoutEl && this.flyoutEl.dataset.forRow === row.dataset.modelId) this.hideFlyout();
-          else this.showFlyout(panel, row, sessionId, providerId);
+          else this.showFlyout(panel, row, target, providerId);
           return;
         }
         const modelId = btn.dataset.modelId;
-        this.commit(sessionId, providerId, { model: modelId });
+        this.commit(target, providerId, { model: modelId });
       });
 
       row.addEventListener('mouseenter', () => {
         if (this.isTouchDevice()) return;
-        this.showFlyout(panel, row, sessionId, providerId);
+        this.showFlyout(panel, row, target, providerId);
       });
     });
 
@@ -297,18 +326,22 @@ class ModelEffortPicker {
       } catch {
         // leave stale catalog in place
       }
-      this.render(this.currentAnchor, sessionId, providerId);
+      const { providerId: freshProviderId, config } = await this.resolveCurrentState(target);
+      this.render(this.currentAnchor, target, freshProviderId, config);
     });
   }
 
-  async commit(sessionId, providerId, { model, effort }) {
+  async commit(target, providerId, { model, effort }) {
     this.orchestrator.showToast?.(
       `Switching ${effort ? `to ${effort} effort` : 'model'}${model ? ` (${model})` : ''} for this session only…`,
       'info'
     );
     this.close();
     try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/switch-model`, {
+      const url = target.kind === 'commander'
+        ? `/api/commander/switch-model?instance=${encodeURIComponent(target.id)}`
+        : `/api/sessions/${encodeURIComponent(target.id)}/switch-model`;
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model, effort })
@@ -320,18 +353,22 @@ class ModelEffortPicker {
         return;
       }
       this.orchestrator.showToast?.('Switched for this session. Your saved default is unchanged.', 'success');
-      this.orchestrator.refreshSessionModelBadges?.({ force: true });
+      if (target.kind === 'commander') {
+        this.orchestrator.commanderPanel?.refreshModelBadge?.(target.id);
+      } else {
+        this.orchestrator.refreshSessionModelBadges?.({ force: true });
+      }
     } catch (error) {
       this.orchestrator.showToast?.(`Failed to switch model: ${error.message}`, 'error');
     }
   }
 
   describeSwitchError(error, providerId) {
-    if (error === 'SESSION_BUSY') return 'Session is busy right now, try again once it finishes.';
+    if (error === 'SESSION_BUSY') return 'Not ready to switch right now, try again in a moment.';
     if (error === 'UNSUPPORTED_SESSION_TYPE') {
       return `Session-only switching isn't available for ${providerId} yet.`;
     }
-    if (error === 'SESSION_NOT_FOUND') return 'Session not found (did it close?).';
+    if (error === 'SESSION_NOT_FOUND') return 'Nothing running to switch (start it first).';
     return `Failed to switch model${error ? `: ${error}` : ''}.`;
   }
 
