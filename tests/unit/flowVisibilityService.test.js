@@ -234,3 +234,28 @@ describe('FlowVisibilityService', () => {
     expect(service.normalizeWindow('nonsense')).toBe(90);
   });
 });
+
+describe('FlowVisibilityService boot behaviour', () => {
+  test('a report built before any workspace attached is not cached', async () => {
+    const gh = jest.fn(async () => ({ ok: true, stdout: '[]' }));
+    const service = makeService({ workspaceProvider: () => [], gh });
+
+    const first = await service.report({ days: 90 });
+    expect(first.repoCount).toBe(0);
+
+    // The next open must rebuild rather than serve those zeros for the interval.
+    const second = await service.report({ days: 90 });
+    expect(second.cached).toBeFalsy();
+  });
+
+  test('the first background build is deferred, not run at boot', () => {
+    const setTimeoutFn = jest.fn();
+    const service = makeService({ setIntervalFn: () => ({ unref() {} }), setTimeoutFn });
+    const spy = jest.spyOn(service, 'report');
+
+    service.startBackgroundRefresh();
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(setTimeoutFn).toHaveBeenCalledTimes(1);
+  });
+});
