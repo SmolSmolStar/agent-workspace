@@ -4296,7 +4296,10 @@ class ClaudeOrchestrator {
         special: 'disabled-until-ready'
       },
       claudeModal: {
-        icon: '↻',
+        // Matches the 🤖 shown at the start of every agent terminal's title
+        // (createTerminalElement) instead of a refresh-looking ↻, so the
+        // button reads as "this starts the agent" rather than "reload".
+        icon: '🤖',
         title: 'Start Agent with Options',
         action: 'showClaudeStartupModal',
         showWhen: 'always',
@@ -7157,7 +7160,7 @@ class ClaudeOrchestrator {
 					    // show an explanatory toast instead of rendering a dead button.
 					    const disabledAttr = canOpen ? '' : 'aria-disabled="true" data-disabled="true"';
 					    const sidArg = this.escapeOnclickArg(String(sessionId || ''));
-					    return `<button class="control-btn" onclick="(typeof event !== 'undefined' && event && event.stopPropagation ? event.stopPropagation() : null); window.orchestrator.openWorktreeInspector(${sidArg}, { reviewConsole: true })" title="Review Console (worktree/files/commits/diff)" ${disabledAttr}>🗂</button>`;
+					    return `<button class="control-btn" onclick="(typeof event !== 'undefined' && event && event.stopPropagation ? event.stopPropagation() : null); window.orchestrator.openWorktreeInspector(${sidArg}, { reviewConsole: true })" title="Review Console (worktree/files/commits/diff)" ${disabledAttr}>🖥</button>`;
 					  }
 
 		  getWorktreeRemoveButtonHTML(sessionId) {
