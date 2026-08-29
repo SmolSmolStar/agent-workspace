@@ -15,6 +15,7 @@ class AgentManager {
       id: 'claude',
       name: 'Claude',
       icon: '🤖',
+      logo: 'assets/providers/claude.svg',
       description: 'Anthropic Claude Code',
       baseCommand: 'claude',
       modes: {
@@ -71,6 +72,7 @@ class AgentManager {
       id: 'codex',
       name: 'Codex',
       icon: '⚡',
+      logo: 'assets/providers/codex.png',
       description: 'OpenAI Codex CLI',
       baseCommand: 'codex',
 	      modes: {
@@ -153,6 +155,45 @@ class AgentManager {
 	        approvals: { name: 'Approval Policy', mutuallyExclusive: true }
 	      }
 	    });
+
+    // Grok Configuration
+    this.agentConfigs.set('grok', {
+      id: 'grok',
+      name: 'Grok',
+      icon: '✳️',
+      logo: 'assets/providers/grok.svg',
+      description: 'xAI Grok CLI',
+      baseCommand: 'grok',
+      modes: {
+        fresh: {
+          command: 'grok',
+          description: 'Start new session'
+        },
+        continue: {
+          command: 'grok --continue',
+          description: 'Continue the most recent session'
+        },
+        resume: {
+          command: 'grok --resume',
+          description: 'Resume a session by id'
+        }
+      },
+      flags: {
+        alwaysApprove: {
+          flag: '--always-approve',
+          description: 'Auto-approve all tool executions',
+          label: '🚀 YOLO Mode',
+          category: 'permissions',
+          default: true
+        }
+      },
+      defaultMode: 'fresh',
+      defaultFlags: ['alwaysApprove'],
+      availableFlags: ['alwaysApprove'],
+      flagCategories: {
+        permissions: { name: 'Permissions', mutuallyExclusive: false }
+      }
+    });
   }
 
   /**
@@ -196,6 +237,17 @@ class AgentManager {
 	          // Claude expects the resume id immediately after `--resume`.
 	          command = `${modeConfig.command} ${config.resumeId}`;
 	        }
+	      }
+
+	      // Claude and Grok both take --model/--effort as plain launch flags
+	      // (verified against each CLI's own --help), and neither flag
+	      // persists as a saved default the way the in-session /model and
+	      // /effort commands do.
+	      if ((agentId === 'claude' || agentId === 'grok') && config.model) {
+	        command += ` --model ${config.model}`;
+	      }
+	      if ((agentId === 'claude' || agentId === 'grok') && config.effort) {
+	        command += ` --effort ${config.effort}`;
 	      }
 
 	      // Add model if specified (Codex)
@@ -350,6 +402,7 @@ class AgentManager {
       id: agent.id,
       name: agent.name,
       icon: agent.icon,
+      logo: agent.logo || null,
       description: agent.description,
       modes: Object.entries(agent.modes).map(([key, mode]) => ({
         id: key,
