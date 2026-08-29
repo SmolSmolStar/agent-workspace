@@ -58,7 +58,7 @@ class ModelEffortPicker {
     badgeEl.classList.add('model-badge-trigger');
     badgeEl.setAttribute('role', 'button');
     badgeEl.setAttribute('tabindex', '0');
-    // el.title is set elsewhere on every render; don't touch it here.
+    // No title attribute here - the dropdown itself is the explanation.
     this.registerHoverable(badgeEl);
 
     const t = this.normalizeTarget(target);
@@ -262,7 +262,7 @@ class ModelEffortPicker {
           ${isCurrent ? '<span class="model-effort-picker-check">&#10003;</span>' : ''}
           <img class="model-effort-picker-harness-logo" src="${this.escape(harness.logo)}" alt="" width="16" height="16">
           <span class="model-effort-picker-model-label">${this.escape(harness.label)}</span>
-          <span class="model-effort-picker-expand" data-expand-toggle title="Models">&#9656;</span>
+          <span class="model-effort-picker-expand" data-expand-toggle>&#9656;</span>
         </button>
       </div>
     `;
@@ -359,7 +359,7 @@ class ModelEffortPicker {
         <button type="button" class="model-effort-picker-model" data-model-id="${this.escape(model.id)}">
           ${isCurrent ? '<span class="model-effort-picker-check">&#10003;</span>' : ''}
           <span class="model-effort-picker-model-label">${this.escape(model.label)}</span>
-          ${hasEfforts ? '<span class="model-effort-picker-expand" data-expand-toggle title="Effort options">&#9656;</span>' : ''}
+          ${hasEfforts ? '<span class="model-effort-picker-expand" data-expand-toggle>&#9656;</span>' : ''}
         </button>
       </div>
     `;
@@ -414,7 +414,7 @@ class ModelEffortPicker {
         <button type="button" class="model-effort-picker-effort" data-effort="${this.escape(effortId)}">
           ${isCurrent ? '<span class="model-effort-picker-check">&#10003;</span>' : ''}
           <span class="model-effort-picker-model-label">${this.escape(effortId)}</span>
-          ${hasTiers ? '<span class="model-effort-picker-expand" data-expand-toggle title="Tier options">&#9656;</span>' : ''}
+          ${hasTiers ? '<span class="model-effort-picker-expand" data-expand-toggle>&#9656;</span>' : ''}
         </button>
       </div>
     `;

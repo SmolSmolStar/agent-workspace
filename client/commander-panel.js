@@ -967,7 +967,6 @@ class CommanderPanel {
       }
       badge.style.display = '';
       badge.textContent = text;
-      badge.title = `Model & effort this Commander instance is using (${payload.provider}). Click to swap for this session only.`;
       this.orchestrator.modelEffortPicker?.attachTrigger(badge, { kind: 'commander', id: instanceId });
     } catch {
       badge.style.display = 'none';

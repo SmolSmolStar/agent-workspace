@@ -794,7 +794,6 @@ class ClaudeOrchestrator {
     }
     el.style.display = '';
     el.textContent = meta.text;
-    el.title = meta.tooltip;
     this.modelEffortPicker?.attachTrigger(el, sessionId);
   }
 
@@ -819,20 +818,7 @@ class ClaudeOrchestrator {
       : String(config.model || '').replace(/^claude-/i, '');
     const effortLevel = String(config.effortLevel || '').trim().toLowerCase();
     const text = [modelLabel, effortLevel].filter(Boolean).join(' ');
-
-    const tooltipLines = ['Model & effort agent launches in this worktree will use (settings files + env overrides).'];
-    const describeSource = (source) => {
-      const label = source?.label || 'unknown';
-      return source?.file ? `${label} (${source.file})` : label;
-    };
-    if (config.model) {
-      tooltipLines.push(`Model: ${config.model} — from ${describeSource(config.modelSource)}`);
-    }
-    if (effortLevel) {
-      tooltipLines.push(`Effort: ${effortLevel} — from ${describeSource(config.effortSource)}`);
-    }
-    tooltipLines.push('Note: a /model pick for "this session only" is not written to disk and won\'t show here.');
-    return { text, tooltip: tooltipLines.join('\n') };
+    return { text };
   }
 
   hashStringToBase36(value) {
