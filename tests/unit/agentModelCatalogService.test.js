@@ -148,6 +148,8 @@ describe('AgentModelCatalogService', () => {
     });
 
     test('replaces the curated codex models with the live ~/.codex/models_cache.json list', () => {
+      // Cache lists Luna before Sol, but the curated display order puts
+      // Sol first regardless of cache order.
       writeCodexCache({
         models: [
           {
@@ -166,10 +168,41 @@ describe('AgentModelCatalogService', () => {
       const { providers } = createService().getCatalog();
 
       expect(providers.codex.models).toEqual([
-        { id: 'gpt-5.6-luna', label: 'GPT-5.6-Luna', efforts: ['low', 'medium', 'high'], tiers: [] },
-        { id: 'gpt-5.6-sol', label: 'GPT-5.6-Sol', efforts: ['low', 'ultra'], tiers: [] }
+        { id: 'gpt-5.6-sol', label: 'GPT-5.6-Sol', efforts: ['low', 'ultra'], tiers: [] },
+        { id: 'gpt-5.6-luna', label: 'GPT-5.6-Luna', efforts: ['low', 'medium', 'high'], tiers: [] }
       ]);
       expect(providers.codex.liveSource).toContain('models_cache.json');
+    });
+
+    test('sorts by the curated display order: flagships, then Spark, then utility models, then the rest', () => {
+      const model = (slug) => ({ slug, display_name: slug, supported_reasoning_levels: [{ effort: 'medium' }] });
+      // Deliberately scrambled input order.
+      writeCodexCache({
+        models: [
+          model('gpt-5.4-mini'),
+          model('codex-auto-review'),
+          model('gpt-5.6-luna'),
+          model('gpt-reserve'),
+          model('gpt-5.3-codex-spark'),
+          model('gpt-5.6-sol'),
+          model('gpt-5.5'),
+          model('gpt-5.6-terra')
+        ]
+      });
+
+      const { providers } = createService().getCatalog();
+
+      expect(providers.codex.models.map((m) => m.id)).toEqual([
+        'gpt-5.6-sol',
+        'gpt-5.6-terra',
+        'gpt-5.6-luna',
+        'gpt-5.3-codex-spark',
+        'codex-auto-review',
+        'gpt-reserve',
+        // Unranked models keep their original (cache) relative order.
+        'gpt-5.4-mini',
+        'gpt-5.5'
+      ]);
     });
 
     test('drops models with no supported reasoning levels instead of shipping an empty effort list', () => {

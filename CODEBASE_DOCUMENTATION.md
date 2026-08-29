@@ -326,7 +326,7 @@ client/app.js                      - Main client application
 
 client/assets/agent-workspace-logo.png - Shared circular brand mark used by the app favicon, sidebar/dashboard title logo, and as the source for bundled desktop icons
 client/assets/providers/            - Provider marks (claude.svg, codex.png, grok.svg) for the Start AI Agent modal and any other harness-picker UI
-client/model-effort-picker.js      - ModelEffortPicker: hover/click dropdown for a session-only model+effort swap, targets either a worktree session or a Commander instance
+client/model-effort-picker.js      - ModelEffortPicker: Harness -> Model -> Effort -> Tier hover/click dropdown, same-harness swaps in place, different-harness fresh-starts (only when idle)
 client/agent-modal.js              - AgentModalManager: Start AI Agent modal, cascading button rows (harness/model/effort/tier) with provider logos, replaces the old flags-based model/reasoning hack
 client/commander-panel.js          - CommanderPanel: Commander's terminal UI, harness select feeds `startAgent()`, model badge shares the same ModelEffortPicker as worktree terminals
 
