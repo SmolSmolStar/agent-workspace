@@ -69,6 +69,18 @@ describe('ModelEffortPicker pure logic', () => {
     });
   });
 
+  describe('renderModelRow', () => {
+    test('shows the expand chevron for a model with effort levels', () => {
+      const html = picker.renderModelRow({ id: 'opus', label: 'Opus 5', efforts: ['low', 'high'] }, false);
+      expect(html).toContain('data-expand-toggle');
+    });
+
+    test('omits the expand chevron for a model with no effort levels (e.g. Haiku)', () => {
+      const html = picker.renderModelRow({ id: 'haiku', label: 'Haiku 4.5', efforts: [] }, false);
+      expect(html).not.toContain('data-expand-toggle');
+    });
+  });
+
   describe('normalizeCurrentModelId', () => {
     const provider = { models: [{ id: 'opus' }, { id: 'sonnet' }] };
 

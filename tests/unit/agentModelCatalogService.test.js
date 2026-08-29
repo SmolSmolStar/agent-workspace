@@ -59,6 +59,26 @@ describe('AgentModelCatalogService', () => {
     ]);
   });
 
+  test('an explicit empty efforts array overrides the provider default (e.g. Haiku has none)', () => {
+    writeCatalog({
+      claude: {
+        label: 'Claude',
+        efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+        models: [
+          { id: 'opus', label: 'Opus 5' },
+          { id: 'haiku', label: 'Haiku 4.5', efforts: [] }
+        ]
+      }
+    });
+
+    const { providers } = createService().getCatalog();
+
+    expect(providers.claude.models).toEqual([
+      { id: 'opus', label: 'Opus 5', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], tiers: [] },
+      { id: 'haiku', label: 'Haiku 4.5', efforts: [], tiers: [] }
+    ]);
+  });
+
   test('skips keys starting with underscore (comments) and malformed provider entries', () => {
     writeCatalog({
       _comment: 'this is not a provider',
