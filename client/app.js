@@ -794,6 +794,7 @@ class ClaudeOrchestrator {
     el.style.display = '';
     el.textContent = meta.text;
     el.title = meta.tooltip;
+    this.modelEffortPicker?.attachTrigger(el, sessionId);
   }
 
   getSessionModelBadgeMeta(sessionId) {
@@ -1200,6 +1201,9 @@ class ClaudeOrchestrator {
 	      this.terminalManager.autosuggestEnabled = false;
 	      this.notificationManager = new NotificationManager(this);
       this.agentModalManager = new AgentModalManager(this);
+      if (typeof ModelEffortPicker !== 'undefined') {
+        this.modelEffortPicker = new ModelEffortPicker(this);
+      }
 
       // Initialize tab manager for multi-workspace support
       if (typeof WorkspaceTabManager !== 'undefined') {
