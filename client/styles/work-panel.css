@@ -1,0 +1,210 @@
+/* Work panel — five-thieves flow report. One scroll container, full-width
+   numbers, no truncated labels. */
+
+.work-modal .work-content {
+  max-width: min(78rem, 96vw);
+  width: min(78rem, 96vw);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.25rem 1.5rem;
+  background: var(--bg-secondary);
+  color: #ffffff;
+}
+
+.work-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.work-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  color: #ffffff;
+}
+
+.work-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.work-controls label {
+  color: #a8d8f0;
+  font-size: 0.85rem;
+}
+
+.work-controls select {
+  background: var(--bg-primary);
+  color: #ffffff;
+  border: 1px solid var(--border-color, #30363d);
+  border-radius: 0.35rem;
+  padding: 0.3rem 0.5rem;
+}
+
+.work-meta {
+  color: #a8d8f0;
+  font-size: 0.85rem;
+}
+
+.work-body {
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+
+.work-thieves {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.work-thief {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color, #30363d);
+  border-radius: 0.5rem;
+  padding: 0.85rem 1rem;
+}
+
+.work-thief.open {
+  border-color: #a8d8f0;
+}
+
+.work-thief-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  color: #ffffff;
+}
+
+.work-thief-title {
+  font-weight: 700;
+  font-size: 1rem;
+  white-space: nowrap;
+}
+
+.work-thief-headline {
+  flex: 1;
+  color: #ffd685;
+  font-size: 0.9rem;
+}
+
+.work-thief-caret {
+  color: #a8d8f0;
+}
+
+.work-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.5rem 1rem;
+  margin-top: 0.75rem;
+}
+
+.work-metric-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.work-metric-label {
+  font-size: 0.78rem;
+  color: #c9d1d9;
+}
+
+.work-thief-detail {
+  margin-top: 0.85rem;
+  border-top: 1px solid var(--border-color, #30363d);
+  padding-top: 0.75rem;
+}
+
+.work-evidence {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.work-evidence li {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  font-size: 0.88rem;
+}
+
+.work-evidence a {
+  color: #8ec9ff;
+}
+
+.work-evidence-label {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.work-evidence-detail {
+  color: #c9d1d9;
+}
+
+.work-evidence-empty,
+.work-empty {
+  color: #c9d1d9;
+  padding: 0.75rem 0;
+}
+
+.work-error {
+  color: #ff9d9d;
+  padding: 0.75rem 0;
+}
+
+.work-detail-block {
+  margin-top: 1.25rem;
+}
+
+.work-detail-block summary {
+  cursor: pointer;
+  color: #a8d8f0;
+  margin-bottom: 0.75rem;
+}
+
+.work-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.work-table th,
+.work-table td {
+  border: 1px solid var(--border-color, #30363d);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  overflow-wrap: break-word;
+  color: #ffffff;
+}
+
+.work-table th {
+  background: var(--bg-primary);
+  color: #a8d8f0;
+  font-weight: 600;
+}
+
+.work-table .num {
+  text-align: right;
+}
+
+.work-coverage {
+  margin-top: 1rem;
+  font-size: 0.82rem;
+  color: #ffd685;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
