@@ -185,7 +185,8 @@ class CommanderService {
     this.outputBuffer = '';
     this.maxBufferChars = 200000;
     this.isReady = false;
-    this.claudeStarted = false; // Track if Claude has been auto-started
+    this.claudeStarted = false; // Track if an agent has been auto-started (name predates multi-provider support)
+    this.activeProvider = null; // 'claude' | 'codex' | 'grok', set once startAgent()/startClaude() actually launches one
     this.claudeLaunchState = null;
   }
 
@@ -266,7 +267,8 @@ class CommanderService {
       label: s.label || id,
       running: !!s.session,
       ready: !!s.isReady,
-      claudeStarted: !!s.claudeStarted
+      claudeStarted: !!s.claudeStarted,
+      provider: s.activeProvider || null
     }));
   }
 
@@ -428,6 +430,7 @@ class CommanderService {
         this.session = null;
         this.isReady = false;
         this.claudeStarted = false; // Reset for next start
+        this.activeProvider = null;
         this.resetClaudeLaunchState();
         if (this.io) {
           this.io.emit('commander-exit', { exitCode, instanceId: this.instanceId });
@@ -442,11 +445,74 @@ class CommanderService {
   }
 
   /**
+   * Start an AI agent in the Commander terminal. Claude is the well-tested
+   * path (trust-prompt detection, queued-input flushing, per-instance
+   * session-id pinning). Codex/Grok skip all of that: their exact TUI banner
+   * text isn't verified here, so rather than fabricate a matcher that could
+   * silently hang forever waiting for the wrong string, they're marked ready
+   * right after the launch command is sent. Model/effort are session-only
+   * launch flags for every provider - see agentManager.buildCommand for the
+   * same per-provider flag shapes used by worktree terminals.
+   * @param {object} options
+   * @param {'claude'|'codex'|'grok'} [options.provider]
+   * @param {string} [options.mode] - 'fresh', 'continue', or 'resume'
+   * @param {boolean} [options.yolo] - skip-permissions/always-approve/bypass-all
+   * @param {string} [options.model]
+   * @param {string} [options.effort]
+   */
+  async startAgent({ provider = 'claude', mode = 'fresh', yolo = true, model = null, effort = null } = {}) {
+    if (provider !== 'claude') {
+      return this.startNonClaudeAgent({ provider, mode, yolo, model, effort });
+    }
+    return this.startClaude(mode, yolo, { model, effort });
+  }
+
+  startNonClaudeAgent({ provider, mode, yolo, model, effort }) {
+    if (!['codex', 'grok'].includes(provider)) {
+      return { success: false, error: `Unknown provider: ${provider}` };
+    }
+    if (this.claudeStarted) {
+      logger.warn('Agent already started in this Commander instance, ignoring duplicate call');
+      return { success: false, error: 'Already started' };
+    }
+
+    const cmd = this.buildNonClaudeCommand({ provider, mode, yolo, model, effort });
+    this.claudeStarted = true;
+    this.activeProvider = provider;
+    logger.info('Starting agent in Commander', { provider, mode, cmd });
+    // No launch-queue/trust-prompt gating here (unverified banner text) -
+    // send directly and let output stream in like any other command.
+    const success = this.sendInput(`${cmd}\n`, { bypassLaunchQueue: true });
+    return { success, message: `Starting ${provider} (${mode})` };
+  }
+
+  buildNonClaudeCommand({ provider, mode, yolo, model, effort }) {
+    if (provider === 'codex') {
+      let cmd = 'codex';
+      if (mode === 'continue') cmd = 'codex resume --last';
+      else if (mode === 'resume') cmd = 'codex resume';
+      if (model) cmd += ` -m ${model}`;
+      if (effort) cmd += ` -c model_reasoning_effort="${effort}"`;
+      if (yolo) cmd += ' --dangerously-bypass-approvals-and-sandbox';
+      return cmd;
+    }
+    // grok
+    let cmd = 'grok';
+    if (mode === 'continue') cmd += ' --continue';
+    else if (mode === 'resume') cmd += ' --resume';
+    if (model) cmd += ` --model ${model}`;
+    if (effort) cmd += ` --effort ${effort}`;
+    if (yolo) cmd += ' --always-approve';
+    return cmd;
+  }
+
+  /**
    * Start Claude Code in the Commander terminal
    * @param {string} mode - 'fresh', 'continue', or 'resume'
    * @param {boolean} yolo - Use --dangerously-skip-permissions (default: true for Commander)
+   * @param {object} [modelOptions]
    */
-  async startClaude(mode = 'fresh', yolo = true) {
+  async startClaude(mode = 'fresh', yolo = true, { model = null, effort = null } = {}) {
     if (!this.session) {
       await this.start();
     }
@@ -457,6 +523,7 @@ class CommanderService {
       return { success: false, error: 'Already started' };
     }
     this.claudeStarted = true;
+    this.activeProvider = 'claude';
 
     // Build the claude command
     let cmd = 'claude';
@@ -490,6 +557,12 @@ class CommanderService {
     if (yolo) {
       cmd += ' --dangerously-skip-permissions';
     }
+
+    // Session-only launch flags (confirmed via `claude --help`) - never
+    // touch the persisted default the way the in-session /model and
+    // /effort commands do.
+    if (model) cmd += ` --model ${model}`;
+    if (effort) cmd += ` --effort ${effort}`;
 
     // Only wait for a trust prompt if Claude Code hasn't already trusted this
     // folder — on a trusted folder the prompt never appears and waiting for it
@@ -619,6 +692,7 @@ class CommanderService {
       this.session = null;
       this.isReady = false;
       this.claudeStarted = false;
+      this.activeProvider = null;
       this.resetClaudeLaunchState();
       return { success: true };
     }
@@ -675,7 +749,8 @@ class CommanderService {
       status: this.session?.status || 'stopped',
       cwd: COMMANDER_CWD,
       bufferLines: this.outputBuffer ? this.outputBuffer.split('\n').length : 0,
-      lastActivity: this.session?.lastActivity || null
+      lastActivity: this.session?.lastActivity || null,
+      provider: this.activeProvider || null
     };
   }
 

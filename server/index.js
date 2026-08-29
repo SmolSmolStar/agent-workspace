@@ -8162,6 +8162,78 @@ app.post('/api/commander/start-claude', async (req, res) => {
   }
 });
 
+// Provider-agnostic Commander launch (Claude/Codex/Grok), with optional
+// session-only model/effort launch flags. start-claude above stays as the
+// narrower, longer-tested Claude-only path.
+app.post('/api/commander/start-agent', async (req, res) => {
+  try {
+    const { provider, mode, yolo, model, effort } = req.body || {};
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+    const result = await target.startAgent({
+      provider: provider || 'claude',
+      mode: mode || 'fresh',
+      yolo: yolo !== false,
+      model: model || null,
+      effort: effort || null
+    });
+    res.json(result);
+  } catch (error) {
+    logger.error('Failed to start agent in commander', { error: error.message });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Current model/effort for a Commander instance, for the header dropdown.
+// Falls back to 'claude' when nothing has launched yet so the picker has
+// something meaningful to show before Start is ever clicked.
+app.get('/api/commander/model-config', (req, res) => {
+  try {
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+    const status = target.getStatus();
+    const provider = status.provider || 'claude';
+    const config = provider === 'codex'
+      ? agentModelConfigService.resolveCodexConfig()
+      : provider === 'grok'
+        ? agentModelConfigService.resolveGrokConfig()
+        : agentModelConfigService.resolveClaudeConfig(status.cwd);
+    return res.json({ ok: true, provider, ...config });
+  } catch (error) {
+    logger.error('Failed to resolve commander model config', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to resolve commander model config' });
+  }
+});
+
+// Session-only model/effort switch for a Commander instance - same
+// mechanism as POST /api/sessions/:sessionId/switch-model (see
+// AgentModelSwitchService), just targeting Commander's own PTY instead of
+// a worktree session's.
+app.post('/api/commander/switch-model', requirePolicyAction('write'), async (req, res) => {
+  try {
+    const { model, effort } = req.body || {};
+    if (!model && !effort) {
+      return res.status(400).json({ ok: false, error: 'model or effort is required' });
+    }
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+
+    const result = await agentModelSwitchService.switchCommanderSession({
+      commanderService: target,
+      model,
+      effort
+    });
+    if (!result.ok) {
+      const status = result.error === 'SESSION_NOT_FOUND' ? 404 : result.error === 'SESSION_BUSY' ? 409 : 400;
+      return res.status(status).json(result);
+    }
+    return res.json(result);
+  } catch (error) {
+    logger.error('Failed to switch commander model', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to switch commander model' });
+  }
+});
+
 // Send input to Commander terminal
 app.post('/api/commander/input', (req, res) => {
   try {

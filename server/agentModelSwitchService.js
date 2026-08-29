@@ -116,6 +116,63 @@ class AgentModelSwitchService {
     };
   }
 
+  // Same snapshot/restore trick as switchClaudeSession, for a Commander
+  // instance instead of a worktree session: Commander is its own service
+  // (not part of sessionManager.sessions), so it needs its own PTY-write
+  // path (commanderService.sendInput) and its own readiness check
+  // (commanderService.isReady, Commander has no 'busy' status concept).
+  async switchCommanderSession({ commanderService, model, effort }) {
+    if (!commanderService) throw new Error('commanderService is required');
+    if (!model && !effort) throw new Error('model or effort is required');
+
+    if (!commanderService.session) {
+      return { ok: false, error: 'SESSION_NOT_FOUND' };
+    }
+    if (commanderService.activeProvider && commanderService.activeProvider !== 'claude') {
+      return { ok: false, error: 'UNSUPPORTED_SESSION_TYPE', type: commanderService.activeProvider };
+    }
+    if (!commanderService.isReady) {
+      return { ok: false, error: 'SESSION_BUSY' };
+    }
+
+    const before = this.readSettings();
+    const hadModel = Object.prototype.hasOwnProperty.call(before, 'model');
+    const hadEffort = Object.prototype.hasOwnProperty.call(before, 'effortLevel');
+    const prevModel = before.model;
+    const prevEffort = before.effortLevel;
+
+    if (model) commanderService.sendInput(`/model ${model}\r`, { bypassLaunchQueue: true });
+    if (effort) commanderService.sendInput(`/effort ${effort}\r`, { bypassLaunchQueue: true });
+
+    const defaultChangeDetected = await this.waitForSettingsChange({
+      prevModel,
+      prevEffort,
+      expectModel: !!model,
+      expectEffort: !!effort
+    });
+    await this.sleepFn(this.settleDelayMs);
+
+    const after = this.readSettings();
+    if (hadModel) after.model = prevModel;
+    else delete after.model;
+    if (hadEffort) after.effortLevel = prevEffort;
+    else delete after.effortLevel;
+    this.writeSettings(after);
+
+    const verified = this.readSettings();
+    const defaultRestored =
+      (hadModel ? verified.model === prevModel : !('model' in verified)) &&
+      (hadEffort ? verified.effortLevel === prevEffort : !('effortLevel' in verified));
+
+    return {
+      ok: true,
+      model: model || null,
+      effort: effort || null,
+      defaultChangeDetected,
+      defaultRestored
+    };
+  }
+
   async waitForSettingsChange({ prevModel, prevEffort, expectModel, expectEffort }) {
     const deadline = Date.now() + this.pollTimeoutMs;
     while (Date.now() < deadline) {

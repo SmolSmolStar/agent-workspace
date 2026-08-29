@@ -403,14 +403,20 @@ class CommanderPanel {
         <button id="commander-cmdmode" class="commander-btn" title="Command mode: type / then a natural-language command to control the UI" data-ui-visibility="commander.cmdMode">
           ⌨️ Cmd:on
         </button>
-        <button id="commander-start-claude" class="commander-btn" title="Start Claude Code" data-ui-visibility="commander.startClaude">
-          Start Claude
+        <select id="commander-provider" data-ui-visibility="commander.startClaude" title="Harness to launch">
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+          <option value="grok">Grok</option>
+        </select>
+        <button id="commander-start-claude" class="commander-btn" title="Start agent" data-ui-visibility="commander.startClaude">
+          Start
         </button>
         <select id="commander-mode" data-ui-visibility="commander.modeSelect">
           <option value="fresh">Fresh</option>
           <option value="continue">Continue</option>
           <option value="resume">Resume</option>
         </select>
+        <span class="terminal-model-badge" id="commander-model-badge" style="display: none;"></span>
         <button id="commander-advice" class="commander-btn" title="Show workflow advice" data-ui-visibility="commander.advice">
           Advice
         </button>
@@ -649,10 +655,11 @@ class CommanderPanel {
     document.getElementById('commander-start')?.addEventListener('click', () => this.startCommander());
     document.getElementById('commander-stop')?.addEventListener('click', () => this.stopCommander());
 
-    // Start Claude button
+    // Start agent button (harness-agnostic - Claude/Codex/Grok)
     document.getElementById('commander-start-claude')?.addEventListener('click', () => {
       const mode = document.getElementById('commander-mode')?.value || 'fresh';
-      this.startClaude(mode);
+      const provider = document.getElementById('commander-provider')?.value || 'claude';
+      this.startAgent({ provider, mode });
     });
 
     // Command mode toggle
@@ -1076,9 +1083,18 @@ class CommanderPanel {
   }
 
   /**
-   * Start Claude Code in the Commander terminal
+   * Start Claude Code in the Commander terminal (back-compat wrapper).
    */
   async startClaude(mode = 'fresh') {
+    return this.startAgent({ provider: 'claude', mode });
+  }
+
+  /**
+   * Start an AI agent (Claude/Codex/Grok) in the Commander terminal, with
+   * optional session-only model/effort launch flags - see
+   * server/commanderService.js#startAgent for what each provider supports.
+   */
+  async startAgent({ provider = 'claude', mode = 'fresh', model = null, effort = null } = {}) {
     if (!this.isRunning) {
       await this.startCommander();
       // Wait for terminal to be ready
@@ -1086,19 +1102,20 @@ class CommanderPanel {
     }
 
     try {
-      const response = await fetch(this.apiUrl('/api/commander/start-claude'), {
+      const response = await fetch(this.apiUrl('/api/commander/start-agent'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode })
+        body: JSON.stringify({ provider, mode, model, effort })
       });
 
       if (response.ok) {
         if (this.terminal) {
           this.terminal.focus();
         }
+        this.refreshModelBadge?.();
       }
     } catch (error) {
-      console.error('Failed to start Claude:', error);
+      console.error('Failed to start agent:', error);
     }
   }
 

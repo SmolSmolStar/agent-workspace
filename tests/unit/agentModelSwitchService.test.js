@@ -136,4 +136,59 @@ describe('AgentModelSwitchService', () => {
   test('getInstance() returns the same singleton', () => {
     expect(AgentModelSwitchService.getInstance()).toBe(AgentModelSwitchService.getInstance());
   });
+
+  describe('switchCommanderSession', () => {
+    const createFakeCommanderService = ({ session, activeProvider = 'claude', isReady = true, onWrite } = {}) => ({
+      session,
+      activeProvider,
+      isReady,
+      sendInput: jest.fn((data) => {
+        onWrite?.(data);
+        return true;
+      })
+    });
+
+    test('switches model + effort, then restores the persisted default', async () => {
+      writeSettings({ model: 'sonnet', effortLevel: 'medium' });
+      const commanderService = createFakeCommanderService({
+        session: { id: 'commander' },
+        onWrite: (data) => {
+          const current = readSettings();
+          if (data.startsWith('/model ')) current.model = data.replace('/model ', '').replace('\r', '');
+          if (data.startsWith('/effort ')) current.effortLevel = data.replace('/effort ', '').replace('\r', '');
+          fs.writeFileSync(settingsPath, JSON.stringify(current));
+        }
+      });
+
+      const result = await createService(null).switchCommanderSession({
+        commanderService,
+        model: 'opus',
+        effort: 'high'
+      });
+
+      expect(result).toMatchObject({ ok: true, defaultChangeDetected: true, defaultRestored: true });
+      expect(readSettings()).toEqual({ model: 'sonnet', effortLevel: 'medium' });
+      expect(commanderService.sendInput).toHaveBeenCalledWith('/model opus\r', { bypassLaunchQueue: true });
+      expect(commanderService.sendInput).toHaveBeenCalledWith('/effort high\r', { bypassLaunchQueue: true });
+    });
+
+    test('rejects when Commander has no running session', async () => {
+      const commanderService = createFakeCommanderService({ session: null });
+      const result = await createService(null).switchCommanderSession({ commanderService, model: 'opus' });
+      expect(result).toEqual({ ok: false, error: 'SESSION_NOT_FOUND' });
+    });
+
+    test('rejects a non-Claude Commander instance', async () => {
+      const commanderService = createFakeCommanderService({ session: {}, activeProvider: 'codex' });
+      const result = await createService(null).switchCommanderSession({ commanderService, model: 'opus' });
+      expect(result).toEqual({ ok: false, error: 'UNSUPPORTED_SESSION_TYPE', type: 'codex' });
+    });
+
+    test('refuses to interrupt a not-yet-ready Commander', async () => {
+      const commanderService = createFakeCommanderService({ session: {}, isReady: false });
+      const result = await createService(null).switchCommanderSession({ commanderService, model: 'opus' });
+      expect(result).toEqual({ ok: false, error: 'SESSION_BUSY' });
+      expect(commanderService.sendInput).not.toHaveBeenCalled();
+    });
+  });
 });
