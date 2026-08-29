@@ -2,44 +2,35 @@ const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
 const winston = require('winston');
+const metrics = require('./flowMetrics');
 
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
-  format: winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.json()
-  ),
+  format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
   transports: [
     new winston.transports.File({ filename: 'logs/flow-visibility.log' }),
     new winston.transports.Console({ format: winston.format.simple() })
   ]
 });
 
-const DEFAULT_WINDOW_DAYS = 30;
-const MAX_WINDOW_DAYS = 180;
+const DEFAULT_WINDOW_DAYS = 90;
+const MAX_WINDOW_DAYS = 365;
 const STALE_BRANCH_DAYS = 90;
 const AGING_PR_DAYS = 14;
+const REVIEW_IDLE_DAYS = 3;
 const REFRESH_INTERVAL_MS = Number(process.env.ORCHESTRATOR_FLOW_CACHE_TTL_MS || 600000);
 const MIN_MANUAL_REFRESH_GAP_MS = 30000;
 const MAX_REPOS = Number(process.env.ORCHESTRATOR_FLOW_MAX_REPOS || 40);
 const REPO_CONCURRENCY = 4;
-const GIT_TIMEOUT_MS = 15000;
-const GH_TIMEOUT_MS = 20000;
-const PR_PAGE_LIMIT = 100;
+const GIT_TIMEOUT_MS = 20000;
+const GH_TIMEOUT_MS = 40000;
+const PR_FETCH_LIMIT = 400;
 
-const DAY_MS = 86400000;
-
-// A commit subject counts as unplanned when its conventional-commit type is
-// reactive rather than additive. `revert` is the strongest signal of all: the
-// work it undoes was already paid for once.
-const UNPLANNED_TYPES = new Set(['fix', 'hotfix', 'revert', 'bug']);
-const PLANNED_TYPES = new Set(['feat', 'feature']);
-
-const THIEF_KEYS = ['wip', 'neglected', 'unplanned', 'conflicting', 'dependencies'];
+const DAY_MS = metrics.DAY_MS;
 
 function runCommand(command, args, cwd, timeoutMs) {
   return new Promise((resolve) => {
-    execFile(command, args, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+    execFile(command, args, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 32 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (error) {
           resolve({ ok: false, error: error.message, stderr: String(stderr || ''), stdout: '' });
@@ -50,31 +41,8 @@ function runCommand(command, args, cwd, timeoutMs) {
   });
 }
 
-function defaultGit(args, cwd) {
-  return runCommand('git', args, cwd, GIT_TIMEOUT_MS);
-}
-
-function defaultGh(args, cwd) {
-  return runCommand('gh', args, cwd, GH_TIMEOUT_MS);
-}
-
-function daysBetween(fromMs, toMs) {
-  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return null;
-  return Math.max(0, Math.round((toMs - fromMs) / DAY_MS));
-}
-
-function median(values) {
-  const sorted = values.filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
-  if (!sorted.length) return null;
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
-}
-
-function commitType(subject) {
-  const match = /^([a-z]+)(\([^)]*\))?!?:/i.exec(String(subject || '').trim());
-  if (!match) return null;
-  return match[1].toLowerCase();
-}
+const defaultGit = (args, cwd) => runCommand('git', args, cwd, GIT_TIMEOUT_MS);
+const defaultGh = (args, cwd) => runCommand('gh', args, cwd, GH_TIMEOUT_MS);
 
 async function mapWithConcurrency(items, limit, worker) {
   const results = new Array(items.length);
@@ -90,15 +58,13 @@ async function mapWithConcurrency(items, limit, worker) {
   return results;
 }
 
-// The five thieves of time (DeGrandis, "Making Work Visible") measured against
-// what this machine actually has: worktrees, sessions, branches, PRs, commits
-// and task records. Every number is derived locally at request time — nothing
-// about a repo, a branch or a session is ever persisted or shipped anywhere.
+// Collects local git/gh state for flowMetrics. WIP and neglect are derived; unplanned and dependencies are logged, never inferred.
 class FlowVisibilityService {
   constructor({
     workspaceProvider = () => [],
     sessionProvider = () => [],
     taskRecordProvider = () => [],
+    thiefLog = null,
     git = defaultGit,
     gh = defaultGh,
     pathExists = (target) => fs.existsSync(target),
@@ -109,6 +75,7 @@ class FlowVisibilityService {
     this.workspaceProvider = workspaceProvider;
     this.sessionProvider = sessionProvider;
     this.taskRecordProvider = taskRecordProvider;
+    this.thiefLog = thiefLog;
     this.git = git;
     this.gh = gh;
     this.pathExists = pathExists;
@@ -116,7 +83,7 @@ class FlowVisibilityService {
     this.setIntervalFn = setIntervalFn;
     this.clearIntervalFn = clearIntervalFn;
 
-    this.cache = new Map(); // windowDays -> { report, builtAt }
+    this.cache = new Map();
     this.inFlight = new Map();
     this.lastManualRefreshAt = 0;
     this.backgroundTimer = null;
@@ -149,11 +116,9 @@ class FlowVisibilityService {
   normalizeWindow(days) {
     const parsed = Number.parseInt(days, 10);
     if (!Number.isFinite(parsed)) return DEFAULT_WINDOW_DAYS;
-    return Math.min(MAX_WINDOW_DAYS, Math.max(1, parsed));
+    return Math.min(MAX_WINDOW_DAYS, Math.max(7, parsed));
   }
 
-  // A repo directory in this layout holds worktree siblings (master/, work1/,
-  // …), so the git commands have to run inside the primary checkout.
   resolvePrimaryDir(repoPath) {
     for (const candidate of ['master', 'main']) {
       const target = path.join(repoPath, candidate);
@@ -163,9 +128,6 @@ class FlowVisibilityService {
     return null;
   }
 
-  // Every repo the orchestrator currently has a terminal for, deduped by path.
-  // Worktree counts come from the same pass because a repo carrying many
-  // simultaneous worktrees is itself a WIP signal.
   collectRepos() {
     const byPath = new Map();
     let workspaces = [];
@@ -184,25 +146,16 @@ class FlowVisibilityService {
           byPath.set(repoPath, {
             name: terminal.repository.name || path.basename(repoPath),
             path: repoPath,
-            worktrees: new Set(),
-            workspaces: new Set()
+            worktrees: new Set()
           });
         }
-        const entry = byPath.get(repoPath);
-        if (terminal.worktree) entry.worktrees.add(terminal.worktree);
-        if (workspace?.id) entry.workspaces.add(workspace.id);
+        if (terminal.worktree) byPath.get(repoPath).worktrees.add(terminal.worktree);
       }
     }
 
     const entries = Array.from(byPath.values());
-
-    // Two checkouts can legitimately carry the same repo name. Showing both as
-    // bare "zoo-game" reads as a double-count, so a repeated name gets its
-    // parent directory prepended.
     const nameCounts = new Map();
-    for (const entry of entries) {
-      nameCounts.set(entry.name, (nameCounts.get(entry.name) || 0) + 1);
-    }
+    for (const entry of entries) nameCounts.set(entry.name, (nameCounts.get(entry.name) || 0) + 1);
 
     return entries
       .map((entry) => ({
@@ -210,107 +163,128 @@ class FlowVisibilityService {
           ? `${path.basename(path.dirname(entry.path))}/${entry.name}`
           : entry.name,
         path: entry.path,
-        worktreeCount: entry.worktrees.size,
-        workspaceCount: entry.workspaces.size
+        worktreeCount: entry.worktrees.size
       }))
       .sort((a, b) => b.worktreeCount - a.worktreeCount)
       .slice(0, MAX_REPOS);
   }
 
-  async collectBranchAging(primaryDir, nowMs) {
+  async resolveDefaultRef(primaryDir) {
+    const head = await this.git(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], primaryDir);
+    if (head.ok && head.stdout.trim()) return head.stdout.trim().replace('refs/remotes/', '');
+    for (const candidate of ['origin/master', 'origin/main']) {
+      const check = await this.git(['rev-parse', '--verify', '--quiet', candidate], primaryDir);
+      if (check.ok && check.stdout.trim()) return candidate;
+    }
+    return null;
+  }
+
+  async collectBranches(primaryDir, nowMs) {
     const result = await this.git(
       ['for-each-ref', '--format=%(refname:short)%09%(committerdate:unix)', 'refs/remotes/origin'],
       primaryDir
     );
-    if (!result.ok) return { total: 0, stale: 0, oldestDays: null, available: false };
+    if (!result.ok) return { total: 0, stale: 0, unmerged: null, available: false };
 
     let total = 0;
     let stale = 0;
-    let oldestDays = null;
     for (const line of result.stdout.split('\n')) {
       const [refName, unix] = line.split('\t');
-      if (!refName || !unix) continue;
-      if (/\/HEAD$/.test(refName)) continue;
-      const ageDays = daysBetween(Number(unix) * 1000, nowMs);
-      if (ageDays === null) continue;
+      if (!refName || !unix || /\/HEAD$/.test(refName)) continue;
       total += 1;
-      if (ageDays >= STALE_BRANCH_DAYS) stale += 1;
-      if (oldestDays === null || ageDays > oldestDays) oldestDays = ageDays;
+      if ((nowMs - Number(unix) * 1000) >= STALE_BRANCH_DAYS * DAY_MS) stale += 1;
     }
-    return { total, stale, oldestDays, available: true };
+
+    // A merged branch nobody deleted is not unfinished work, so the board only counts unmerged ones.
+    let unmerged = null;
+    const defaultRef = await this.resolveDefaultRef(primaryDir);
+    if (defaultRef) {
+      const notMerged = await this.git(
+        ['for-each-ref', '--format=%(refname:short)', `--no-merged=${defaultRef}`, 'refs/remotes/origin'],
+        primaryDir
+      );
+      if (notMerged.ok) {
+        unmerged = notMerged.stdout.split('\n')
+          .filter((line) => line.trim() && !/\/HEAD$/.test(line) && line.trim() !== defaultRef).length;
+      }
+    }
+
+    return { total, stale, unmerged, available: true };
   }
 
-  async collectCommitMix(primaryDir, windowDays) {
+  async collectCommits(primaryDir, windowDays, repoName) {
     const result = await this.git(
-      ['log', `--since=${windowDays}.days.ago`, '--no-merges', '--format=%s'],
+      ['log', `--since=${windowDays}.days.ago`, '--no-merges', '--format=%ct%x09%s'],
       primaryDir
     );
-    if (!result.ok) return { planned: 0, unplanned: 0, other: 0, available: false };
+    if (!result.ok) return { commits: [], available: false };
 
-    let planned = 0;
-    let unplanned = 0;
-    let other = 0;
+    const commits = [];
     for (const line of result.stdout.split('\n')) {
-      if (!line.trim()) continue;
-      const type = commitType(line);
-      if (type && UNPLANNED_TYPES.has(type)) unplanned += 1;
-      else if (type && PLANNED_TYPES.has(type)) planned += 1;
-      else other += 1;
+      const tab = line.indexOf('\t');
+      if (tab < 1) continue;
+      const timeMs = Number(line.slice(0, tab)) * 1000;
+      if (!Number.isFinite(timeMs)) continue;
+      commits.push({ timeMs, subject: line.slice(tab + 1), repo: repoName });
     }
-    return { planned, unplanned, other, available: true };
+    return { commits, available: true };
   }
 
-  async collectOpenPullRequests(primaryDir, nowMs) {
+  async collectPullRequests(primaryDir, repoName, windowDays, nowMs) {
+    const since = new Date(nowMs - windowDays * DAY_MS).toISOString().slice(0, 10);
     const result = await this.gh(
-      ['pr', 'list', '--state', 'open', '--limit', String(PR_PAGE_LIMIT), '--json',
-        'number,title,url,createdAt,updatedAt,mergeable,isDraft'],
+      ['pr', 'list', '--state', 'all', '--limit', String(PR_FETCH_LIMIT),
+        '--search', `updated:>=${since} sort:updated-desc`,
+        '--json', 'number,title,url,state,isDraft,mergeable,createdAt,updatedAt,closedAt,mergedAt'],
       primaryDir
     );
     if (!result.ok) {
-      return { available: false, reason: 'gh unavailable or repo not on GitHub', items: [] };
+      return { available: false, reason: 'gh unavailable or repo not on GitHub', items: [], truncated: false };
     }
 
     let parsed;
     try {
       parsed = JSON.parse(result.stdout || '[]');
-    } catch (error) {
-      return { available: false, reason: 'unreadable gh output', items: [] };
+    } catch {
+      return { available: false, reason: 'unreadable gh output', items: [], truncated: false };
     }
-    if (!Array.isArray(parsed)) return { available: false, reason: 'unexpected gh output', items: [] };
+    if (!Array.isArray(parsed)) {
+      return { available: false, reason: 'unexpected gh output', items: [], truncated: false };
+    }
 
-    const items = parsed.map((pr) => {
-      const createdMs = Date.parse(pr.createdAt);
-      const updatedMs = Date.parse(pr.updatedAt);
-      return {
-        number: pr.number,
-        title: pr.title,
-        url: pr.url,
-        isDraft: !!pr.isDraft,
-        conflicting: pr.mergeable === 'CONFLICTING',
-        ageDays: daysBetween(createdMs, nowMs),
-        idleDays: daysBetween(updatedMs, nowMs)
-      };
-    });
-    return { available: true, items };
+    const items = parsed.map((pr) => ({
+      repo: repoName,
+      number: pr.number,
+      title: pr.title,
+      url: pr.url,
+      state: String(pr.state || '').toLowerCase(),
+      isDraft: !!pr.isDraft,
+      conflicting: pr.mergeable === 'CONFLICTING',
+      createdMs: Date.parse(pr.createdAt),
+      updatedMs: Date.parse(pr.updatedAt),
+      closedMs: pr.closedAt ? Date.parse(pr.closedAt) : NaN,
+      mergedMs: pr.mergedAt ? Date.parse(pr.mergedAt) : NaN
+    }));
+
+    // A full page means older items were cut off; say so rather than draw it anyway.
+    return { available: true, items, truncated: parsed.length >= PR_FETCH_LIMIT };
   }
 
   async inspectRepo(repo, windowDays, nowMs) {
     const primaryDir = this.resolvePrimaryDir(repo.path);
     if (!primaryDir) {
-      return { ...repo, gitAvailable: false, prs: { available: false, items: [] } };
+      return { ...repo, gitAvailable: false, prs: { available: false, items: [], truncated: false }, commits: [] };
     }
 
     const [branches, commits, prs] = await Promise.all([
-      this.collectBranchAging(primaryDir, nowMs),
-      this.collectCommitMix(primaryDir, windowDays),
-      this.collectOpenPullRequests(primaryDir, nowMs)
+      this.collectBranches(primaryDir, nowMs),
+      this.collectCommits(primaryDir, windowDays, repo.name),
+      this.collectPullRequests(primaryDir, repo.name, windowDays, nowMs)
     ]);
 
-    return { ...repo, gitAvailable: true, branches, commits, prs };
+    return { ...repo, gitAvailable: true, branches, commits: commits.commits, prs };
   }
 
-  // Sessions the orchestrator believes are alive. This is WIP measured at the
-  // only place it is genuinely started-but-unfinished: a running agent.
   summarizeSessions() {
     let sessions = [];
     try {
@@ -319,17 +293,13 @@ class FlowVisibilityService {
       logger.warn('Flow report could not list sessions', { error: error.message });
       return { total: 0, busy: 0, available: false };
     }
-
-    let busy = 0;
-    for (const session of sessions) {
+    const busy = sessions.filter((session) => {
       const status = String(session?.status || '').toLowerCase();
-      if (status === 'busy' || status === 'working' || status === 'running') busy += 1;
-    }
+      return status === 'busy' || status === 'working' || status === 'running';
+    }).length;
     return { total: sessions.length, busy, available: true };
   }
 
-  // Tiers exist so that not everything can be first. When almost every record
-  // carries the top tier, the ranking has stopped ranking.
   summarizeTiers() {
     let records = [];
     try {
@@ -343,177 +313,189 @@ class FlowVisibilityService {
     let untiered = 0;
     for (const record of records) {
       const tier = Number.parseInt(record?.tier, 10);
-      if (!Number.isFinite(tier)) {
-        untiered += 1;
-        continue;
-      }
-      byTier[tier] = (byTier[tier] || 0) + 1;
+      if (Number.isFinite(tier)) byTier[tier] = (byTier[tier] || 0) + 1;
+      else untiered += 1;
     }
-    const tiered = Object.values(byTier).reduce((sum, n) => sum + n, 0);
-    const topTierShare = tiered ? Math.round(((byTier[1] || 0) / tiered) * 100) : null;
-    return { total: records.length, byTier, untiered, topTierShare, available: true };
+    const tiered = Object.values(byTier).reduce((sum, count) => sum + count, 0);
+    return {
+      total: records.length,
+      byTier,
+      untiered,
+      topTierShare: tiered ? Math.round(((byTier[1] || 0) / tiered) * 100) : null,
+      available: true
+    };
   }
 
-  buildThieves({ repos, sessions, tiers }) {
-    const openPrs = repos.flatMap((repo) =>
-      (repo.prs?.items || []).map((pr) => ({ ...pr, repo: repo.name })));
-    const prAvailableRepos = repos.filter((repo) => repo.prs?.available);
-    const loadedRepos = repos.filter((repo) => repo.worktreeCount > 0);
-
-    const aging = openPrs
-      .filter((pr) => Number.isFinite(pr.idleDays) && pr.idleDays >= AGING_PR_DAYS)
-      .sort((a, b) => b.idleDays - a.idleDays);
-
-    const staleBranches = repos.reduce((sum, repo) => sum + (repo.branches?.stale || 0), 0);
-    const totalBranches = repos.reduce((sum, repo) => sum + (repo.branches?.total || 0), 0);
-
-    const planned = repos.reduce((sum, repo) => sum + (repo.commits?.planned || 0), 0);
-    const unplanned = repos.reduce((sum, repo) => sum + (repo.commits?.unplanned || 0), 0);
-    const unplannedShare = (planned + unplanned)
-      ? Math.round((unplanned / (planned + unplanned)) * 100)
-      : null;
-
-    const conflicting = openPrs.filter((pr) => pr.conflicting);
+  // Figure 45, sources kept apart. An empty logged thief means untracked, never zero.
+  buildThieves({ weeks, board, aging, sessions, tiers, openPrs, logSummary }) {
+    const latestWeek = weeks[weeks.length - 1] || { openAtEnd: 0, agedAtEnd: 0, reposTouched: 0 };
+    const conflictingPrs = openPrs.filter((pr) => pr.conflicting).length;
 
     return [
       {
         key: 'wip',
         title: 'Too much WIP',
-        headline: `${openPrs.length} open PRs across ${prAvailableRepos.length} repos`,
+        source: 'derived',
+        tally: latestWeek.openAtEnd,
+        unit: 'open items',
+        headline: `${latestWeek.openAtEnd} items started and not finished`,
         metrics: [
-          { label: 'Open PRs', value: openPrs.length },
-          { label: 'Live sessions', value: sessions.total },
-          { label: 'Repos loaded at once', value: loadedRepos.length },
-          { label: 'Worktrees open', value: repos.reduce((sum, r) => sum + r.worktreeCount, 0) }
-        ],
-        evidence: loadedRepos
-          .slice(0, 10)
-          .map((repo) => {
-            // "0 open PRs" and "we could not ask" are different claims.
-            const prPart = repo.prs?.available
-              ? `${repo.prs.items.length} open PR(s)`
-              : (repo.gitAvailable ? 'PR count unknown' : 'no git checkout found');
-            return {
-              label: repo.name,
-              detail: `${repo.worktreeCount} worktree(s), ${prPart}`
-            };
-          })
+          { label: 'Open pull requests', value: openPrs.length },
+          { label: 'Live agent sessions', value: sessions.total },
+          { label: 'Waiting on review', value: board.columns.find((c) => c.key === 'waiting')?.count ?? null },
+          { label: 'Unmerged branches, no PR', value: board.columns.find((c) => c.key === 'branch')?.count ?? null }
+        ]
       },
       {
         key: 'neglected',
         title: 'Neglected work',
-        headline: aging.length
-          ? `${aging.length} PRs untouched for ${AGING_PR_DAYS}+ days, oldest idle ${aging[0].idleDays}d`
-          : 'No open PR has been idle past the aging threshold',
+        source: 'derived',
+        tally: latestWeek.agedAtEnd,
+        unit: 'aged items',
+        headline: aging.rows.length
+          ? `${latestWeek.agedAtEnd} items older than ${AGING_PR_DAYS} days, worst idle ${aging.rows[0].idleDays}d`
+          : 'Nothing open has aged past the threshold',
         metrics: [
-          { label: `PRs idle ${AGING_PR_DAYS}d+`, value: aging.length },
-          { label: 'Median PR age (days)', value: median(openPrs.map((pr) => pr.ageDays)) },
-          { label: `Branches stale ${STALE_BRANCH_DAYS}d+`, value: staleBranches },
-          { label: 'Remote branches', value: totalBranches }
-        ],
-        evidence: aging.slice(0, 10).map((pr) => ({
-          label: `${pr.repo} #${pr.number}`,
-          detail: `idle ${pr.idleDays}d, open ${pr.ageDays}d — ${pr.title}`,
-          url: pr.url
-        }))
+          { label: `Open past ${AGING_PR_DAYS}d`, value: latestWeek.agedAtEnd },
+          { label: 'Average idle (days)', value: aging.averageIdleDays },
+          { label: 'Average age (days)', value: aging.averageAgeDays }
+        ]
       },
       {
         key: 'unplanned',
         title: 'Unplanned work',
-        headline: unplannedShare === null
-          ? 'No conventional-commit history in the window'
-          : `${unplannedShare}% of typed commits were reactive`,
+        source: 'logged',
+        tally: logSummary.byThief.unplanned.count,
+        unit: 'logged interruptions',
+        headline: logSummary.byThief.unplanned.count
+          ? `${logSummary.byThief.unplanned.count} logged, ${logSummary.byThief.unplanned.minutes} minutes attributed`
+          : 'Nothing logged yet, so its real volume is unknown',
+        note: 'Interruptions, expedites and incidents leave no commit. This counts what you logged, not what git guessed.',
         metrics: [
-          { label: 'Reactive commits', value: unplanned },
-          { label: 'Feature commits', value: planned },
-          { label: 'Reactive share (%)', value: unplannedShare }
-        ],
-        evidence: repos
-          .filter((repo) => (repo.commits?.unplanned || 0) > 0)
-          .sort((a, b) => b.commits.unplanned - a.commits.unplanned)
-          .slice(0, 10)
-          .map((repo) => ({
-            label: repo.name,
-            detail: `${repo.commits.unplanned} reactive vs ${repo.commits.planned} feature`
-          }))
+          { label: 'Entries logged', value: logSummary.byThief.unplanned.count },
+          { label: 'Minutes attributed', value: logSummary.byThief.unplanned.minutes },
+          { label: 'Entries with a duration', value: logSummary.byThief.unplanned.timedCount }
+        ]
       },
       {
         key: 'conflicting',
         title: 'Conflicting priorities',
-        headline: tiers.topTierShare === null
-          ? `${loadedRepos.length} repos carry open worktrees at the same time`
-          : `${tiers.topTierShare}% of tiered work claims the top tier`,
+        source: 'mixed',
+        tally: latestWeek.reposTouched,
+        unit: 'repos touched',
+        headline: `${latestWeek.reposTouched} repos touched in the last week`,
+        note: 'Repo spread is derived. Being pulled sideways off a committed item is logged.',
         metrics: [
-          { label: 'Repos in flight', value: loadedRepos.length },
+          { label: 'Repos touched this week', value: latestWeek.reposTouched },
           { label: 'Tracked task records', value: tiers.total },
-          { label: 'Untiered records', value: tiers.untiered },
-          { label: 'Top-tier share (%)', value: tiers.topTierShare }
-        ],
-        evidence: Object.entries(tiers.byTier)
-          .sort((a, b) => Number(a[0]) - Number(b[0]))
-          .map(([tier, count]) => ({ label: `Tier ${tier}`, detail: `${count} record(s)` }))
+          { label: 'Top-tier share (%)', value: tiers.topTierShare },
+          { label: 'Logged entries', value: logSummary.byThief.conflicting.count }
+        ]
       },
       {
         key: 'dependencies',
         title: 'Unknown dependencies',
-        headline: conflicting.length
-          ? `${conflicting.length} open PRs cannot merge without a rebase`
-          : 'No open PR is currently blocked on a conflict',
+        source: 'logged',
+        tally: logSummary.byThief.dependencies.count,
+        unit: 'logged blockers',
+        headline: logSummary.byThief.dependencies.count
+          ? `${logSummary.byThief.dependencies.count} logged, ${logSummary.byThief.dependencies.minutes} minutes attributed`
+          : 'Nothing logged yet, so its real volume is unknown',
+        note: 'The task nobody wrote down until it blocked go-live. Merge conflicts are shown separately because they are code coupling, not this.',
         metrics: [
-          { label: 'Conflicting PRs', value: conflicting.length },
-          { label: 'Draft PRs', value: openPrs.filter((pr) => pr.isDraft).length },
-          { label: 'Repos without PR data', value: repos.length - prAvailableRepos.length }
-        ],
-        evidence: conflicting.slice(0, 10).map((pr) => ({
-          label: `${pr.repo} #${pr.number}`,
-          detail: `conflicting, open ${pr.ageDays}d — ${pr.title}`,
-          url: pr.url
-        }))
+          { label: 'Entries logged', value: logSummary.byThief.dependencies.count },
+          { label: 'Minutes attributed', value: logSummary.byThief.dependencies.minutes },
+          { label: 'PRs needing a rebase', value: conflictingPrs }
+        ]
       }
     ];
   }
 
   async build(windowDays) {
     const nowMs = this.now();
-    const repoList = this.collectRepos();
     const repos = await mapWithConcurrency(
-      repoList,
+      this.collectRepos(),
       REPO_CONCURRENCY,
       (repo) => this.inspectRepo(repo, windowDays, nowMs)
     );
 
+    const pullRequests = repos.flatMap((repo) => repo.prs?.items || []);
+    const commits = repos.flatMap((repo) => repo.commits || []);
+    const openPrs = pullRequests.filter((pr) => pr.state === 'open');
+    const openPrBranches = new Set(openPrs.map((pr) => `${pr.repo}#${pr.number}`));
+    const remoteBranches = repos.reduce((sum, repo) => sum + (repo.branches?.total || 0), 0);
+    const staleBranches = repos.reduce((sum, repo) => sum + (repo.branches?.stale || 0), 0);
+
+    const weeks = metrics.buildWeeklyFlow({
+      pullRequests, commits, nowMs, windowDays, agingDays: AGING_PR_DAYS
+    });
+    const unmergedKnown = repos.every((repo) => !repo.gitAvailable || Number.isFinite(repo.branches?.unmerged));
+    const unmergedBranches = repos.reduce((sum, repo) => sum + (repo.branches?.unmerged || 0), 0);
+    const board = metrics.buildBoard({
+      pullRequests,
+      // Bounded at zero: a repo can hold more open PRs than the branch scan saw.
+      branchesWithoutPr: unmergedKnown ? Math.max(0, unmergedBranches - openPrBranches.size) : null,
+      nowMs,
+      reviewIdleDays: REVIEW_IDLE_DAYS
+    });
+    const aging = metrics.buildAgingReport({ pullRequests, nowMs });
+    const flowTime = metrics.buildFlowTime({ pullRequests });
+    const queue = metrics.buildQueueModel({ weeks });
+    const throughput = metrics.buildThroughput({ weeks });
+    const visibilityGrid = metrics.buildVisibilityGrid({ commits });
+
     const sessions = this.summarizeSessions();
     const tiers = this.summarizeTiers();
-    const thieves = this.buildThieves({ repos, sessions, tiers });
 
-    const skipped = repos.filter((repo) => !repo.gitAvailable).map((repo) => repo.name);
-    const withoutPrData = repos.filter((repo) => repo.gitAvailable && !repo.prs?.available)
-      .map((repo) => repo.name);
+    const sinceMs = nowMs - windowDays * DAY_MS;
+    const logSummary = this.thiefLog
+      ? this.thiefLog.summary({ sinceMs })
+      : { total: 0, byThief: { unplanned: { count: 0, minutes: 0, timedCount: 0 }, dependencies: { count: 0, minutes: 0, timedCount: 0 }, conflicting: { count: 0, minutes: 0, timedCount: 0 }, neglected: { count: 0, minutes: 0, timedCount: 0 }, wip: { count: 0, minutes: 0, timedCount: 0 } } };
+    const loggedWeekly = this.thiefLog
+      ? this.thiefLog.weeklyCounts({ weekStarts: weeks.map((week) => week.weekStart) })
+      : null;
+
+    const thieves = this.buildThieves({ weeks, board, aging, sessions, tiers, openPrs, logSummary });
 
     return {
       ok: true,
       generatedAt: new Date(nowMs).toISOString(),
       windowDays,
-      thresholds: { staleBranchDays: STALE_BRANCH_DAYS, agingPrDays: AGING_PR_DAYS },
+      thresholds: { staleBranchDays: STALE_BRANCH_DAYS, agingPrDays: AGING_PR_DAYS, reviewIdleDays: REVIEW_IDLE_DAYS },
       repoCount: repos.length,
       coverage: {
         maxRepos: MAX_REPOS,
-        skippedNoGit: skipped,
-        missingPrData: withoutPrData
+        skippedNoGit: repos.filter((repo) => !repo.gitAvailable).map((repo) => repo.name),
+        missingPrData: repos.filter((repo) => repo.gitAvailable && !repo.prs?.available).map((repo) => repo.name),
+        truncatedPrHistory: repos.filter((repo) => repo.prs?.truncated).map((repo) => repo.name)
+      },
+      totals: {
+        openPrs: openPrs.length,
+        remoteBranches,
+        staleBranches,
+        unmergedBranches: unmergedKnown ? unmergedBranches : null,
+        commits: commits.length
       },
       sessions,
       tiers,
       thieves,
+      weeks,
+      board,
+      aging,
+      flowTime,
+      queue,
+      throughput,
+      visibilityGrid,
+      log: { summary: logSummary, weekly: loggedWeekly },
       repos: repos.map((repo) => ({
         name: repo.name,
         worktreeCount: repo.worktreeCount,
-        workspaceCount: repo.workspaceCount,
-        openPrs: (repo.prs?.items || []).length,
+        openPrs: (repo.prs?.items || []).filter((pr) => pr.state === 'open').length,
         prDataAvailable: !!repo.prs?.available,
         staleBranches: repo.branches?.stale ?? null,
         remoteBranches: repo.branches?.total ?? null,
-        reactiveCommits: repo.commits?.unplanned ?? null,
-        featureCommits: repo.commits?.planned ?? null
+        unmergedBranches: repo.branches?.unmerged ?? null,
+        commits: (repo.commits || []).length
       }))
     };
   }
@@ -526,14 +508,10 @@ class FlowVisibilityService {
     if (!refresh && cached && (nowMs - cached.builtAt) < REFRESH_INTERVAL_MS) {
       return { ...cached.report, cached: true, ageMs: nowMs - cached.builtAt };
     }
-
-    // Mashing Refresh must not turn into a burst of `gh` calls; serve the last
-    // good report until the floor has passed.
     if (refresh && !background && cached && (nowMs - this.lastManualRefreshAt) < MIN_MANUAL_REFRESH_GAP_MS) {
       return { ...cached.report, cached: true, throttled: true, ageMs: nowMs - cached.builtAt };
     }
     if (refresh && !background) this.lastManualRefreshAt = nowMs;
-
     if (this.inFlight.has(windowDays)) return this.inFlight.get(windowDays);
 
     const promise = this.build(windowDays)
@@ -541,19 +519,22 @@ class FlowVisibilityService {
         this.cache.set(windowDays, { report, builtAt: this.now() });
         return { ...report, cached: false, ageMs: 0 };
       })
-      .finally(() => {
-        this.inFlight.delete(windowDays);
-      });
+      .finally(() => this.inFlight.delete(windowDays));
 
     this.inFlight.set(windowDays, promise);
     return promise;
+  }
+
+  // A new log entry must not keep serving stale tallies.
+  invalidate() {
+    this.cache.clear();
   }
 }
 
 module.exports = {
   FlowVisibilityService,
-  THIEF_KEYS,
   DEFAULT_WINDOW_DAYS,
   STALE_BRANCH_DAYS,
-  AGING_PR_DAYS
+  AGING_PR_DAYS,
+  REVIEW_IDLE_DAYS
 };
