@@ -20,6 +20,7 @@ const AGING_PR_DAYS = 14;
 const REVIEW_IDLE_DAYS = 3;
 const REFRESH_INTERVAL_MS = Number(process.env.ORCHESTRATOR_FLOW_CACHE_TTL_MS || 600000);
 const MIN_MANUAL_REFRESH_GAP_MS = 30000;
+const FIRST_REFRESH_DELAY_MS = Number(process.env.ORCHESTRATOR_FLOW_FIRST_REFRESH_MS || 20000);
 const MAX_REPOS = Number(process.env.ORCHESTRATOR_FLOW_MAX_REPOS || 40);
 const REPO_CONCURRENCY = 4;
 const GIT_TIMEOUT_MS = 20000;
@@ -70,7 +71,8 @@ class FlowVisibilityService {
     pathExists = (target) => fs.existsSync(target),
     now = () => Date.now(),
     setIntervalFn = setInterval,
-    clearIntervalFn = clearInterval
+    clearIntervalFn = clearInterval,
+    setTimeoutFn = setTimeout
   } = {}) {
     this.workspaceProvider = workspaceProvider;
     this.sessionProvider = sessionProvider;
@@ -82,6 +84,7 @@ class FlowVisibilityService {
     this.now = now;
     this.setIntervalFn = setIntervalFn;
     this.clearIntervalFn = clearIntervalFn;
+    this.setTimeoutFn = setTimeoutFn;
 
     this.cache = new Map();
     this.inFlight = new Map();
@@ -104,7 +107,9 @@ class FlowVisibilityService {
     };
     this.backgroundTimer = this.setIntervalFn(tick, REFRESH_INTERVAL_MS);
     if (this.backgroundTimer?.unref) this.backgroundTimer.unref();
-    tick();
+    // Workspaces are still loading at boot, so the first build waits for them.
+    const first = this.setTimeoutFn(tick, FIRST_REFRESH_DELAY_MS);
+    if (first?.unref) first.unref();
   }
 
   stopBackgroundRefresh() {
@@ -516,7 +521,9 @@ class FlowVisibilityService {
 
     const promise = this.build(windowDays)
       .then((report) => {
-        this.cache.set(windowDays, { report, builtAt: this.now() });
+        // A report built before any workspace attached is not worth holding for
+        // the full interval, so the next open recomputes instead of showing zeros.
+        if (report.repoCount > 0) this.cache.set(windowDays, { report, builtAt: this.now() });
         return { ...report, cached: false, ageMs: 0 };
       })
       .finally(() => this.inFlight.delete(windowDays));
