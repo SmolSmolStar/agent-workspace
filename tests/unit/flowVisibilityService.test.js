@@ -14,7 +14,8 @@ function unixDaysAgo(days) {
 function makeService(overrides = {}) {
   return new FlowVisibilityService({
     now: () => NOW,
-    pathExists: (target) => target.includes('/master/.git'),
+    // path.join uses backslashes on Windows, so match either separator.
+    pathExists: (target) => /master[\\/]\.git$/.test(target),
     workspaceProvider: () => [{
       id: 'ws',
       terminals: [
