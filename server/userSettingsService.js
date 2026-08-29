@@ -173,6 +173,7 @@ class UserSettingsService {
               focusSwap: false,
               tasks: true,
               ports: true,
+              work: false,
               voice: false,
               notifications: false,
               commander: true,

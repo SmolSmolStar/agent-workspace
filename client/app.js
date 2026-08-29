@@ -313,6 +313,7 @@ class ClaudeOrchestrator {
         focusSwap: false,
         tasks: false,
         ports: true,
+        work: false,
         voice: false,
         notifications: false,
         commander: true,
@@ -1275,6 +1276,14 @@ class ClaudeOrchestrator {
           this.activityFeedPanel.toggle();
         });
         console.log('Activity feed initialized');
+      }
+
+      // Work panel (five thieves of time — flow across every repo in flight)
+      if (typeof WorkPanel !== 'undefined') {
+        this.workPanel = new WorkPanel(this);
+        document.getElementById('work-btn')?.addEventListener('click', () => {
+          this.workPanel.toggle();
+        });
       }
 
       document.getElementById('diff-viewer-open')?.addEventListener('click', () => {
