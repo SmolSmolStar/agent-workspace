@@ -1,11 +1,13 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 // How often the background timer re-reads the catalog file off disk. The
 // catalog itself is a hand-maintained JSON file (config/agent-model-catalog.json),
 // not a live provider API — no CLI here exposes a "list models" command — so
 // "refresh" means "pick up edits to that file without a server restart",
-// not "discover brand-new models automatically."
+// not "discover brand-new models automatically." Codex is the one exception:
+// see enrichCodexFromLiveCache() below.
 const DEFAULT_REFRESH_INTERVAL_MS = Number(
   process.env.ORCHESTRATOR_MODEL_CATALOG_REFRESH_MS || 12 * 60 * 60 * 1000
 );
@@ -18,7 +20,8 @@ class AgentModelCatalogService {
     catalogPath = DEFAULT_CATALOG_PATH,
     refreshIntervalMs = DEFAULT_REFRESH_INTERVAL_MS,
     setIntervalFn = setInterval,
-    now = () => Date.now()
+    now = () => Date.now(),
+    homeDir = null
   } = {}) {
     this.logger = logger;
     this.fs = fsImpl;
@@ -26,6 +29,7 @@ class AgentModelCatalogService {
     this.refreshIntervalMs = refreshIntervalMs;
     this.setIntervalFn = setIntervalFn;
     this.now = now;
+    this.homeDir = homeDir || os.homedir();
 
     this.catalog = null;
     this.lastLoadedAt = null;
@@ -78,6 +82,7 @@ class AgentModelCatalogService {
         if (providerId.startsWith('_') || !config || typeof config !== 'object') continue;
         providers[providerId] = this.normalizeProvider(providerId, config);
       }
+      this.enrichCodexFromLiveCache(providers);
       this.catalog = providers;
       this.lastLoadedAt = this.now();
       this.lastError = null;
@@ -90,6 +95,40 @@ class AgentModelCatalogService {
       // Keep serving the last good catalog (if any) rather than blanking the
       // picker out from under an open dropdown.
       if (!this.catalog) this.catalog = {};
+    }
+  }
+
+  // Codex itself caches the real, currently-available model list (with
+  // per-model reasoning-effort support) at ~/.codex/models_cache.json,
+  // refreshed by the Codex CLI on its own schedule. When present, this
+  // replaces the curated codex.models list with that live data instead of
+  // the hand-maintained fallback in config/agent-model-catalog.json — the
+  // one provider here that gets genuine live discovery rather than a
+  // curated list a human has to keep updating by hand.
+  enrichCodexFromLiveCache(providers) {
+    if (!providers.codex) return;
+    const cachePath = path.join(this.homeDir, '.codex', 'models_cache.json');
+    try {
+      const raw = this.fs.readFileSync(cachePath, 'utf8');
+      const parsed = JSON.parse(raw);
+      const liveModels = Array.isArray(parsed?.models) ? parsed.models : [];
+      const models = liveModels
+        .filter((m) => m && typeof m.slug === 'string' && m.slug.trim() && m.visibility !== 'hidden')
+        .map((m) => ({
+          id: m.slug.trim(),
+          label: typeof m.display_name === 'string' && m.display_name.trim() ? m.display_name.trim() : m.slug.trim(),
+          efforts: Array.isArray(m.supported_reasoning_levels)
+            ? m.supported_reasoning_levels.map((l) => l?.effort).filter(Boolean)
+            : []
+        }))
+        .filter((m) => m.efforts.length);
+      if (models.length) {
+        providers.codex.models = models;
+        providers.codex.liveSource = cachePath;
+      }
+    } catch {
+      // No cache file (Codex never run here) or unreadable — keep the
+      // curated fallback from agent-model-catalog.json, no error surfaced.
     }
   }
 

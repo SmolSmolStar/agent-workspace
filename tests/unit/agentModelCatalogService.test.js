@@ -6,12 +6,22 @@ const { AgentModelCatalogService } = require('../../server/agentModelCatalogServ
 describe('AgentModelCatalogService', () => {
   let dir;
   let catalogPath;
+  let fakeHomeDir;
 
   const writeCatalog = (data) => fs.writeFileSync(catalogPath, JSON.stringify(data));
+  const writeCodexCache = (data) => {
+    const codexDir = path.join(fakeHomeDir, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(path.join(codexDir, 'models_cache.json'), JSON.stringify(data));
+  };
 
+  // homeDir defaults to a fresh, empty temp dir (no .codex/models_cache.json)
+  // so these tests never read the real developer machine's actual Codex
+  // cache — only writeCodexCache() above puts one there deliberately.
   const createService = (options = {}) =>
     new AgentModelCatalogService({
       catalogPath,
+      homeDir: fakeHomeDir,
       logger: { error: () => {} },
       setIntervalFn: () => ({ unref: () => {} }),
       ...options
@@ -20,10 +30,12 @@ describe('AgentModelCatalogService', () => {
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-model-catalog-'));
     catalogPath = path.join(dir, 'catalog.json');
+    fakeHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-model-catalog-home-'));
   });
 
   afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(fakeHomeDir, { recursive: true, force: true });
   });
 
   test('loads models + efforts per provider, falling back to provider-level efforts', () => {
@@ -122,5 +134,93 @@ describe('AgentModelCatalogService', () => {
 
   test('getInstance() returns the same singleton', () => {
     expect(AgentModelCatalogService.getInstance()).toBe(AgentModelCatalogService.getInstance());
+  });
+
+  describe('enrichCodexFromLiveCache', () => {
+    beforeEach(() => {
+      writeCatalog({
+        codex: {
+          label: 'Codex',
+          efforts: ['low', 'medium'],
+          models: [{ id: 'curated-fallback', label: 'Curated Fallback' }]
+        }
+      });
+    });
+
+    test('replaces the curated codex models with the live ~/.codex/models_cache.json list', () => {
+      writeCodexCache({
+        models: [
+          {
+            slug: 'gpt-5.6-luna',
+            display_name: 'GPT-5.6-Luna',
+            supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }, { effort: 'high' }]
+          },
+          {
+            slug: 'gpt-5.6-sol',
+            display_name: 'GPT-5.6-Sol',
+            supported_reasoning_levels: [{ effort: 'low' }, { effort: 'ultra' }]
+          }
+        ]
+      });
+
+      const { providers } = createService().getCatalog();
+
+      expect(providers.codex.models).toEqual([
+        { id: 'gpt-5.6-luna', label: 'GPT-5.6-Luna', efforts: ['low', 'medium', 'high'] },
+        { id: 'gpt-5.6-sol', label: 'GPT-5.6-Sol', efforts: ['low', 'ultra'] }
+      ]);
+      expect(providers.codex.liveSource).toContain('models_cache.json');
+    });
+
+    test('drops models with no supported reasoning levels instead of shipping an empty effort list', () => {
+      writeCodexCache({
+        models: [
+          { slug: 'no-efforts', display_name: 'No Efforts', supported_reasoning_levels: [] },
+          { slug: 'has-efforts', display_name: 'Has Efforts', supported_reasoning_levels: [{ effort: 'medium' }] }
+        ]
+      });
+
+      const { providers } = createService().getCatalog();
+
+      expect(providers.codex.models).toEqual([{ id: 'has-efforts', label: 'Has Efforts', efforts: ['medium'] }]);
+    });
+
+    test('skips hidden models', () => {
+      writeCodexCache({
+        models: [
+          { slug: 'hidden-one', display_name: 'Hidden', visibility: 'hidden', supported_reasoning_levels: [{ effort: 'low' }] },
+          { slug: 'visible-one', display_name: 'Visible', visibility: 'list', supported_reasoning_levels: [{ effort: 'low' }] }
+        ]
+      });
+
+      const { providers } = createService().getCatalog();
+
+      expect(providers.codex.models.map((m) => m.id)).toEqual(['visible-one']);
+    });
+
+    test('falls back to the curated list when no cache file exists', () => {
+      const { providers } = createService().getCatalog();
+      expect(providers.codex.models).toEqual([{ id: 'curated-fallback', label: 'Curated Fallback', efforts: ['low', 'medium'] }]);
+      expect(providers.codex.liveSource).toBeUndefined();
+    });
+
+    test('falls back to the curated list when the cache file is malformed, without throwing', () => {
+      fs.mkdirSync(path.join(fakeHomeDir, '.codex'), { recursive: true });
+      fs.writeFileSync(path.join(fakeHomeDir, '.codex', 'models_cache.json'), '{ not valid json');
+
+      const { providers } = createService().getCatalog();
+
+      expect(providers.codex.models).toEqual([{ id: 'curated-fallback', label: 'Curated Fallback', efforts: ['low', 'medium'] }]);
+    });
+
+    test('does nothing when the catalog has no codex provider at all', () => {
+      writeCatalog({ claude: { label: 'Claude', efforts: ['low'], models: [{ id: 'opus', label: 'Opus 5' }] } });
+      writeCodexCache({ models: [{ slug: 'x', display_name: 'X', supported_reasoning_levels: [{ effort: 'low' }] }] });
+
+      const { providers } = createService().getCatalog();
+
+      expect(providers.codex).toBeUndefined();
+      expect(providers.claude.models).toEqual([{ id: 'opus', label: 'Opus 5', efforts: ['low'] }]);
+    });
   });
 });
