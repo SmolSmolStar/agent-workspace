@@ -907,6 +907,21 @@ that PR's own restart. Caveats:
 - If persistence is disabled or tmux is unavailable, fall back to the deferred-restart
   method below instead.
 
+**Gotcha: an emergency manual restart can land on the wrong Node version.** `.nvmrc` pins
+this repo to a specific major (currently 20), and a normal interactive shell picks it up.
+But `nvm`'s own `alias/default` can point at a different version, and a raw background
+launch (`nohup npm start &`, or any restart that doesn't go through an interactive shell)
+does not run the `.nvmrc` auto-switch, so it silently falls back to that default alias
+instead. `node-pty`'s native binary is compiled for one specific Node ABI
+(`process.versions.modules`), so if the emergency restart's Node version doesn't match
+whichever version last rebuilt `node-pty`, every PTY spawn fails with either a missing
+module or a `NODE_MODULE_VERSION` mismatch error — this bypasses the ABI auto-rebuild
+above, which only triggers from nodemon's own restart path, not a manual recovery.
+Recovery: confirm the actual running version (`readlink /proc/<pid>/exe`), rebuild
+`node-pty` to match it (`npm rebuild node-pty`) if it doesn't, and prefer restarting via
+`bash -lc 'npm start'` (or explicitly `nvm use` first) so `.nvmrc` is respected instead of
+whatever `nvm`'s default alias happens to be.
+
 ### Fallback: deferred restart (nodemon SIGSTOP)
 
 Use this when you want to control the exact moment sessions might glitch (e.g. persistence
