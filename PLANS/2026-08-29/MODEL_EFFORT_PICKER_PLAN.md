@@ -90,4 +90,41 @@ it's the live production checkout, nodemon watches it and a restart kills every 
   (teamActivityService's `startBackgroundRefresh()` pattern is the precedent to copy).
 
 ## Status
-Just started. Plan written before first line of code, per repo AI-memory convention.
+All 11 tasks shipped on `feature/model-effort-picker`. Full test suite green
+(146 suites, 1106 tests) throughout. Every UI piece verified live via
+Puppeteer against an isolated dev server (random port, exact-PID cleanup,
+never the shared/production port) before being called done.
+
+- Catalog service (`agentModelCatalogService.js`) + Claude session-only
+  switch (`agentModelSwitchService.js`) + their API endpoints.
+- Terminal-header model badge is now a hover/click dropdown
+  (`model-effort-picker.js`), model list + effort flyout, manual refresh.
+- Start AI Agent modal redesigned to 3-tier cascading real-button rows
+  (harness/model/effort), provider logos instead of emoji, no more
+  reshift-on-Codex jank.
+- Two misleading icons fixed (claudeModal ↻ -> 🤖, Review Console 🗂 -> 🖥,
+  matching this app's own existing icon for the same action elsewhere).
+- Commander: `startAgent()` launches as Claude/Codex/Grok; the SAME
+  session-only picker (target-generalized to `{kind:'commander', id}`) is
+  wired onto Commander's own model badge.
+- Codex models are discovered LIVE from `~/.codex/models_cache.json`
+  (the Codex CLI's own cache) instead of a hand-maintained list - this is
+  also what resolved the "Luna medium fast" ambiguity: `gpt-5.6-luna` is a
+  real current Codex model, confirmed in that exact cache file, not a
+  mishearing. Didn't change Commander's default provider without a
+  separate confirmation from the user.
+
+## Known follow-ups (not blocking, scoped out or genuinely unverified)
+- Codex/Grok session-only switch (mid-conversation, not launch-time) is
+  still unimplemented - neither CLI's interactive slash-command surface was
+  verified here, and `/api/sessions/:id/switch-model` returns 501 for them.
+  Launch-time `--model`/`--effort` DOES work for both providers already.
+- Codex's `service_tiers`/`additional_speed_tiers` (e.g. the "fast" in
+  "Luna medium fast") aren't modeled as a third selector - only model +
+  reasoning effort. Would need the real Codex config key for it verified
+  before adding.
+- Grok has no live model-cache equivalent to Codex's, so its catalog entry
+  stays curated/static like Claude's.
+- CODEBASE_DOCUMENTATION.md updated for everything touched here; two
+  pre-existing gaps (agentManager.js, agent-modal.js, commander-panel.js
+  had no prior entries at all) got minimal new entries, not a full backfill.
