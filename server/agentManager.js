@@ -260,6 +260,14 @@ class AgentManager {
         command += ` -c model_reasoning_effort="${config.reasoning}"`;
       }
 
+      // Service tier (Codex) - "default" is the model's own normal tier and
+      // needs no override; only a non-default tier (e.g. "priority", the
+      // 1.5x-speed "Fast" tier) is worth an explicit -c, matching the
+      // service_tier key already in ~/.codex/config.toml on this machine.
+      if (config.tier && config.tier !== 'default') {
+        command += ` -c service_tier="${config.tier}"`;
+      }
+
       // Add verbosity level if specified (Codex)
       if (config.verbosity) {
         command += ` -c model_verbosity="${config.verbosity}"`;

@@ -4038,24 +4038,24 @@ header {
   color: white;
 }
 
-.model-selector, .effort-selector {
+.model-selector, .effort-selector, .tier-selector {
   margin-bottom: var(--space-lg);
 }
 
-.model-selector label, .effort-selector label {
+.model-selector label, .effort-selector label, .tier-selector label {
   display: block;
   font-weight: 500;
   margin-bottom: var(--space-sm);
   color: var(--text-primary);
 }
 
-.model-buttons, .effort-buttons {
+.model-buttons, .effort-buttons, .tier-buttons {
   display: flex;
   gap: var(--space-sm);
   flex-wrap: wrap;
 }
 
-.model-btn, .effort-btn {
+.model-btn, .effort-btn, .tier-btn {
   flex: 1;
   min-width: 6rem;
   padding: var(--space-sm) var(--space-md);
@@ -4069,17 +4069,17 @@ header {
   font-family: var(--font-mono);
 }
 
-.effort-btn {
+.effort-btn, .tier-btn {
   text-transform: capitalize;
   min-width: 4.5rem;
 }
 
-.model-btn:hover, .effort-btn:hover {
+.model-btn:hover, .effort-btn:hover, .tier-btn:hover {
   border-color: var(--accent-primary);
   background: var(--bg-secondary);
 }
 
-.model-btn.selected, .effort-btn.selected {
+.model-btn.selected, .effort-btn.selected, .tier-btn.selected {
   border-color: var(--accent-primary);
   background: var(--accent-primary);
   color: white;

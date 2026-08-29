@@ -12,6 +12,7 @@ class AgentModalManager {
     this.selectedMode = null;
     this.selectedModel = null;
     this.selectedEffort = null;
+    this.selectedTier = null;
     this.selectedFlags = [];
     this.currentSessionId = null;
 
@@ -47,6 +48,12 @@ class AgentModalManager {
     document.addEventListener('click', (e) => {
       const effortBtn = e.target.closest('.effort-btn');
       if (effortBtn) this.selectEffort(effortBtn.dataset.effort);
+    });
+
+    // Tier selection (Codex service tier, e.g. "priority")
+    document.addEventListener('click', (e) => {
+      const tierBtn = e.target.closest('.tier-btn');
+      if (tierBtn) this.selectTier(tierBtn.dataset.tier);
     });
 
     // Flag selection
@@ -278,19 +285,22 @@ class AgentModalManager {
   renderModels(agentId) {
     const modelSection = document.getElementById('model-selector');
     const effortSection = document.getElementById('effort-selector');
+    const tierSection = document.getElementById('tier-selector');
     const container = document.getElementById('model-buttons');
-    if (!container || !modelSection || !effortSection) return;
+    if (!container || !modelSection || !effortSection || !tierSection) return;
 
     const provider = this.modelCatalog?.providers?.[agentId];
     const models = provider?.models || [];
 
     if (!models.length) {
-      // No catalog entry for this provider - hide both rows rather than
-      // show an empty/broken picker. startAgent() just omits model/effort.
+      // No catalog entry for this provider - hide every cascaded row rather
+      // than show an empty/broken picker. startAgent() just omits them.
       modelSection.style.display = 'none';
       effortSection.style.display = 'none';
+      tierSection.style.display = 'none';
       this.selectedModel = null;
       this.selectedEffort = null;
+      this.selectedTier = null;
       return;
     }
 
@@ -312,6 +322,7 @@ class AgentModalManager {
     });
 
     this.renderEfforts(modelId);
+    this.renderTiers(modelId);
   }
 
   renderEfforts(modelId) {
@@ -344,6 +355,40 @@ class AgentModalManager {
     this.selectedEffort = effortId;
     document.querySelectorAll('.effort-btn').forEach(el => {
       el.classList.toggle('selected', el.dataset.effort === effortId);
+    });
+  }
+
+  // Only some Codex models offer a service tier (e.g. the "priority"
+  // 1.5x-speed tier) - most don't, so the row stays hidden unless the
+  // selected model actually has one. Always defaults to "Normal" (the
+  // model's own non-priority tier); Priority is opt-in, never the default.
+  renderTiers(modelId) {
+    const tierSection = document.getElementById('tier-selector');
+    const container = document.getElementById('tier-buttons');
+    if (!container || !tierSection) return;
+
+    const provider = this.modelCatalog?.providers?.[this.selectedAgent];
+    const model = provider?.models?.find(m => m.id === modelId);
+    const tiers = model?.tiers || [];
+
+    if (tiers.length < 2) {
+      tierSection.style.display = 'none';
+      this.selectedTier = null;
+      return;
+    }
+
+    tierSection.style.display = '';
+    container.innerHTML = tiers.map(t => `
+      <button class="tier-btn" data-tier="${this.escape(t.id)}">${this.escape(t.label)}</button>
+    `).join('');
+
+    this.selectTier(tiers[0].id);
+  }
+
+  selectTier(tierId) {
+    this.selectedTier = tierId;
+    document.querySelectorAll('.tier-btn').forEach(el => {
+      el.classList.toggle('selected', el.dataset.tier === tierId);
     });
   }
 
@@ -468,7 +513,10 @@ class AgentModalManager {
       // model_reasoning_effort mechanism) - see agentManager.buildCommand.
       model: this.selectedModel || undefined,
       effort: this.selectedEffort || undefined,
-      reasoning: this.selectedEffort || undefined
+      reasoning: this.selectedEffort || undefined,
+      // Codex-only service tier ("priority" for the 1.5x-speed "Fast"
+      // tier); undefined/"default" is a no-op for every provider.
+      tier: this.selectedTier || undefined
     };
 
     console.log('Starting agent with config:', config);

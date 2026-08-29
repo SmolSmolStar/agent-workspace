@@ -60,6 +60,34 @@ describe('CommanderService multi-provider launch', () => {
       });
       expect(cmd).toBe('grok --continue --model grok-4.6 --effort high --always-approve');
     });
+
+    it('adds -c service_tier for a non-default codex tier', () => {
+      const cmd = service.buildNonClaudeCommand({
+        provider: 'codex',
+        mode: 'fresh',
+        yolo: false,
+        model: 'gpt-5.6-luna',
+        effort: 'medium',
+        tier: 'priority'
+      });
+      expect(cmd).toBe('codex -m gpt-5.6-luna -c model_reasoning_effort="medium" -c service_tier="priority"');
+    });
+
+    it('omits -c service_tier for the default codex tier', () => {
+      const cmd = service.buildNonClaudeCommand({
+        provider: 'codex',
+        mode: 'fresh',
+        yolo: false,
+        model: 'gpt-5.6-luna',
+        tier: 'default'
+      });
+      expect(cmd).not.toContain('service_tier');
+    });
+
+    it('ignores tier for grok (codex-only concept)', () => {
+      const cmd = service.buildNonClaudeCommand({ provider: 'grok', mode: 'fresh', yolo: false, tier: 'priority' });
+      expect(cmd).not.toContain('service_tier');
+    });
   });
 
   describe('startAgent', () => {
@@ -72,7 +100,27 @@ describe('CommanderService multi-provider launch', () => {
     it('routes non-claude providers through startNonClaudeAgent', async () => {
       const spy = jest.spyOn(service, 'startNonClaudeAgent').mockReturnValue({ success: true });
       await service.startAgent({ provider: 'codex', mode: 'fresh' });
-      expect(spy).toHaveBeenCalledWith({ provider: 'codex', mode: 'fresh', yolo: true, model: null, effort: null });
+      expect(spy).toHaveBeenCalledWith({
+        provider: 'codex',
+        mode: 'fresh',
+        yolo: true,
+        model: null,
+        effort: null,
+        tier: null
+      });
+    });
+
+    it('passes an explicit tier through to startNonClaudeAgent', async () => {
+      const spy = jest.spyOn(service, 'startNonClaudeAgent').mockReturnValue({ success: true });
+      await service.startAgent({ provider: 'codex', mode: 'fresh', model: 'gpt-5.6-luna', effort: 'medium', tier: 'priority' });
+      expect(spy).toHaveBeenCalledWith({
+        provider: 'codex',
+        mode: 'fresh',
+        yolo: true,
+        model: 'gpt-5.6-luna',
+        effort: 'medium',
+        tier: 'priority'
+      });
     });
 
     it('rejects an unknown provider', () => {

@@ -188,6 +188,16 @@
                 </div>
             </div>
 
+            <!-- Tier Selection (cascades from model; only some Codex models
+                 offer one, e.g. the "priority" 1.5x-speed tier - hidden for
+                 everything else) -->
+            <div class="tier-selector" id="tier-selector" style="display: none;">
+                <label>Tier:</label>
+                <div class="tier-buttons" id="tier-buttons">
+                    <!-- Dynamically populated from /api/agents/model-catalog -->
+                </div>
+            </div>
+
             <!-- Mode Selection -->
             <div class="mode-selector" id="mode-selector">
                 <label>Mode:</label>

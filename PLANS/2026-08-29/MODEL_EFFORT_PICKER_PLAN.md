@@ -119,10 +119,14 @@ never the shared/production port) before being called done.
   still unimplemented - neither CLI's interactive slash-command surface was
   verified here, and `/api/sessions/:id/switch-model` returns 501 for them.
   Launch-time `--model`/`--effort` DOES work for both providers already.
-- Codex's `service_tiers`/`additional_speed_tiers` (e.g. the "fast" in
-  "Luna medium fast") aren't modeled as a third selector - only model +
-  reasoning effort. Would need the real Codex config key for it verified
-  before adding.
+- ~~Codex's `service_tiers` aren't modeled as a third selector~~ Done in a
+  follow-up: the Start AI Agent modal now has a 4th "Tier" row (Normal /
+  Fast), populated per-model from the live cache, verified against the real
+  `service_tier` key already present in this machine's own
+  `~/.codex/config.toml`. Wired through `agentManager.buildCommand`
+  (`-c service_tier=`) and `commanderService.buildNonClaudeCommand`. Defaults
+  to Normal (non-priority) always; Priority is opt-in only. "Luna medium
+  fast" now maps exactly: Codex -> GPT-5.6-Luna -> Medium -> Fast.
 - Grok has no live model-cache equivalent to Codex's, so its catalog entry
   stays curated/static like Claude's.
 - CODEBASE_DOCUMENTATION.md updated for everything touched here; two

@@ -8167,7 +8167,7 @@ app.post('/api/commander/start-claude', async (req, res) => {
 // narrower, longer-tested Claude-only path.
 app.post('/api/commander/start-agent', async (req, res) => {
   try {
-    const { provider, mode, yolo, model, effort } = req.body || {};
+    const { provider, mode, yolo, model, effort, tier } = req.body || {};
     const target = resolveCommander(req);
     if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
     const result = await target.startAgent({
@@ -8175,7 +8175,8 @@ app.post('/api/commander/start-agent', async (req, res) => {
       mode: mode || 'fresh',
       yolo: yolo !== false,
       model: model || null,
-      effort: effort || null
+      effort: effort || null,
+      tier: tier || null
     });
     res.json(result);
   } catch (error) {

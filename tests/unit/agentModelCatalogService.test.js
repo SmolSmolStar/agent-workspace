@@ -54,8 +54,8 @@ describe('AgentModelCatalogService', () => {
 
     expect(providers.claude.label).toBe('Claude');
     expect(providers.claude.models).toEqual([
-      { id: 'opus', label: 'Opus 5', efforts: ['low', 'high'] },
-      { id: 'sonnet', label: 'Sonnet 5', efforts: ['medium'] }
+      { id: 'opus', label: 'Opus 5', efforts: ['low', 'high'], tiers: [] },
+      { id: 'sonnet', label: 'Sonnet 5', efforts: ['medium'], tiers: [] }
     ]);
   });
 
@@ -78,7 +78,7 @@ describe('AgentModelCatalogService', () => {
 
     const { providers } = createService().getCatalog();
 
-    expect(providers.grok.models).toEqual([{ id: 'grok-4.6', label: 'Grok 4.6', efforts: ['low'] }]);
+    expect(providers.grok.models).toEqual([{ id: 'grok-4.6', label: 'Grok 4.6', efforts: ['low'], tiers: [] }]);
   });
 
   test('keeps serving the last good catalog when the file goes missing or malformed', () => {
@@ -166,8 +166,8 @@ describe('AgentModelCatalogService', () => {
       const { providers } = createService().getCatalog();
 
       expect(providers.codex.models).toEqual([
-        { id: 'gpt-5.6-luna', label: 'GPT-5.6-Luna', efforts: ['low', 'medium', 'high'] },
-        { id: 'gpt-5.6-sol', label: 'GPT-5.6-Sol', efforts: ['low', 'ultra'] }
+        { id: 'gpt-5.6-luna', label: 'GPT-5.6-Luna', efforts: ['low', 'medium', 'high'], tiers: [] },
+        { id: 'gpt-5.6-sol', label: 'GPT-5.6-Sol', efforts: ['low', 'ultra'], tiers: [] }
       ]);
       expect(providers.codex.liveSource).toContain('models_cache.json');
     });
@@ -182,7 +182,38 @@ describe('AgentModelCatalogService', () => {
 
       const { providers } = createService().getCatalog();
 
-      expect(providers.codex.models).toEqual([{ id: 'has-efforts', label: 'Has Efforts', efforts: ['medium'] }]);
+      expect(providers.codex.models).toEqual([{ id: 'has-efforts', label: 'Has Efforts', efforts: ['medium'], tiers: [] }]);
+    });
+
+    test('exposes a Normal + Priority tier picker only for models that offer one', () => {
+      writeCodexCache({
+        models: [
+          {
+            slug: 'gpt-5.6-luna',
+            display_name: 'GPT-5.6-Luna',
+            supported_reasoning_levels: [{ effort: 'medium' }],
+            service_tiers: [{ id: 'priority', name: 'Fast', description: '1.5x speed, increased usage' }]
+          },
+          {
+            slug: 'gpt-5.4-mini',
+            display_name: 'GPT-5.4-Mini',
+            supported_reasoning_levels: [{ effort: 'medium' }],
+            service_tiers: []
+          }
+        ]
+      });
+
+      const { providers } = createService().getCatalog();
+
+      const luna = providers.codex.models.find((m) => m.id === 'gpt-5.6-luna');
+      const mini = providers.codex.models.find((m) => m.id === 'gpt-5.4-mini');
+      expect(luna.tiers).toEqual([
+        { id: 'default', label: 'Normal' },
+        { id: 'priority', label: 'Fast' }
+      ]);
+      // No tiers beyond "Normal" - drop the picker entirely rather than
+      // show a single-option selector.
+      expect(mini.tiers).toEqual([]);
     });
 
     test('skips hidden models', () => {
@@ -200,7 +231,7 @@ describe('AgentModelCatalogService', () => {
 
     test('falls back to the curated list when no cache file exists', () => {
       const { providers } = createService().getCatalog();
-      expect(providers.codex.models).toEqual([{ id: 'curated-fallback', label: 'Curated Fallback', efforts: ['low', 'medium'] }]);
+      expect(providers.codex.models).toEqual([{ id: 'curated-fallback', label: 'Curated Fallback', efforts: ['low', 'medium'], tiers: [] }]);
       expect(providers.codex.liveSource).toBeUndefined();
     });
 
@@ -210,7 +241,7 @@ describe('AgentModelCatalogService', () => {
 
       const { providers } = createService().getCatalog();
 
-      expect(providers.codex.models).toEqual([{ id: 'curated-fallback', label: 'Curated Fallback', efforts: ['low', 'medium'] }]);
+      expect(providers.codex.models).toEqual([{ id: 'curated-fallback', label: 'Curated Fallback', efforts: ['low', 'medium'], tiers: [] }]);
     });
 
     test('does nothing when the catalog has no codex provider at all', () => {
@@ -220,7 +251,7 @@ describe('AgentModelCatalogService', () => {
       const { providers } = createService().getCatalog();
 
       expect(providers.codex).toBeUndefined();
-      expect(providers.claude.models).toEqual([{ id: 'opus', label: 'Opus 5', efforts: ['low'] }]);
+      expect(providers.claude.models).toEqual([{ id: 'opus', label: 'Opus 5', efforts: ['low'], tiers: [] }]);
     });
   });
 });

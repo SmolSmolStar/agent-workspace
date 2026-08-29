@@ -39,6 +39,26 @@ describe('AgentManager', () => {
     expect(command).toBe('codex -m gpt-5.3-codex -c model_reasoning_effort="xhigh"');
   });
 
+  test('buildCommand adds -c service_tier for a non-default codex tier', () => {
+    const command = manager.buildCommand('codex', 'fresh', {
+      model: 'gpt-5.6-luna',
+      reasoning: 'medium',
+      tier: 'priority',
+      flags: []
+    });
+    expect(command).toBe('codex -m gpt-5.6-luna -c model_reasoning_effort="medium" -c service_tier="priority"');
+  });
+
+  test('buildCommand omits -c service_tier for the default codex tier', () => {
+    const command = manager.buildCommand('codex', 'fresh', {
+      model: 'gpt-5.6-luna',
+      reasoning: 'medium',
+      tier: 'default',
+      flags: []
+    });
+    expect(command).not.toContain('service_tier');
+  });
+
   test('buildCommand omits --model/--effort for claude/grok when not provided', () => {
     expect(manager.buildCommand('claude', 'fresh', { flags: [] })).toBe('claude');
     expect(manager.buildCommand('grok', 'fresh', { flags: [] })).toBe('grok');

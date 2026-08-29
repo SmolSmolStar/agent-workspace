@@ -119,9 +119,27 @@ class AgentModelCatalogService {
           label: typeof m.display_name === 'string' && m.display_name.trim() ? m.display_name.trim() : m.slug.trim(),
           efforts: Array.isArray(m.supported_reasoning_levels)
             ? m.supported_reasoning_levels.map((l) => l?.effort).filter(Boolean)
-            : []
+            : [],
+          // Service tiers (e.g. "priority" = the "Fast" 1.5x-speed tier from
+          // `codex.service_tier` config, verified against this machine's own
+          // ~/.codex/config.toml). Only some models offer one; "default" (the
+          // model's normal, non-priority tier) is always first and always
+          // selected unless the user explicitly picks another.
+          tiers: [
+            { id: 'default', label: 'Normal' },
+            ...(Array.isArray(m.service_tiers) ? m.service_tiers : [])
+              .filter((t) => t && typeof t.id === 'string' && t.id.trim() && t.id !== 'default')
+              .map((t) => ({
+                id: t.id.trim(),
+                label: typeof t.name === 'string' && t.name.trim() ? t.name.trim() : t.id.trim()
+              }))
+          ]
         }))
-        .filter((m) => m.efforts.length);
+        .filter((m) => m.efforts.length)
+        // Drop the tier picker entirely when there's nothing but "Normal" -
+        // most models don't offer a priority tier, and a single-option
+        // selector is pure clutter.
+        .map((m) => (m.tiers.length > 1 ? m : { ...m, tiers: [] }));
       if (models.length) {
         providers.codex.models = models;
         providers.codex.liveSource = cachePath;
@@ -143,7 +161,11 @@ class AgentModelCatalogService {
         .map((m) => ({
           id: m.id.trim(),
           label: typeof m.label === 'string' && m.label.trim() ? m.label.trim() : m.id.trim(),
-          efforts: Array.isArray(m.efforts) && m.efforts.length ? m.efforts.filter(Boolean) : defaultEfforts
+          efforts: Array.isArray(m.efforts) && m.efforts.length ? m.efforts.filter(Boolean) : defaultEfforts,
+          // Only Codex's live cache (enrichCodexFromLiveCache) populates
+          // this today; every model still gets the field so client code
+          // never has to guard against it being undefined.
+          tiers: Array.isArray(m.tiers) ? m.tiers.filter((t) => t && t.id) : []
         }))
     };
   }

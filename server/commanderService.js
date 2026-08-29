@@ -459,15 +459,17 @@ class CommanderService {
    * @param {boolean} [options.yolo] - skip-permissions/always-approve/bypass-all
    * @param {string} [options.model]
    * @param {string} [options.effort]
+   * @param {string} [options.tier] - Codex service tier ("priority" for the
+   *   1.5x-speed "Fast" tier); ignored by Claude/Grok, "default" is a no-op
    */
-  async startAgent({ provider = 'claude', mode = 'fresh', yolo = true, model = null, effort = null } = {}) {
+  async startAgent({ provider = 'claude', mode = 'fresh', yolo = true, model = null, effort = null, tier = null } = {}) {
     if (provider !== 'claude') {
-      return this.startNonClaudeAgent({ provider, mode, yolo, model, effort });
+      return this.startNonClaudeAgent({ provider, mode, yolo, model, effort, tier });
     }
     return this.startClaude(mode, yolo, { model, effort });
   }
 
-  startNonClaudeAgent({ provider, mode, yolo, model, effort }) {
+  startNonClaudeAgent({ provider, mode, yolo, model, effort, tier }) {
     if (!['codex', 'grok'].includes(provider)) {
       return { success: false, error: `Unknown provider: ${provider}` };
     }
@@ -476,7 +478,7 @@ class CommanderService {
       return { success: false, error: 'Already started' };
     }
 
-    const cmd = this.buildNonClaudeCommand({ provider, mode, yolo, model, effort });
+    const cmd = this.buildNonClaudeCommand({ provider, mode, yolo, model, effort, tier });
     this.claudeStarted = true;
     this.activeProvider = provider;
     logger.info('Starting agent in Commander', { provider, mode, cmd });
@@ -486,13 +488,16 @@ class CommanderService {
     return { success, message: `Starting ${provider} (${mode})` };
   }
 
-  buildNonClaudeCommand({ provider, mode, yolo, model, effort }) {
+  buildNonClaudeCommand({ provider, mode, yolo, model, effort, tier }) {
     if (provider === 'codex') {
       let cmd = 'codex';
       if (mode === 'continue') cmd = 'codex resume --last';
       else if (mode === 'resume') cmd = 'codex resume';
       if (model) cmd += ` -m ${model}`;
       if (effort) cmd += ` -c model_reasoning_effort="${effort}"`;
+      // "default" is the model's own normal tier and needs no override;
+      // only a non-default tier (e.g. "priority") is worth an explicit -c.
+      if (tier && tier !== 'default') cmd += ` -c service_tier="${tier}"`;
       if (yolo) cmd += ' --dangerously-bypass-approvals-and-sandbox';
       return cmd;
     }
