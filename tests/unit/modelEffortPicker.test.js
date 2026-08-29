@@ -7,7 +7,7 @@ const vm = require('vm');
 // instead of require()-ing it, same pattern as commanderPanel.mouseFilter.test.js.
 const loadModelEffortPickerClass = () => {
   const source = fs.readFileSync(path.join(__dirname, '..', '..', 'client', 'model-effort-picker.js'), 'utf8');
-  const sandbox = { window: { location: { origin: 'http://localhost' } } };
+  const sandbox = { window: { location: { origin: 'http://localhost' } }, setTimeout, clearTimeout };
   vm.createContext(sandbox);
   vm.runInContext(source, sandbox);
   return sandbox.window.ModelEffortPicker;
@@ -110,6 +110,91 @@ describe('ModelEffortPicker pure logic', () => {
     test('coerces null/undefined to an empty string', () => {
       expect(picker.escape(null)).toBe('');
       expect(picker.escape(undefined)).toBe('');
+    });
+  });
+
+  describe('handleCommit routing', () => {
+    const target = { kind: 'session', id: 'work1-claude' };
+
+    beforeEach(() => {
+      // close() touches panelEl/flyouts (all null on a bare instance) and
+      // DOM listeners - harmless no-op, but stub it so these tests only
+      // exercise the routing decision, not the close mechanics.
+      picker.close = jest.fn();
+      picker.commit = jest.fn();
+      picker.startFresh = jest.fn();
+      picker.orchestrator.showToast = jest.fn();
+    });
+
+    test('nothing running -> always fresh-starts, regardless of harness match', async () => {
+      picker.currentHasLiveAgent = false;
+      picker.currentProviderId = 'claude';
+      await picker.handleCommit(target, 'codex', 'claude', { model: 'gpt-5.6-luna', effort: 'medium' });
+
+      expect(picker.startFresh).toHaveBeenCalledWith(target, 'codex', { model: 'gpt-5.6-luna', effort: 'medium' });
+      expect(picker.commit).not.toHaveBeenCalled();
+      expect(picker.orchestrator.showToast).not.toHaveBeenCalled();
+    });
+
+    test('same harness + something running -> non-destructive commit', async () => {
+      picker.currentHasLiveAgent = true;
+      await picker.handleCommit(target, 'claude', 'claude', { model: 'opus', effort: 'high' });
+
+      expect(picker.commit).toHaveBeenCalledWith(target, 'claude', { model: 'opus', effort: 'high' });
+      expect(picker.startFresh).not.toHaveBeenCalled();
+    });
+
+    test('different harness + something running -> refuses, names both harnesses', async () => {
+      picker.currentHasLiveAgent = true;
+      await picker.handleCommit(target, 'codex', 'claude', { model: 'gpt-5.6-luna', effort: 'medium' });
+
+      expect(picker.commit).not.toHaveBeenCalled();
+      expect(picker.startFresh).not.toHaveBeenCalled();
+      const [message, level] = picker.orchestrator.showToast.mock.calls[0];
+      expect(message).toMatch(/Claude/);
+      expect(message).toMatch(/Codex/);
+      expect(level).toBe('warning');
+    });
+  });
+
+  describe('hideFlyoutsFrom', () => {
+    test('removes the given level and everything deeper, leaves earlier levels alone', () => {
+      const remove = () => jest.fn();
+      picker.flyouts.model = { remove: remove() };
+      picker.flyouts.effort = { remove: remove() };
+      picker.flyouts.tier = { remove: remove() };
+
+      picker.hideFlyoutsFrom('effort');
+
+      expect(picker.flyouts.model).not.toBeNull();
+      expect(picker.flyouts.effort).toBeNull();
+      expect(picker.flyouts.tier).toBeNull();
+    });
+
+    test('an unknown level is a no-op', () => {
+      picker.flyouts.model = { remove: jest.fn() };
+      picker.hideFlyoutsFrom('bogus');
+      expect(picker.flyouts.model).not.toBeNull();
+    });
+  });
+
+  describe('close timer / touch guard', () => {
+    test('armCloseTimer does nothing on a touch device (no hover to leave)', () => {
+      const realMatchMedia = global.window?.matchMedia;
+      picker.isTouchDevice = () => true;
+      picker.armCloseTimer();
+      expect(picker.closeTimer).toBeNull();
+      if (realMatchMedia) global.window.matchMedia = realMatchMedia;
+    });
+
+    test('armCloseTimer arms a timer on a non-touch device, cancelCloseTimer clears it', () => {
+      picker.isTouchDevice = () => false;
+
+      picker.armCloseTimer();
+      expect(picker.closeTimer).not.toBeNull();
+
+      picker.cancelCloseTimer();
+      expect(picker.closeTimer).toBeNull();
     });
   });
 });

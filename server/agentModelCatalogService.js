@@ -13,6 +13,16 @@ const DEFAULT_REFRESH_INTERVAL_MS = Number(
 );
 const DEFAULT_CATALOG_PATH = path.join(__dirname, '..', 'config', 'agent-model-catalog.json');
 
+// Curated display order (no cost/capability field exists to sort by).
+const CODEX_MODEL_DISPLAY_ORDER = [
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-5.3-codex-spark',
+  'codex-auto-review',
+  'gpt-reserve'
+];
+
 class AgentModelCatalogService {
   constructor({
     logger = console,
@@ -120,11 +130,7 @@ class AgentModelCatalogService {
           efforts: Array.isArray(m.supported_reasoning_levels)
             ? m.supported_reasoning_levels.map((l) => l?.effort).filter(Boolean)
             : [],
-          // Service tiers (e.g. "priority" = the "Fast" 1.5x-speed tier from
-          // `codex.service_tier` config, verified against this machine's own
-          // ~/.codex/config.toml). Only some models offer one; "default" (the
-          // model's normal, non-priority tier) is always first and always
-          // selected unless the user explicitly picks another.
+          // "default" (Normal) always leads; only some models add "priority".
           tiers: [
             { id: 'default', label: 'Normal' },
             ...(Array.isArray(m.service_tiers) ? m.service_tiers : [])
@@ -136,10 +142,9 @@ class AgentModelCatalogService {
           ]
         }))
         .filter((m) => m.efforts.length)
-        // Drop the tier picker entirely when there's nothing but "Normal" -
-        // most models don't offer a priority tier, and a single-option
-        // selector is pure clutter.
-        .map((m) => (m.tiers.length > 1 ? m : { ...m, tiers: [] }));
+        // Drop the tier picker when there's nothing but "Normal".
+        .map((m) => (m.tiers.length > 1 ? m : { ...m, tiers: [] }))
+        .sort((a, b) => this.codexDisplayRank(a.id) - this.codexDisplayRank(b.id));
       if (models.length) {
         providers.codex.models = models;
         providers.codex.liveSource = cachePath;
@@ -148,6 +153,11 @@ class AgentModelCatalogService {
       // No cache file (Codex never run here) or unreadable — keep the
       // curated fallback from agent-model-catalog.json, no error surfaced.
     }
+  }
+
+  codexDisplayRank(modelId) {
+    const i = CODEX_MODEL_DISPLAY_ORDER.indexOf(modelId);
+    return i === -1 ? CODEX_MODEL_DISPLAY_ORDER.length : i;
   }
 
   normalizeProvider(providerId, config) {

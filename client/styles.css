@@ -1900,6 +1900,11 @@ header {
   flex: 0 0 auto;
 }
 
+.model-effort-picker-harness-logo {
+  flex: 0 0 auto;
+  border-radius: 3px;
+}
+
 .model-effort-picker-model-label {
   overflow: hidden;
   text-overflow: ellipsis;
