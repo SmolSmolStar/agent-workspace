@@ -175,6 +175,8 @@ const { normalizeServiceManifest, getWorkspaceServiceManifest } = require('./wor
 const { ServiceStackRuntimeService } = require('./serviceStackRuntimeService');
 const { IntentHaikuService } = require('./intentHaikuService');
 const { AgentModelConfigService } = require('./agentModelConfigService');
+const { AgentModelCatalogService } = require('./agentModelCatalogService');
+const { AgentModelSwitchService } = require('./agentModelSwitchService');
 const {
   getLifecyclePolicy,
   parseWorktreeKey,
@@ -423,6 +425,9 @@ const pagerService = PagerService.getInstance({ logger });
 const threadService = ThreadService.getInstance({ logger });
 const intentHaikuService = IntentHaikuService.getInstance({ logger });
 const agentModelConfigService = AgentModelConfigService.getInstance({ logger });
+const agentModelCatalogService = AgentModelCatalogService.getInstance({ logger });
+agentModelCatalogService.startBackgroundRefresh();
+const agentModelSwitchService = AgentModelSwitchService.getInstance({ logger, sessionManager });
 const serviceStackRuntimeService = ServiceStackRuntimeService.getInstance({ logger });
 const policyService = PolicyService.getInstance({ logger });
 const auditExportService = AuditExportService.getInstance({ logger });
@@ -2949,6 +2954,63 @@ app.get('/api/sessions/model-config', (req, res) => {
   } catch (error) {
     logger.error('Failed to resolve session model config', { error: error.message, stack: error.stack });
     return res.status(500).json({ ok: false, error: 'Failed to resolve session model config' });
+  }
+});
+
+// Available models + valid efforts per provider, for the model/effort picker
+// dropdown and the Start AI Agent modal. Backed by a curated JSON file
+// (config/agent-model-catalog.json), not a live provider API — no installed
+// CLI here exposes a "list models" command. Cached in memory, refreshed on
+// a background timer (default 12h) and via the manual refresh endpoint below.
+app.get('/api/agents/model-catalog', (req, res) => {
+  try {
+    return res.json({ ok: true, ...agentModelCatalogService.getCatalog() });
+  } catch (error) {
+    logger.error('Failed to read agent model catalog', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to read agent model catalog' });
+  }
+});
+
+app.post('/api/agents/model-catalog/refresh', requirePolicyAction('write'), (req, res) => {
+  try {
+    return res.json({ ok: true, ...agentModelCatalogService.refresh() });
+  } catch (error) {
+    logger.error('Failed to refresh agent model catalog', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to refresh agent model catalog' });
+  }
+});
+
+// Session-only model/effort switch (header dropdown + Commander). Claude
+// only for now — see AgentModelSwitchService for why persisting the default
+// isn't possible to suppress, only reversible.
+app.post('/api/sessions/:sessionId/switch-model', requirePolicyAction('write'), async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { model, effort } = req.body || {};
+    if (!model && !effort) {
+      return res.status(400).json({ ok: false, error: 'model or effort is required' });
+    }
+
+    const session = sessionManager.getSessionById(sessionId);
+    const type = String(session?.type || '').toLowerCase();
+    if (!session) {
+      return res.status(404).json({ ok: false, error: 'SESSION_NOT_FOUND' });
+    }
+    if (type !== 'claude') {
+      // Codex/Grok session-only switching isn't confirmed to exist as a
+      // mechanism yet — see PLANS/2026-08-29/MODEL_EFFORT_PICKER_PLAN.md.
+      return res.status(501).json({ ok: false, error: 'UNSUPPORTED_SESSION_TYPE', type });
+    }
+
+    const result = await agentModelSwitchService.switchClaudeSession({ sessionId, model, effort });
+    if (!result.ok) {
+      const status = result.error === 'SESSION_NOT_FOUND' ? 404 : result.error === 'SESSION_BUSY' ? 409 : 400;
+      return res.status(status).json(result);
+    }
+    return res.json(result);
+  } catch (error) {
+    logger.error('Failed to switch session model', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to switch session model' });
   }
 });
 
@@ -8097,6 +8159,79 @@ app.post('/api/commander/start-claude', async (req, res) => {
   } catch (error) {
     logger.error('Failed to start Claude in commander', { error: error.message });
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Provider-agnostic Commander launch (Claude/Codex/Grok), with optional
+// session-only model/effort launch flags. start-claude above stays as the
+// narrower, longer-tested Claude-only path.
+app.post('/api/commander/start-agent', async (req, res) => {
+  try {
+    const { provider, mode, yolo, model, effort, tier } = req.body || {};
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+    const result = await target.startAgent({
+      provider: provider || 'claude',
+      mode: mode || 'fresh',
+      yolo: yolo !== false,
+      model: model || null,
+      effort: effort || null,
+      tier: tier || null
+    });
+    res.json(result);
+  } catch (error) {
+    logger.error('Failed to start agent in commander', { error: error.message });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Current model/effort for a Commander instance, for the header dropdown.
+// Falls back to 'claude' when nothing has launched yet so the picker has
+// something meaningful to show before Start is ever clicked.
+app.get('/api/commander/model-config', (req, res) => {
+  try {
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+    const status = target.getStatus();
+    const provider = status.provider || 'claude';
+    const config = provider === 'codex'
+      ? agentModelConfigService.resolveCodexConfig()
+      : provider === 'grok'
+        ? agentModelConfigService.resolveGrokConfig()
+        : agentModelConfigService.resolveClaudeConfig(status.cwd);
+    return res.json({ ok: true, provider, ...config });
+  } catch (error) {
+    logger.error('Failed to resolve commander model config', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to resolve commander model config' });
+  }
+});
+
+// Session-only model/effort switch for a Commander instance - same
+// mechanism as POST /api/sessions/:sessionId/switch-model (see
+// AgentModelSwitchService), just targeting Commander's own PTY instead of
+// a worktree session's.
+app.post('/api/commander/switch-model', requirePolicyAction('write'), async (req, res) => {
+  try {
+    const { model, effort } = req.body || {};
+    if (!model && !effort) {
+      return res.status(400).json({ ok: false, error: 'model or effort is required' });
+    }
+    const target = resolveCommander(req);
+    if (!target) return res.status(404).json({ error: 'Unknown commander instance' });
+
+    const result = await agentModelSwitchService.switchCommanderSession({
+      commanderService: target,
+      model,
+      effort
+    });
+    if (!result.ok) {
+      const status = result.error === 'SESSION_NOT_FOUND' ? 404 : result.error === 'SESSION_BUSY' ? 409 : 400;
+      return res.status(status).json(result);
+    }
+    return res.json(result);
+  } catch (error) {
+    logger.error('Failed to switch commander model', { error: error.message, stack: error.stack });
+    return res.status(500).json({ ok: false, error: 'Failed to switch commander model' });
   }
 });
 

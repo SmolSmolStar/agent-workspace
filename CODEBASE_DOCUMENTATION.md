@@ -172,6 +172,10 @@ server/discordIntegrationService.js - Discord queue orchestration bridge (Servic
 server/intentHaikuService.js       - Session intent summarizer for context-switch hints (optional Anthropic Haiku model, heuristic fallback)
 server/agentModelConfigService.js  - Resolves the model + reasoning effort agent launches will use per worktree (Claude `.claude/settings*.json` cascade: local > project > user; Codex `~/.codex/config.toml`; Grok `~/.grok/config.toml` [models] section)
 tests/unit/agentModelConfigService.test.js - Coverage for settings-cascade precedence, malformed/missing files, short-lived file cache, and Codex config parsing
+server/agentModelCatalogService.js - Per-harness catalog of available models/efforts/tiers (`config/agent-model-catalog.json`, curated; Codex overridden live from `~/.codex/models_cache.json`)
+tests/unit/agentModelCatalogService.test.js - Coverage for provider normalization, malformed/missing catalog file, and the Codex live-cache enrichment (replace/fallback/hidden-model filtering)
+server/agentModelSwitchService.js  - Session-only model/effort switch for a running Claude session or Commander instance (snapshot/restore `~/.claude/settings.json` around the `/model`/`/effort` commands)
+tests/unit/agentModelSwitchService.test.js - Coverage for both switch paths: snapshot/restore correctness, field-absent-before-switch handling, busy/not-found/unsupported-type rejections, timeout without throwing
 server/threadWorktreeSelection.js  - Repository/worktree normalization + reuse-first candidate selection for thread creation
 server/policyService.js            - Role/action policy checks (viewer/operator/admin) for sensitive APIs + command execution
 server/policyBundleService.js      - Policy template catalog + bundle export/import for team governance profiles
@@ -189,11 +193,13 @@ server/githubCloneWorktreeService.js - GitHub import flow for Quick Work (`owner
 server/portRegistry.js             - Port assignment + live service scanner (`/api/ports/scan`)
 ├─ Windows scan path: uses hidden `netstat`/`tasklist` probes so packaged Tauri builds do not flash console windows when Ports/Dashboard panels refresh
 └─ UI metadata: labels orchestrator-assigned ports, known dev servers, and custom user labels
-server/commanderService.js         - Top-level Commander PTY (Claude/Codex) + launch buffering
+server/commanderService.js         - Top-level Commander PTY (Claude/Codex/Grok) + launch buffering
 ├─ Multi-instance: panel tabs (`main` + `cmd-2..cmd-6`, cap 6) via static registry; `GET/POST /api/commander/instances`, `PATCH/DELETE /api/commander/instances/:id`; PTY routes take `?instance=`
 ├─ Identity env: each PTY gets COMMANDER_INSTANCE_ID / COMMANDER_INSTANCE_LABEL so a Commander can find + rename itself
 ├─ Packaged CWD: uses `ORCHESTRATOR_DATA_DIR/commander` so desktop users can edit `CLAUDE.md` / `AGENTS.md` safely
+├─ Multi-provider launch: `startAgent()` generalizes the Claude-only `startClaude()`; Codex/Grok (`startNonClaudeAgent()`) skip Claude's trust-prompt/ready-detection machinery (their TUI banner text isn't verified)
 └─ First-run seed: copies the packaged `docs/COMMANDER_CLAUDE.md` into the Commander data directory when missing
+server/agentManager.js             - Per-agent launch config (Claude/Codex/Grok): modes, flags, logos, `buildCommand()` (`--model`/`--effort` for Claude/Grok, `-m`/`-c` for Codex including `service_tier`)
 scripts/tauri/prepare-backend-resources.js - Tauri backend packager
 ├─ Bundles: server/client/config/templates/scripts + optional Node runtime into `src-tauri/resources/backend`
 ├─ Commander instructions: copies `docs/COMMANDER_CLAUDE.md` into `resources/backend/{COMMANDER_CLAUDE.md,CLAUDE.md,AGENTS.md}` for desktop builds
@@ -306,7 +312,7 @@ client/app.js                      - Main client application
 ├─ Features: 16-terminal layout, real-time updates, session switching
 ├─ Command Palette: header `⌘ Commands` button + `Ctrl/Cmd+K` searchable command launcher for command-catalog actions
 ├─ Intent hints: compact "intent haiku" strip above each agent terminal, refreshed from `POST /api/sessions/intent-haiku`
-├─ Model badge: terminal-header chip showing the model + reasoning effort each worktree's agent launches use (`GET /api/sessions/model-config`, toggle via `ui.visibility.terminal.modelBadge`)
+├─ Model badge: terminal-header chip showing the model + reasoning effort each worktree's agent launches use (`GET /api/sessions/model-config`, toggle via `ui.visibility.terminal.modelBadge`), doubles as a `model-effort-picker.js` dropdown trigger for a session-only swap
 ├─ Projects + Chats automation: `project-chats-new` Commander/voice action supports explicit workspace + repository targeting
 ├─ Projects + Chats list: repository-first aggregation (project-centric view) while preserving workspace context for mixed workspaces
 ├─ Projects + Chats data source: prefers server-aggregated repository projects from `GET /api/thread-projects` with client fallback aggregation
@@ -319,6 +325,10 @@ client/app.js                      - Main client application
 └─ Dependencies: Socket.IO client, terminal emulation
 
 client/assets/agent-workspace-logo.png - Shared circular brand mark used by the app favicon, sidebar/dashboard title logo, and as the source for bundled desktop icons
+client/assets/providers/            - Provider marks (claude.svg, codex.png, grok.svg) for the Start AI Agent modal and any other harness-picker UI
+client/model-effort-picker.js      - ModelEffortPicker: hover/click dropdown for a session-only model+effort swap, targets either a worktree session or a Commander instance
+client/agent-modal.js              - AgentModalManager: Start AI Agent modal, cascading button rows (harness/model/effort/tier) with provider logos, replaces the old flags-based model/reasoning hack
+client/commander-panel.js          - CommanderPanel: Commander's terminal UI, harness select feeds `startAgent()`, model badge shares the same ModelEffortPicker as worktree terminals
 
 client/terminal.js                 - Terminal component implementation
 ├─ Fit ratchet escape: a down-fit below 60% of lastGoodPtyDimensions is accepted once the same dimensions repeat `stableSmallFitConfirmations` times (settled layout), so one oversized mid-layout fit can't wedge a terminal at a huge PTY size (the stacked-duplicate-frames bug)
@@ -461,6 +471,7 @@ src-tauri/Cargo.toml               - Rust dependencies + build profiles (release
 └─ profile.fast: lto=false, codegen-units=256, incremental — ~3-5x faster compile (local dev/testing)
 config.json                        - Shared application configuration
 config/project-types.json          - Greenfield category/framework/template taxonomy (supports framework pathSuffix defaults)
+config/agent-model-catalog.json    - Curated per-provider model + effort catalog (Claude/Codex/Grok); Codex is overridden live from `~/.codex/models_cache.json` when present
 package.json                       - Node.js dependencies and scripts
 
 user-settings.json                 - User preferences and workspace settings
@@ -721,6 +732,12 @@ POST /api/discord/ensure-services  - Ensure Services workspace/session bootstrap
 POST /api/discord/process-queue    - Dispatch queue processing prompt with optional `Idempotency-Key`/`idempotencyKey`, queue signature verification, idempotent replay, audit logging, and per-endpoint rate limiting
 POST /api/sessions/intent-haiku   - Generate <=200 char intent summary for an active Claude/Codex session
 GET /api/sessions/model-config    - Model + reasoning-effort config per active agent session (Claude settings cascade per worktree, global Codex config)
+GET /api/agents/model-catalog     - Cached per-provider model/effort/tier catalog, refreshed on a 12h timer
+POST /api/agents/model-catalog/refresh - Force-reload the catalog (dropdown/modal Refresh button)
+POST /api/sessions/:sessionId/switch-model - Session-only model/effort swap for a running Claude session; body `{model, effort}` (Codex/Grok return 501)
+GET /api/commander/model-config   - Current model/effort for a Commander instance (`?instance=`)
+POST /api/commander/switch-model  - Session-only model/effort swap for a running Commander instance
+POST /api/commander/start-agent   - Provider-agnostic Commander launch (Claude/Codex/Grok); body `{model, effort, tier}`
 GET /api/greenfield/categories    - Greenfield category list (taxonomy-backed)
 POST /api/greenfield/detect-category - Infer category from description (taxonomy keyword matching)
 GET /api/setup-actions            - List Windows dependency-onboarding actions

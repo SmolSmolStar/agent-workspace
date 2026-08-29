@@ -7,8 +7,12 @@ class AgentModalManager {
   constructor(orchestrator) {
     this.orchestrator = orchestrator;
     this.agentConfigs = null;
+    this.modelCatalog = null;
     this.selectedAgent = null;
     this.selectedMode = null;
+    this.selectedModel = null;
+    this.selectedEffort = null;
+    this.selectedTier = null;
     this.selectedFlags = [];
     this.currentSessionId = null;
 
@@ -20,7 +24,7 @@ class AgentModalManager {
   }
 
   bindEvents() {
-    // Agent selection
+    // Agent (harness) selection
     document.addEventListener('change', (e) => {
       if (e.target.name === 'agent-selection') {
         this.selectAgent(e.target.value);
@@ -32,6 +36,24 @@ class AgentModalManager {
       if (e.target.classList.contains('mode-btn')) {
         this.selectMode(e.target.dataset.mode);
       }
+    });
+
+    // Model selection (cascades into effort options)
+    document.addEventListener('click', (e) => {
+      const modelBtn = e.target.closest('.model-btn');
+      if (modelBtn) this.selectModel(modelBtn.dataset.model);
+    });
+
+    // Effort selection
+    document.addEventListener('click', (e) => {
+      const effortBtn = e.target.closest('.effort-btn');
+      if (effortBtn) this.selectEffort(effortBtn.dataset.effort);
+    });
+
+    // Tier selection (Codex service tier, e.g. "priority")
+    document.addEventListener('click', (e) => {
+      const tierBtn = e.target.closest('.tier-btn');
+      if (tierBtn) this.selectTier(tierBtn.dataset.tier);
     });
 
     // Flag selection
@@ -68,12 +90,14 @@ class AgentModalManager {
       console.log('Loaded agent configurations:', this.agentConfigs);
     } catch (error) {
       console.error('Failed to load agent configurations:', error);
-      // Fallback to hardcoded configs for development
+      // Fallback to hardcoded configs for development. Sandbox/approval
+      // flags only - model and reasoning effort come from the dedicated
+      // Model/Effort rows (loadModelCatalog), not from a "flags" hack.
       this.agentConfigs = [
         {
           id: 'claude',
           name: 'Claude',
-          icon: '🤖',
+          logo: 'assets/providers/claude.svg',
           description: 'Anthropic Claude Code',
           modes: [
             { id: 'fresh', name: 'Fresh', description: 'Start new session' },
@@ -94,52 +118,71 @@ class AgentModalManager {
         {
           id: 'codex',
           name: 'Codex',
-          icon: '⚡',
+          logo: 'assets/providers/codex.png',
           description: 'OpenAI Codex',
           modes: [
-            { id: 'search', name: 'Search', description: 'Search and analyze mode' },
-            { id: 'create', name: 'Create', description: 'Create new content' },
-            { id: 'analyze', name: 'Analyze', description: 'Analyze existing code' }
+            { id: 'fresh', name: 'Fresh', description: 'Start new session' },
+            { id: 'continue', name: 'Continue', description: 'Continue most recent session' },
+            { id: 'resume', name: 'Resume', description: 'Resume interrupted session' }
           ],
           flags: [
             {
-              id: 'gpt5Model',
-              label: '🔥 GPT-5 Model',
-              description: 'Use GPT-5 Codex model',
-              category: 'model'
-            },
-            {
-              id: 'highReasoning',
-              label: '🧠 High Reasoning',
-              description: 'High reasoning effort',
-              category: 'reasoning'
+              id: 'yolo',
+              label: '🚀 YOLO Mode',
+              description: 'No approvals + no sandboxing',
+              category: 'sandbox',
+              default: true
             },
             {
               id: 'workspaceWrite',
-              label: '📝 Workspace + Network',
-              description: 'Workspace write with network access',
-              category: 'sandbox'
-            },
-            {
-              id: 'bypassAll',
-              label: '🚀 Full Bypass',
-              description: 'Bypass all safety (maximum power)',
+              label: '📝 Workspace Write',
+              description: 'Write files in workspace only (safer than YOLO)',
               category: 'sandbox'
             }
           ],
-          defaultMode: 'search'
+          defaultMode: 'fresh'
+        },
+        {
+          id: 'grok',
+          name: 'Grok',
+          logo: 'assets/providers/grok.svg',
+          description: 'xAI Grok CLI',
+          modes: [
+            { id: 'fresh', name: 'Fresh', description: 'Start new session' },
+            { id: 'continue', name: 'Continue', description: 'Continue most recent session' },
+            { id: 'resume', name: 'Resume', description: 'Resume a session by id' }
+          ],
+          flags: [
+            {
+              id: 'alwaysApprove',
+              label: '🚀 YOLO Mode',
+              description: 'Auto-approve all tool executions',
+              category: 'permissions',
+              default: true
+            }
+          ],
+          defaultMode: 'fresh'
         }
       ];
+    }
+  }
+
+  async loadModelCatalog() {
+    try {
+      const response = await fetch('/api/agents/model-catalog');
+      const payload = await response.json().catch(() => null);
+      this.modelCatalog = payload?.ok ? payload : null;
+    } catch (error) {
+      console.error('Failed to load model catalog:', error);
+      this.modelCatalog = null;
     }
   }
 
   async showModal(sessionId) {
     this.currentSessionId = sessionId;
 
-    // Load agent configurations if not already loaded
-    if (!this.agentConfigs) {
-      await this.loadAgentConfigurations();
-    }
+    if (!this.agentConfigs) await this.loadAgentConfigurations();
+    if (!this.modelCatalog) await this.loadModelCatalog();
 
     // Update session ID display
     const sessionInfo = document.getElementById('startup-session-id');
@@ -180,7 +223,9 @@ class AgentModalManager {
                value="${agent.id}"
                id="agent-${agent.id}"
                style="display: none;">
-        <div class="agent-icon">${agent.icon}</div>
+        ${agent.logo
+          ? `<img class="agent-logo" src="${agent.logo}" alt="" width="28" height="28">`
+          : `<div class="agent-icon">${agent.icon || ''}</div>`}
         <div class="agent-name">${agent.name}</div>
         <div class="agent-desc">${agent.description}</div>
       </label>
@@ -205,8 +250,9 @@ class AgentModalManager {
     const radio = document.getElementById(`agent-${agentId}`);
     if (radio) radio.checked = true;
 
-    // Render modes and flags for this agent
+    // Render modes, models, and flags for this agent (model cascades into effort)
     this.renderModes(agent);
+    this.renderModels(agentId);
     this.renderFlags(agent);
 
     // Select default mode
@@ -234,6 +280,116 @@ class AgentModalManager {
       el.classList.remove('selected');
     });
     document.querySelector(`[data-mode="${modeId}"]`)?.classList.add('selected');
+  }
+
+  renderModels(agentId) {
+    const modelSection = document.getElementById('model-selector');
+    const effortSection = document.getElementById('effort-selector');
+    const tierSection = document.getElementById('tier-selector');
+    const container = document.getElementById('model-buttons');
+    if (!container || !modelSection || !effortSection || !tierSection) return;
+
+    const provider = this.modelCatalog?.providers?.[agentId];
+    const models = provider?.models || [];
+
+    if (!models.length) {
+      // No catalog entry for this provider - hide every cascaded row rather
+      // than show an empty/broken picker. startAgent() just omits them.
+      modelSection.style.display = 'none';
+      effortSection.style.display = 'none';
+      tierSection.style.display = 'none';
+      this.selectedModel = null;
+      this.selectedEffort = null;
+      this.selectedTier = null;
+      return;
+    }
+
+    modelSection.style.display = '';
+    container.innerHTML = models.map(m => `
+      <button class="model-btn" data-model="${this.escape(m.id)}" title="${this.escape(m.id)}">
+        ${this.escape(m.label)}
+      </button>
+    `).join('');
+
+    this.selectModel(models[0].id);
+  }
+
+  selectModel(modelId) {
+    this.selectedModel = modelId;
+
+    document.querySelectorAll('.model-btn').forEach(el => {
+      el.classList.toggle('selected', el.dataset.model === modelId);
+    });
+
+    this.renderEfforts(modelId);
+    this.renderTiers(modelId);
+  }
+
+  renderEfforts(modelId) {
+    const effortSection = document.getElementById('effort-selector');
+    const container = document.getElementById('effort-buttons');
+    if (!container || !effortSection) return;
+
+    const provider = this.modelCatalog?.providers?.[this.selectedAgent];
+    const model = provider?.models?.find(m => m.id === modelId);
+    const efforts = model?.efforts || [];
+
+    if (!efforts.length) {
+      effortSection.style.display = 'none';
+      this.selectedEffort = null;
+      return;
+    }
+
+    effortSection.style.display = '';
+    container.innerHTML = efforts.map(e => `
+      <button class="effort-btn" data-effort="${this.escape(e)}">${this.escape(e)}</button>
+    `).join('');
+
+    // "high" is the sane default across every provider in the catalog when
+    // it's offered; otherwise fall back to whatever's listed first.
+    const defaultEffort = efforts.includes('high') ? 'high' : efforts[0];
+    this.selectEffort(defaultEffort);
+  }
+
+  selectEffort(effortId) {
+    this.selectedEffort = effortId;
+    document.querySelectorAll('.effort-btn').forEach(el => {
+      el.classList.toggle('selected', el.dataset.effort === effortId);
+    });
+  }
+
+  // Only some Codex models offer a service tier (e.g. the "priority"
+  // 1.5x-speed tier) - most don't, so the row stays hidden unless the
+  // selected model actually has one. Always defaults to "Normal" (the
+  // model's own non-priority tier); Priority is opt-in, never the default.
+  renderTiers(modelId) {
+    const tierSection = document.getElementById('tier-selector');
+    const container = document.getElementById('tier-buttons');
+    if (!container || !tierSection) return;
+
+    const provider = this.modelCatalog?.providers?.[this.selectedAgent];
+    const model = provider?.models?.find(m => m.id === modelId);
+    const tiers = model?.tiers || [];
+
+    if (tiers.length < 2) {
+      tierSection.style.display = 'none';
+      this.selectedTier = null;
+      return;
+    }
+
+    tierSection.style.display = '';
+    container.innerHTML = tiers.map(t => `
+      <button class="tier-btn" data-tier="${this.escape(t.id)}">${this.escape(t.label)}</button>
+    `).join('');
+
+    this.selectTier(tiers[0].id);
+  }
+
+  selectTier(tierId) {
+    this.selectedTier = tierId;
+    document.querySelectorAll('.tier-btn').forEach(el => {
+      el.classList.toggle('selected', el.dataset.tier === tierId);
+    });
   }
 
   renderFlags(agent) {
@@ -281,8 +437,7 @@ class AgentModalManager {
   }
 
   isCategoryExclusive(agent, categoryName) {
-    // For now, assume model and reasoning categories are exclusive
-    return ['model', 'reasoning', 'sandbox'].includes(categoryName);
+    return ['sandbox', 'approvals'].includes(categoryName);
   }
 
   formatCategoryName(categoryName) {
@@ -322,7 +477,9 @@ class AgentModalManager {
       if (this.selectedAgent === 'claude') {
         flagsToEnable = ['skipPermissions'];
       } else if (this.selectedAgent === 'codex') {
-        flagsToEnable = ['gpt5Model', 'highReasoning', 'bypassAll'];
+        flagsToEnable = ['yolo'];
+      } else if (this.selectedAgent === 'grok') {
+        flagsToEnable = ['alwaysApprove'];
       }
     }
 
@@ -350,7 +507,16 @@ class AgentModalManager {
     const config = {
       agentId: this.selectedAgent,
       mode: this.selectedMode,
-      flags: this.selectedFlags
+      flags: this.selectedFlags,
+      // model/effort are session-only launch flags (--model/--effort for
+      // Claude+Grok; reasoning duplicates effort for Codex's -c
+      // model_reasoning_effort mechanism) - see agentManager.buildCommand.
+      model: this.selectedModel || undefined,
+      effort: this.selectedEffort || undefined,
+      reasoning: this.selectedEffort || undefined,
+      // Codex-only service tier ("priority" for the 1.5x-speed "Fast"
+      // tier); undefined/"default" is a no-op for every provider.
+      tier: this.selectedTier || undefined
     };
 
     console.log('Starting agent with config:', config);
@@ -360,6 +526,16 @@ class AgentModalManager {
 
     // Hide modal
     this.hideModal();
+  }
+
+  escape(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    }[c]));
   }
 }
 

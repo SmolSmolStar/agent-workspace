@@ -164,11 +164,37 @@
         <div class="modal-content agent-startup-dynamic">
             <h3>Start AI Agent - <span id="startup-session-id"></span></h3>
 
-            <!-- Agent Selection -->
+            <!-- Agent (harness) Selection -->
             <div class="agent-selector">
-                <label>Select AI Agent:</label>
+                <label>Harness:</label>
                 <div class="agent-options" id="agent-options">
                     <!-- Dynamically populated -->
+                </div>
+            </div>
+
+            <!-- Model Selection (cascades from harness) -->
+            <div class="model-selector" id="model-selector">
+                <label>Model:</label>
+                <div class="model-buttons" id="model-buttons">
+                    <!-- Dynamically populated from /api/agents/model-catalog -->
+                </div>
+            </div>
+
+            <!-- Effort Selection (cascades from model) -->
+            <div class="effort-selector" id="effort-selector">
+                <label>Effort:</label>
+                <div class="effort-buttons" id="effort-buttons">
+                    <!-- Dynamically populated from /api/agents/model-catalog -->
+                </div>
+            </div>
+
+            <!-- Tier Selection (cascades from model; only some Codex models
+                 offer one, e.g. the "priority" 1.5x-speed tier - hidden for
+                 everything else) -->
+            <div class="tier-selector" id="tier-selector" style="display: none;">
+                <label>Tier:</label>
+                <div class="tier-buttons" id="tier-buttons">
+                    <!-- Dynamically populated from /api/agents/model-catalog -->
                 </div>
             </div>
 
@@ -180,7 +206,9 @@
                 </div>
             </div>
 
-            <!-- Flag Configuration -->
+            <!-- Flag Configuration (permissions/sandbox only - model & effort
+                 have their own rows above, so this no longer grows/shifts
+                 the modal when switching harness) -->
             <div class="flag-configuration" id="flag-configuration">
                 <!-- Dynamically populated based on selected agent -->
             </div>
@@ -588,6 +616,7 @@
     <script src="terminal.js"></script>
     <script src="notifications.js"></script>
     <script src="agent-modal.js"></script>
+    <script src="model-effort-picker.js"></script>
     <script src="usage-limits-widget.js"></script>
     <script src="system-stats-widget.js"></script>
 </body>

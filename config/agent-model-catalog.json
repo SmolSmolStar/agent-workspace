@@ -1,0 +1,29 @@
+{
+  "_comment": "Curated per-provider model + effort catalog for the model/effort picker. Extend this file as new models ship; the server reloads it on a schedule and on manual refresh, no restart needed.",
+  "claude": {
+    "label": "Claude",
+    "efforts": ["low", "medium", "high", "xhigh", "max"],
+    "models": [
+      { "id": "opus", "label": "Opus 5" },
+      { "id": "sonnet", "label": "Sonnet 5" },
+      { "id": "haiku", "label": "Haiku 4.5" },
+      { "id": "fable", "label": "Fable 5" }
+    ]
+  },
+  "codex": {
+    "label": "Codex",
+    "efforts": ["low", "medium", "high", "xhigh"],
+    "models": [
+      { "id": "gpt-5.3-codex", "label": "GPT-5.3 Codex" },
+      { "id": "gpt-5.6-sol", "label": "Sol (GPT-5.6)" }
+    ]
+  },
+  "grok": {
+    "label": "Grok",
+    "efforts": ["low", "medium", "high", "xhigh", "max"],
+    "models": [
+      { "id": "grok-4.6", "label": "Grok 4.6" },
+      { "id": "grok-build", "label": "Grok Build" }
+    ]
+  }
+}
