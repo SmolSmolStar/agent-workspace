@@ -118,6 +118,7 @@ const { createAtlasRoutes } = require('./routes/atlasRoutes');
 const { TeamActivityService } = require('./teamActivityService');
 const { createTeamRoutes } = require('./routes/teamRoutes');
 const { FlowVisibilityService } = require('./flowVisibilityService');
+const { ThiefLogService } = require('./thiefLogService');
 const { createFlowRoutes } = require('./routes/flowRoutes');
 const { ProductLauncherService } = require('./productLauncherService');
 const { CommanderService } = require('./commanderService');
@@ -2739,18 +2740,22 @@ app.use('/api/team', createTeamRoutes({
   requireRead: requirePolicyAction('read')
 }));
 
+const thiefLogService = ThiefLogService.getInstance();
 const flowVisibilityService = FlowVisibilityService.getInstance({
   workspaceProvider: () => workspaceManager.listWorkspaces(),
   sessionProvider: () => commanderService.listSessions(),
-  taskRecordProvider: () => taskRecordService.list()
+  taskRecordProvider: () => taskRecordService.list(),
+  thiefLog: thiefLogService
 });
 // Same deal as team activity: git and gh calls run on a schedule so opening
 // the panel reads memory instead of firing dozens of subprocesses.
 flowVisibilityService.startBackgroundRefresh();
 app.use('/api/flow', createFlowRoutes({
   flowVisibilityService,
+  thiefLogService,
   logger,
-  requireRead: requirePolicyAction('read')
+  requireRead: requirePolicyAction('read'),
+  requireWrite: requirePolicyAction('write')
 }));
 
 app.get('/api/policy/templates', requirePolicyAction('read'), (req, res) => {

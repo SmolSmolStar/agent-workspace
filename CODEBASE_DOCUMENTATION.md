@@ -156,16 +156,30 @@ server/routes/teamRoutes.js        - `/api/team/*` REST surface (`GET /api/team/
 client/team-activity.html          - Standalone team activity dashboard page (served statically at /team-activity.html)
 client/team-activity.js            - Fetches /api/team/activity, renders legend/stat-cards/charts via team-activity-charts.js, plus the detail table
 client/team-activity-charts.js     - SVG chart builders (grouped bar chart of commits/day, PR Gantt/timeline with lane-packed overlap handling), dataviz-skill categorical palette + mark specs, no external deps
-server/flowVisibilityService.js    - Work panel data: the five thieves of time (DeGrandis, "Making Work Visible") measured against this machine's own git, PR, session and task-record state
-├─ Repos come from the workspace terminal list (deduped by path, capped at `ORCHESTRATOR_FLOW_MAX_REPOS`, default 40); a repeated repo name is disambiguated by its parent directory so two checkouts never read as a double-count
-├─ Per repo it runs `git for-each-ref` (branch aging), `git log --since` (conventional-commit type mix), and `gh pr list` (open PR age, idle days, conflict state) inside the repo's `master/`|`main/` checkout, 4 repos at a time
-├─ Thieves: WIP (open PRs, live sessions, worktrees), neglected (PRs idle 14d+, branches stale 90d+), unplanned (reactive vs feature commit share), conflicting priorities (repos in flight, tier distribution), unknown dependencies (PRs that cannot merge)
-├─ Honesty: "no PR data" and "zero PRs" are separate states; repos with no git checkout and repos `gh` could not answer for are named in `coverage`, never folded into a zero
-├─ `startBackgroundRefresh()` (called once from server/index.js at boot) rebuilds on a timer (`ORCHESTRATOR_FLOW_CACHE_TTL_MS`, default 10min); a panel open reads memory, and `?refresh=1` respects a 30s anti-mash floor
-└─ Nothing is persisted — the report lives in an in-memory cache and is recomputed from local state on every rebuild
-server/routes/flowRoutes.js        - `/api/flow/report` REST surface (`?days=`, `?refresh=1`) with read policy gating
-client/work-panel.js               - Work panel overlay (header 🕵️ Work button, `header.work` visibility flag, OFF by default): thief cards with expandable evidence, per-repo table, coverage notes
-client/styles/work-panel.css       - Work panel styling (single scroll container, white-on-dark, no truncated labels)
+server/flowVisibilityService.js    - Work page data: collects local git/gh/session/task-record state for flowMetrics
+├─ Repos come from the workspace terminal list (deduped by path, capped at `ORCHESTRATOR_FLOW_MAX_REPOS`, default 40); a repeated repo name is disambiguated by its parent directory
+├─ Per repo: `git for-each-ref` (branch aging, plus `--no-merged` so a merged-but-undeleted branch is not counted as unfinished), `git log --since` (dated commit subjects), `gh pr list --state all --search updated:>=` (full PR history in the window)
+├─ WIP, neglected work and repo spread are DERIVED. Unplanned work and unknown dependencies are NOT: an interruption leaves no commit and a task discovered at go-live was never tracked, so those tallies come from thiefLogService and a `fix:` prefix is never read as an interruption
+├─ Each thief carries `source` (derived | logged | mixed) so an empty logged thief reads as untracked, never as zero theft
+├─ Honesty: "no PR data", "no git checkout" and "PR history hit the fetch cap" are separate states named in `coverage`, never folded into a zero
+├─ `startBackgroundRefresh()` rebuilds on a timer (`ORCHESTRATOR_FLOW_CACHE_TTL_MS`, default 10min); `?refresh=1` respects a 30s anti-mash floor; `invalidate()` drops the cache when a thief is logged
+└─ Nothing is persisted except the thief log; the report is recomputed from local state
+server/flowMetrics.js             - Pure figure math, no IO, one function per figure from DeGrandis, "Making Work Visible"
+├─ buildWeeklyFlow (Figures 40/42/48): per-week opened/merged/abandoned/openAtEnd/agedAtEnd/reposTouched, last bucket flagged `partial`
+├─ buildBoard (Figure 27): branch → draft → in review → waiting → merged, with the Validate Pit detected only when one unfinished stage outweighs the rest combined; an unknown count cannot win
+├─ buildAgingReport (Figure 42), buildFlowTime (Figures 38/39), buildQueueModel (Figure 41, N = rho²/(1-rho²), undefined past rho 1)
+├─ buildThroughput: merged per week (the honest velocity) plus cumulative net flow; no sprint burndown because nothing commits to a fixed scope
+└─ buildVisibilityGrid (Figure 4): conventional-commit types into feature/architecture/bug/technical-debt; untyped commits are excluded, not guessed
+server/thiefLogService.js         - The capture side for the two invisible thieves (`~/.agent-workspace/flow-thief-log.json`)
+├─ Entry: thief + book-named kind + title + optional repo/minutes/notes; a kind that does not belong to the chosen thief is dropped, a non-positive duration stores as unknown rather than zero
+├─ summary() for the o'gram tally (an untimed entry still counts once), weeklyCounts() on the same week keys as the derived series (Figure 47)
+└─ Atomic write via temp file + rename; a corrupt log reads as empty instead of taking the page down
+server/routes/flowRoutes.js       - `/api/flow/*`: `GET report`, `GET/POST/DELETE thieves`, `GET thieves/catalog`; read-gated except the log writes
+client/work.html                  - Standalone Work page at /work.html
+client/work-page.js               - The renderer, shared by the standalone page and the in-app panel: o'gram, board, throughput, CFD, aging report, visibility grid, thief capture form
+client/work-charts.js             - Dependency-free SVG builders (o'gram, balanced scorecard, CFD, WIP report, throughput, net flow, queuing curve)
+client/work-panel.js              - Full-screen in-app shell around WorkPage, matching how Tasks opens; header 🕵️ Work button, `header.work` flag, OFF by default
+client/styles/work-panel.css      - Work page styling (one scroll container, white on dark, no truncated labels)
 server/projectBoardService.js      - Local projects kanban board persistence (`~/.orchestrator/project-board.json`) + APIs (`GET /api/projects/board`, `POST /api/projects/board/move`, `POST /api/projects/board/patch`)
 server/repoAtlasService.js         - Repo Atlas singleton — registry bootstrap, scan orchestration, alias-aware manifest loading, query/propose/audience/sync facade (data: `~/.agent-workspace/atlas/`, registry synced to a PRIVATE git repo)
 server/atlas/                      - Atlas internals: atlasSchema (validation), atlasStore (one-file-per-repo registry IO under `entries/`, plus `.repo-atlas-key` read/write and the local key cache), atlasIdentity (robust GitHub remote grouping, root-history-aware local grouping, root-commit collision ids, shared-history warnings, deterministic preferred checkouts, local aliases), atlasRegistryIdentity (legacy curation rebinding, exact-file precedence, duplicate and ambiguity warnings), atlasDiscovery (Git common-dir-aware linked-worktree grouping that keeps unrelated conventional-name siblings separate, plus GitHub scan; shallow clones omit unreliable root commits), atlasQuery (find/digest/list), atlasEvidence plus atlasCheckout, atlasCodeEvidence, and atlasEvidenceCoordinator (origin-verified live Git facts, code/test signals, safe file counts, request coalescing), atlasPortfolio (bounded multi-repository reports with path-safe metadata), atlasEncryption (repo-key-gated AES-256-GCM sealing/unsealing, `gh api` remote key fetch), atlasProposals (agent write-back queue, user approves), atlasCompiler (per-audience bundle redaction that keeps private entries on the machine), atlasSync (git pull/rebase/push of the registry)
